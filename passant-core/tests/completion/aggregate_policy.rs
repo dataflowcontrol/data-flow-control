@@ -114,10 +114,12 @@ fn aggregate_policy_invalidate_update_per_dimension() {
     });
     let rewriter = rewriter_with_policies(&[policy]);
     let finalizations = rewriter.finalize_aggregate_queries("reports");
-    assert!(finalizations[0]
-        .invalidate_sql
-        .as_ref()
-        .is_some_and(|sql| sql.contains("reports.region")));
+    assert!(
+        finalizations[0]
+            .invalidate_sql
+            .as_ref()
+            .is_some_and(|sql| sql.contains("reports.region"))
+    );
 }
 
 #[test]
@@ -125,10 +127,9 @@ fn aggregate_policy_invalidate_update_per_dimension() {
 fn aggregate_scan_policy_rejects_remove_resolution_at_parse() {
     use passant_core::parse_policy_text;
 
-    let err = parse_policy_text(
-        "AGGREGATE SOURCE foo CONSTRAINT sum(foo.amount) > 100 ON FAIL REMOVE",
-    )
-    .expect_err("aggregate policies must use INVALIDATE");
+    let err =
+        parse_policy_text("AGGREGATE SOURCE foo CONSTRAINT sum(foo.amount) > 100 ON FAIL REMOVE")
+            .expect_err("aggregate policies must use INVALIDATE");
     assert!(
         err.to_string()
             .contains("aggregate policies currently only support INVALIDATE resolution")

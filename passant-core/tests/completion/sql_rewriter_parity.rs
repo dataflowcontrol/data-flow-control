@@ -2,7 +2,7 @@
 
 use passant_core::{PolicyIr, Resolution};
 
-use crate::common::{assert_rewrite, dfc_policy, dfc_policy_kill, dfc_policy_invalidate, rewrite};
+use crate::common::{assert_rewrite, dfc_policy, dfc_policy_invalidate, dfc_policy_kill, rewrite};
 
 #[test]
 #[ignore = "completion: sql_rewriter_parity"]

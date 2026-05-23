@@ -4,7 +4,7 @@
 //! is implemented, convert the matching test into a positive rewrite test in the
 //! same module and remove the conformance assertion.
 
-use passant_core::{parse_policy_text, PolicyIr, Resolution};
+use passant_core::{PolicyIr, Resolution, parse_policy_text};
 
 use crate::common::{assert_rewrite_fails_with, dfc_policy, rewriter_with_policies};
 

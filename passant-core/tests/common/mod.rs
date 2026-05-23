@@ -67,8 +67,7 @@ pub fn rewriter_with_policies(policies: &[PolicyIr]) -> PassantRewriter {
 }
 
 pub fn rewrite(sql: &str, policies: &[PolicyIr]) -> String {
-    rewrite_result(sql, policies)
-        .unwrap_or_else(|err| panic!("rewrite failed for {sql:?}: {err}"))
+    rewrite_result(sql, policies).unwrap_or_else(|err| panic!("rewrite failed for {sql:?}: {err}"))
 }
 
 pub fn rewrite_result(sql: &str, policies: &[PolicyIr]) -> Result<String, RewriteError> {
