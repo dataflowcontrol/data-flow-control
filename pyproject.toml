@@ -1,5 +1,5 @@
 [project]
-name = "passant"
+name = "data-flow-control"
 version = "0.1.0"
 description = "Rust-backed Data Flow Control rewrite engine"
 requires-python = ">=3.9"
