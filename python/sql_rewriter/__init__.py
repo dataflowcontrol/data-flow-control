@@ -1,5 +1,4 @@
-from .policy import AggregateDFCPolicy, DFCPolicy, Resolution
-from .rewriter import SQLRewriter
+from passant.compat import AggregateDFCPolicy, DFCPolicy, Resolution, SQLRewriter
 
 __all__ = [
     "AggregateDFCPolicy",

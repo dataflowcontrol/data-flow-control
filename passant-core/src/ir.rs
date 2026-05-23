@@ -125,3 +125,70 @@ fn contains_aggregate(sql: &str) -> bool {
     .iter()
     .any(|needle| upper.contains(needle))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_tables_prefers_alias_over_base_name() {
+        let select = PassantSelect {
+            projection: vec![],
+            from: vec![FromItem {
+                relation_sql: "foo AS f".to_string(),
+                alias: Some("f".to_string()),
+                tables: vec![TableRef {
+                    name: "foo".to_string(),
+                    alias: Some("f".to_string()),
+                }],
+                joins: vec![],
+            }],
+            where_clause: None,
+            having: None,
+            group_by: vec![],
+            order_by: vec![],
+            limit: None,
+            ctes: vec![],
+            is_distinct: false,
+            raw_sql: String::new(),
+        };
+        assert_eq!(select.visible_tables(), vec!["f".to_string()]);
+    }
+
+    #[test]
+    fn is_aggregation_detects_group_by_and_aggregate_projection() {
+        let grouped = PassantSelect {
+            projection: vec![ProjectionItem {
+                expr: ExprRef::new("id"),
+                alias: None,
+            }],
+            from: vec![],
+            where_clause: None,
+            having: None,
+            group_by: vec![ExprRef::new("id")],
+            order_by: vec![],
+            limit: None,
+            ctes: vec![],
+            is_distinct: false,
+            raw_sql: String::new(),
+        };
+        assert!(grouped.is_aggregation());
+
+        let aggregate_projection = PassantSelect {
+            projection: vec![ProjectionItem {
+                expr: ExprRef::new("max(id)"),
+                alias: None,
+            }],
+            from: vec![],
+            where_clause: None,
+            having: None,
+            group_by: vec![],
+            order_by: vec![],
+            limit: None,
+            ctes: vec![],
+            is_distinct: false,
+            raw_sql: String::new(),
+        };
+        assert!(aggregate_projection.is_aggregation());
+    }
+}

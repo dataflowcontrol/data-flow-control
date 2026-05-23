@@ -16,4 +16,5 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 passant-core = { path = "../passant-core" }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
+serde.workspace = true
 serde_json.workspace = true

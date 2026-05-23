@@ -5,6 +5,9 @@ use crate::policy::{PolicyIr, Resolution};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RewriteStrategy {
+    FullPush,
+    PartialPush,
+    LogicalFallback,
     RootFilter,
     ProjectionPropagation,
     SinkMappedRewrite,
@@ -42,10 +45,52 @@ impl RewriteOptimizer {
             .iter()
             .map(|p| p.name().to_string())
             .collect::<Vec<_>>();
+        if scope.has_non_monotonic_operation {
+            candidates.push(CandidatePlan {
+                strategy: RewriteStrategy::LogicalFallback,
+                score: 5,
+                reasons: vec![
+                    "Query contains a non-monotonic construct that requires source-set semantics or a logical fallback".into(),
+                ],
+                applied_policies: policy_names.clone(),
+            });
+        } else if !scope.policy_aggregates_distributive {
+            candidates.push(CandidatePlan {
+                strategy: RewriteStrategy::PartialPush,
+                score: 5,
+                reasons: vec![format!(
+                    "Policy uses non-distributive aggregate(s): {}",
+                    scope.non_distributive_policy_aggregates.join(", ")
+                )],
+                applied_policies: policy_names.clone(),
+            });
+        } else if scope.is_aggregation || scope.has_outer_join || scope.has_sink_mapping {
+            let reason = if scope.requires_source_set_annotations {
+                "Policy enforcement needs source-set-aware propagation before final aggregation, outer join, or sink mapping"
+            } else {
+                "Policy enforcement needs boundary-aware propagation before final aggregation, outer join, or sink mapping"
+            };
+            candidates.push(CandidatePlan {
+                strategy: RewriteStrategy::PartialPush,
+                score: 5,
+                reasons: vec![reason.into()],
+                applied_policies: policy_names.clone(),
+            });
+        } else {
+            candidates.push(CandidatePlan {
+                strategy: RewriteStrategy::FullPush,
+                score: 5,
+                reasons: vec![
+                    "Query is monotonic in the supported SPJU fragment; policy predicates can be pushed to contributing tuples".into(),
+                ],
+                applied_policies: policy_names.clone(),
+            });
+        }
+
         if scope.is_aggregation {
             candidates.push(CandidatePlan {
                 strategy: RewriteStrategy::AggregateInline,
-                score: 15 + scope.propagated_column_count as i32,
+                score: 25 + scope.propagated_column_count as i32,
                 reasons: vec![
                     "Query aggregates results; inline aggregate enforcement is possible".into(),
                 ],
@@ -54,7 +99,7 @@ impl RewriteOptimizer {
         } else {
             candidates.push(CandidatePlan {
                 strategy: RewriteStrategy::RootFilter,
-                score: 10 + scope.propagated_column_count as i32,
+                score: 20 + scope.propagated_column_count as i32,
                 reasons: vec!["Root-local filtering preserves original query shape".into()],
                 applied_policies: policy_names.clone(),
             });
@@ -102,5 +147,59 @@ impl RewriteOptimizer {
 
         candidates.sort_by_key(|candidate| candidate.score);
         candidates
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::planner::ScopeInfo;
+    use crate::policy::{PolicyIr, Resolution};
+
+    fn empty_scope() -> ScopeInfo {
+        ScopeInfo::default()
+    }
+
+    fn sample_policy() -> PolicyIr {
+        PolicyIr::CompatDfc {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimensions: Vec::new(),
+            sink: None,
+            sink_alias: None,
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn empty_policies_return_compatibility_fallback() {
+        let candidates = RewriteOptimizer.rank_candidates(&empty_scope(), &[]);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].strategy,
+            RewriteStrategy::CompatibilityFallback
+        );
+    }
+
+    #[test]
+    fn non_monotonic_scope_prefers_logical_fallback() {
+        let mut scope = empty_scope();
+        scope.has_non_monotonic_operation = true;
+        let candidates = RewriteOptimizer.rank_candidates(&scope, &[sample_policy()]);
+        assert_eq!(candidates[0].strategy, RewriteStrategy::LogicalFallback);
+    }
+
+    #[test]
+    fn monotonic_spj_scope_includes_full_push_candidate() {
+        let mut scope = empty_scope();
+        scope.policy_aggregates_distributive = true;
+        let candidates = RewriteOptimizer.rank_candidates(&scope, &[sample_policy()]);
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.strategy == RewriteStrategy::FullPush)
+        );
     }
 }

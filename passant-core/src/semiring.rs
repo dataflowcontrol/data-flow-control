@@ -1,0 +1,251 @@
+use serde::{Deserialize, Serialize};
+use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, SetExpr};
+use sqlparser::dialect::DuckDbDialect;
+use sqlparser::parser::Parser;
+
+use crate::policy::PolicyIr;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AggregateAnalysis {
+    pub function_name: String,
+    pub expression: String,
+    pub distributive: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemiringAnalysis {
+    pub aggregate_count: usize,
+    pub all_distributive: bool,
+    pub non_distributive_aggregates: Vec<String>,
+}
+
+impl Default for SemiringAnalysis {
+    fn default() -> Self {
+        Self {
+            aggregate_count: 0,
+            all_distributive: true,
+            non_distributive_aggregates: Vec::new(),
+        }
+    }
+}
+
+pub fn analyze_policies(policies: &[PolicyIr]) -> SemiringAnalysis {
+    let mut result = SemiringAnalysis::default();
+    for policy in policies {
+        let Ok(aggregates) = analyze_constraint(policy.constraint()) else {
+            result.all_distributive = false;
+            result
+                .non_distributive_aggregates
+                .push(format!("unparseable::{}", policy.constraint()));
+            continue;
+        };
+        result.aggregate_count += aggregates.len();
+        for aggregate in aggregates {
+            if !aggregate.distributive {
+                result.all_distributive = false;
+                result
+                    .non_distributive_aggregates
+                    .push(aggregate.expression);
+            }
+        }
+    }
+    result
+}
+
+pub fn analyze_constraint(constraint: &str) -> Result<Vec<AggregateAnalysis>, String> {
+    let mut statements = Parser::parse_sql(&DuckDbDialect {}, &format!("SELECT {constraint}"))
+        .map_err(|err| err.to_string())?;
+    if statements.len() != 1 {
+        return Err("expected one parsed statement".into());
+    }
+    let sqlparser::ast::Statement::Query(query) = statements.remove(0) else {
+        return Err("expected SELECT wrapper".into());
+    };
+    let SetExpr::Select(select) = *query.body else {
+        return Err("expected SELECT expression".into());
+    };
+
+    let mut aggregates = Vec::new();
+    for item in &select.projection {
+        match item {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                collect_aggregates(expr, &mut aggregates);
+            }
+            _ => {}
+        }
+    }
+    Ok(aggregates)
+}
+
+fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
+    match expr {
+        Expr::Function(function) => {
+            let function_name = function.name.to_string();
+            if is_known_aggregate(&function_name) {
+                let distributive = is_distributive_aggregate(&function_name);
+                aggregates.push(AggregateAnalysis {
+                    function_name,
+                    expression: expr.to_string(),
+                    distributive,
+                    reason: (!distributive).then_some(
+                        "aggregate is not distributive in the supported semiring".into(),
+                    ),
+                });
+            }
+            collect_function_args(function, aggregates);
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_aggregates(left, aggregates);
+            collect_aggregates(right, aggregates);
+        }
+        Expr::Nested(expr)
+        | Expr::UnaryOp { expr, .. }
+        | Expr::IsFalse(expr)
+        | Expr::IsNotFalse(expr)
+        | Expr::IsTrue(expr)
+        | Expr::IsNotTrue(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => collect_aggregates(expr, aggregates),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_aggregates(expr, aggregates);
+            collect_aggregates(low, aggregates);
+            collect_aggregates(high, aggregates);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_aggregates(expr, aggregates);
+            for item in list {
+                collect_aggregates(item, aggregates);
+            }
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            if let Some(operand) = operand {
+                collect_aggregates(operand, aggregates);
+            }
+            for expr in conditions.iter().chain(results.iter()) {
+                collect_aggregates(expr, aggregates);
+            }
+            if let Some(else_result) = else_result {
+                collect_aggregates(else_result, aggregates);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_function_args(
+    function: &sqlparser::ast::Function,
+    aggregates: &mut Vec<AggregateAnalysis>,
+) {
+    let FunctionArguments::List(args) = &function.args else {
+        return;
+    };
+    for arg in &args.args {
+        match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+            | FunctionArg::Named {
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            }
+            | FunctionArg::ExprNamed {
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            } => collect_aggregates(expr, aggregates),
+            _ => {}
+        }
+    }
+}
+
+fn is_known_aggregate(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "count"
+            | "sum"
+            | "min"
+            | "max"
+            | "bool_and"
+            | "bool_or"
+            | "avg"
+            | "array_agg"
+            | "string_agg"
+            | "list"
+    )
+}
+
+fn is_distributive_aggregate(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "count" | "sum" | "min" | "max" | "bool_and" | "bool_or"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::policy::{PolicyIr, Resolution};
+
+    #[test]
+    fn classifies_distributive_and_non_distributive_aggregates() {
+        let aggregates =
+            analyze_constraint("sum(foo.amount) > avg(bar.amount) AND max(foo.id) > 1")
+                .expect("constraint should analyze");
+        assert!(
+            aggregates
+                .iter()
+                .find(|a| a.function_name == "sum")
+                .unwrap()
+                .distributive
+        );
+        assert!(
+            !aggregates
+                .iter()
+                .find(|a| a.function_name == "avg")
+                .unwrap()
+                .distributive
+        );
+        assert!(
+            aggregates
+                .iter()
+                .find(|a| a.function_name == "max")
+                .unwrap()
+                .distributive
+        );
+    }
+
+    #[test]
+    fn analyze_policies_marks_unparseable_constraints_non_distributive() {
+        let policies = vec![PolicyIr::CompatDfc {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimensions: Vec::new(),
+            sink: None,
+            sink_alias: None,
+            constraint: "max(foo.id) >".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        }];
+        let analysis = analyze_policies(&policies);
+        assert!(!analysis.all_distributive);
+        assert!(
+            analysis
+                .non_distributive_aggregates
+                .iter()
+                .any(|entry| entry.contains("unparseable"))
+        );
+    }
+
+    #[test]
+    fn string_agg_is_non_distributive() {
+        let aggregates = analyze_constraint("string_agg(foo.name, ',') = 'x'")
+            .expect("constraint should analyze");
+        assert_eq!(aggregates.len(), 1);
+        assert!(!aggregates[0].distributive);
+    }
+}

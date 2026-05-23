@@ -189,19 +189,26 @@ fn lower_projection(item: SelectItem) -> ProjectionItem {
 
 fn lower_table_with_joins(table: TableWithJoins) -> Result<FromItem, ParseError> {
     let base = lower_table_factor(table.relation)?;
+    let mut tables = vec![base];
     let joins = table
         .joins
         .into_iter()
-        .map(|join| JoinRef {
-            relation_sql: join.relation.to_string(),
-            condition_sql: join_constraint_sql(&join.join_operator),
+        .map(|join| {
+            let relation_sql = join.relation.to_string();
+            if let Ok(table) = lower_table_factor(join.relation) {
+                tables.push(table);
+            }
+            JoinRef {
+                relation_sql,
+                condition_sql: join_constraint_sql(&join.join_operator),
+            }
         })
         .collect::<Vec<_>>();
 
     Ok(FromItem {
-        relation_sql: base.name.clone(),
-        alias: base.alias.clone(),
-        tables: vec![base],
+        relation_sql: tables[0].name.clone(),
+        alias: tables[0].alias.clone(),
+        tables,
         joins,
     })
 }
@@ -280,5 +287,43 @@ fn statement_kind(statement: &Statement) -> &'static str {
         Statement::Update { .. } => "update",
         Statement::Insert(_) => "insert",
         _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::QueryIr;
+
+    #[test]
+    fn delete_lowers_to_passthrough() {
+        let ir = parse_query_to_ir("DELETE FROM foo WHERE id = 1").expect("delete should parse");
+        assert!(matches!(
+            ir,
+            QueryIr::Passthrough {
+                statement_type,
+                ..
+            } if statement_type == "delete"
+        ));
+    }
+
+    #[test]
+    fn invalid_sql_returns_parse_error() {
+        let err = parse_query_to_ir("SELECT FROM").expect_err("invalid sql should fail");
+        assert!(matches!(err, ParseError::Sql(_)));
+    }
+
+    #[test]
+    fn insert_select_lowers_to_insert_ir() {
+        let ir = parse_query_to_ir("INSERT INTO reports (id) SELECT foo.id FROM foo")
+            .expect("insert should parse");
+        assert!(matches!(ir, QueryIr::InsertSelect { .. }));
+    }
+
+    #[test]
+    fn update_lowers_to_update_ir() {
+        let ir =
+            parse_query_to_ir("UPDATE reports SET status = 'ok'").expect("update should parse");
+        assert!(matches!(ir, QueryIr::Update { .. }));
     }
 }

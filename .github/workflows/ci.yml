@@ -1,0 +1,42 @@
+name: Passant
+
+on:
+  push:
+    paths:
+      - "passant/**"
+      - ".github/workflows/passant.yml"
+  pull_request:
+    paths:
+      - "passant/**"
+      - ".github/workflows/passant.yml"
+
+defaults:
+  run:
+    working-directory: passant
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: passant
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Completion progress (ignored tests)
+        run: cargo test --workspace -- --include-ignored --quiet 2>&1 | tail -5
+        continue-on-error: true

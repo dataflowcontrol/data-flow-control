@@ -30,6 +30,9 @@ features = ["extension-module"]
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
 pythonpath = ["python"]
+markers = [
+    "completion: tests that must pass before Passant is feature-complete",
+]
 
 [tool.ruff]
 line-length = 100
