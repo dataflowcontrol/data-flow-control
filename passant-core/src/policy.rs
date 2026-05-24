@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
+
+use crate::identifiers::{Alias, SourceName, TableName, normalize_key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Resolution {
@@ -60,6 +62,9 @@ pub struct PgnPolicy {
     pub constraint: String,
     pub on_fail: Resolution,
     pub description: Option<String>,
+    /// Original policy text when registered via `register_policy_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,10 +152,37 @@ impl PolicyIr {
     }
 }
 
+#[derive(Debug)]
 struct ParsedSources {
     sources: Vec<String>,
     required_sources: Vec<String>,
     aliases: HashMap<String, String>,
+}
+
+/// Normalize a policy source list (trim, reject empty/duplicate names).
+pub fn normalize_policy_sources(sources: &[String]) -> Result<Vec<String>, PolicyParseError> {
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(parse_sources(&sources.join(", "))?.sources)
+}
+
+/// Normalize a policy dimension list (trim, reject empty/duplicate names).
+pub fn normalize_policy_dimensions(dimensions: &[String]) -> Result<Vec<String>, PolicyParseError> {
+    if dimensions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let normalized = parse_dimensions(&dimensions.join(", "))?;
+    let mut seen = HashSet::new();
+    for dimension in &normalized {
+        let key = normalize_key(dimension);
+        if !seen.insert(key) {
+            return Err(PolicyParseError::InvalidSyntax(format!(
+                "Duplicate dimension '{dimension}' in dimensions list"
+            )));
+        }
+    }
+    Ok(normalized)
 }
 
 pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
@@ -327,6 +359,7 @@ fn parse_pgn_policy(normalized: &str) -> Result<PolicyIr, PolicyParseError> {
         constraint,
         on_fail: Resolution::parse(&resolution)?,
         description,
+        source_text: None,
     }))
 }
 
@@ -383,6 +416,7 @@ fn parse_sources(value: &str) -> Result<ParsedSources, PolicyParseError> {
     let mut sources = Vec::new();
     let mut required_sources = Vec::new();
     let mut aliases = HashMap::new();
+    let mut seen = HashSet::new();
     for raw in value.split(',') {
         let is_required = raw
             .split_whitespace()
@@ -392,10 +426,16 @@ fn parse_sources(value: &str) -> Result<ParsedSources, PolicyParseError> {
             .filter(|token| !token.eq_ignore_ascii_case("REQUIRED"))
             .collect::<Vec<_>>();
         let (source, alias) = match tokens.as_slice() {
-            [source] => ((*source).to_string(), None),
-            [source, as_keyword, alias] if as_keyword.eq_ignore_ascii_case("AS") => {
-                ((*source).to_string(), Some((*alias).to_string()))
+            [] => {
+                return Err(PolicyParseError::InvalidSyntax(
+                    "sources must be non-empty strings".into(),
+                ));
             }
+            [source] => (parse_table_reference(source)?, None),
+            [source, as_keyword, alias] if as_keyword.eq_ignore_ascii_case("AS") => (
+                parse_table_reference(source)?,
+                Some(Alias::new(*alias).as_str().to_string()),
+            ),
             _ => {
                 return Err(PolicyParseError::InvalidSyntax(format!(
                     "invalid source list: {value}"
@@ -407,6 +447,12 @@ fn parse_sources(value: &str) -> Result<ParsedSources, PolicyParseError> {
         }
         if let Some(alias) = alias {
             aliases.insert(alias.to_ascii_lowercase(), source.clone());
+        }
+        let key = SourceName::parse(&source).key();
+        if !seen.insert(key) {
+            return Err(PolicyParseError::InvalidSyntax(format!(
+                "duplicate source table '{source}' in sources list"
+            )));
         }
         sources.push(source);
     }
@@ -446,14 +492,25 @@ fn validate_sql_expression(value: &str, label: &str) -> Result<(), PolicyParseEr
         })
 }
 
+fn parse_table_reference(value: &str) -> Result<String, PolicyParseError> {
+    let table = TableName::parse(value);
+    if table.as_str().is_empty() {
+        return Err(PolicyParseError::InvalidSyntax(
+            "table name must be non-empty".into(),
+        ));
+    }
+    Ok(table.as_str().to_string())
+}
+
 fn parse_name_alias(value: &str) -> Result<(Option<String>, Option<String>), PolicyParseError> {
     let tokens = value.split_whitespace().collect::<Vec<_>>();
     match tokens.as_slice() {
         [] => Ok((None, None)),
-        [name] => Ok((Some((*name).to_string()), None)),
-        [name, as_keyword, alias] if as_keyword.eq_ignore_ascii_case("AS") => {
-            Ok((Some((*name).to_string()), Some((*alias).to_string())))
-        }
+        [name] => Ok((Some(parse_table_reference(name)?), None)),
+        [name, as_keyword, alias] if as_keyword.eq_ignore_ascii_case("AS") => Ok((
+            Some(parse_table_reference(name)?),
+            Some(Alias::new(*alias).as_str().to_string()),
+        )),
         _ => Err(PolicyParseError::InvalidSyntax(format!(
             "invalid aliased name: {value}"
         ))),
@@ -532,11 +589,36 @@ mod tests {
     }
 
     #[test]
-    fn pgn_keyword_parses_into_native_pgn_policy() {
-        let policy = parse_policy_text(
-            "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE",
-        )
-        .expect("pgn policy should parse");
-        assert!(matches!(policy, PolicyIr::NativePgn(_)));
+    fn parse_sources_rejects_duplicate_tables() {
+        let err = parse_sources("foo, foo").unwrap_err();
+        assert!(err.to_string().contains("duplicate source"));
+    }
+
+    #[test]
+    fn parse_table_reference_rejects_empty_name() {
+        let err = parse_table_reference("  ").unwrap_err();
+        assert!(err.to_string().contains("non-empty"));
+    }
+
+    #[test]
+    fn normalize_policy_sources_rejects_duplicates() {
+        let err = normalize_policy_sources(&["foo".to_string(), "Foo".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn normalize_policy_dimensions_trims_entries() {
+        let dims = normalize_policy_dimensions(&[" reports.region ".to_string()]).unwrap();
+        assert_eq!(dims, ["reports.region"]);
+    }
+
+    #[test]
+    fn normalize_policy_dimensions_rejects_duplicates() {
+        let err = normalize_policy_dimensions(&[
+            "reports.region".to_string(),
+            "Reports.Region".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("Duplicate dimension"));
     }
 }

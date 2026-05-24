@@ -5,13 +5,14 @@ use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, JoinOperator, Select,
-    SelectItem, SetExpr, Statement, TableFactor, TableWithJoins,
+    SetExpr, TableFactor, TableWithJoins,
 };
 
-use crate::parser::parse_query;
+use crate::identifiers::{TableKey, TableName};
 use crate::policy::{PolicyIr, Resolution};
+use crate::sql::parse_projection_expr;
 
-pub fn set_expr_source_tables(set_expr: &SetExpr) -> HashSet<String> {
+pub fn set_expr_source_tables(set_expr: &SetExpr) -> HashSet<TableKey> {
     match set_expr {
         SetExpr::Select(select) => select_source_tables(select),
         SetExpr::Query(query) => set_expr_source_tables(query.body.as_ref()),
@@ -24,7 +25,7 @@ pub fn set_expr_source_tables(set_expr: &SetExpr) -> HashSet<String> {
     }
 }
 
-pub fn select_source_tables(select: &Select) -> HashSet<String> {
+pub fn select_source_tables(select: &Select) -> HashSet<TableKey> {
     let mut tables = HashSet::new();
     for table in &select.from {
         tables.extend(table_with_joins_source_tables(table));
@@ -32,7 +33,7 @@ pub fn select_source_tables(select: &Select) -> HashSet<String> {
     tables
 }
 
-pub fn select_nullable_source_tables(select: &Select) -> HashSet<String> {
+pub fn select_nullable_source_tables(select: &Select) -> HashSet<TableKey> {
     let mut nullable = HashSet::new();
     for table in &select.from {
         let mut left_tables = table_factor_source_tables(&table.relation);
@@ -89,11 +90,7 @@ pub fn set_operation_requires_cross_source_policies(
         .collect::<HashSet<_>>();
 
     policies.iter().any(|policy| {
-        let sources = policy
-            .sources()
-            .iter()
-            .map(|source| source.to_ascii_lowercase())
-            .collect::<HashSet<_>>();
+        let sources = policy_source_keys(policy.sources());
         sources.len() > 1
             && sources.iter().all(|source| all_tables.contains(source))
             && (!sources.iter().all(|source| left_tables.contains(source))
@@ -103,7 +100,7 @@ pub fn set_operation_requires_cross_source_policies(
 
 pub fn cross_source_policies_for_branch(
     policies: &[PolicyIr],
-    branch_tables: &HashSet<String>,
+    branch_tables: &HashSet<TableKey>,
 ) -> Vec<PolicyIr> {
     policies
         .iter()
@@ -112,7 +109,7 @@ pub fn cross_source_policies_for_branch(
                 && policy
                     .sources()
                     .iter()
-                    .any(|source| branch_tables.contains(&source.to_ascii_lowercase()))
+                    .any(|source| branch_tables.contains(&TableKey::new(source)))
         })
         .cloned()
         .collect()
@@ -121,7 +118,7 @@ pub fn cross_source_policies_for_branch(
 pub fn split_select_policies_for_nullable_joins(
     policies: &[PolicyIr],
     select: &Select,
-    direct_base_tables: &HashSet<String>,
+    direct_base_tables: &HashSet<TableKey>,
 ) -> Option<Vec<PolicyIr>> {
     if select_nullable_source_tables(select).is_empty() {
         return None;
@@ -170,14 +167,10 @@ pub fn split_set_operation_policies(
 
 pub fn policy_requires_set_split(
     policy: &PolicyIr,
-    left_tables: &HashSet<String>,
-    right_tables: &HashSet<String>,
+    left_tables: &HashSet<TableKey>,
+    right_tables: &HashSet<TableKey>,
 ) -> bool {
-    let sources = policy
-        .sources()
-        .iter()
-        .map(|source| source.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
+    let sources = policy_source_keys(policy.sources());
     sources.len() > 1
         && sources
             .iter()
@@ -188,8 +181,8 @@ pub fn policy_requires_set_split(
 
 pub fn split_policy_for_set_branches(
     policy: &PolicyIr,
-    left_tables: &HashSet<String>,
-    right_tables: &HashSet<String>,
+    left_tables: &HashSet<TableKey>,
+    right_tables: &HashSet<TableKey>,
 ) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
     let PolicyIr::CompatDfc {
         sources,
@@ -214,10 +207,7 @@ pub fn split_policy_for_set_branches(
         return None;
     }
 
-    let policy_sources = sources
-        .iter()
-        .map(|source| source.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
+    let policy_sources = policy_source_keys(sources);
     let expr = parse_constraint_expr(constraint).ok()?;
     let mut left_constraints = Vec::new();
     let mut right_constraints = Vec::new();
@@ -244,13 +234,13 @@ pub fn split_policy_for_set_branches(
         }
     }
 
-    let make_policy = |constraints: Vec<Expr>, tables: &HashSet<String>| {
+    let make_policy = |constraints: Vec<Expr>, tables: &HashSet<TableKey>| {
         if constraints.is_empty() {
             return None;
         }
         let branch_sources = sources
             .iter()
-            .filter(|source| tables.contains(&source.to_ascii_lowercase()))
+            .filter(|source| tables.contains(&TableKey::new(source)))
             .cloned()
             .collect::<Vec<_>>();
         if branch_sources.is_empty() {
@@ -280,7 +270,7 @@ pub fn split_policy_for_set_branches(
 
 pub fn split_policy_by_source_local_conjuncts(
     policy: &PolicyIr,
-    available_tables: &HashSet<String>,
+    available_tables: &HashSet<TableKey>,
 ) -> Option<Vec<PolicyIr>> {
     let PolicyIr::CompatDfc {
         sources,
@@ -305,12 +295,9 @@ pub fn split_policy_by_source_local_conjuncts(
         return None;
     }
 
-    let policy_sources = sources
-        .iter()
-        .map(|source| source.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
+    let policy_sources = policy_source_keys(sources);
     let expr = parse_constraint_expr(constraint).ok()?;
-    let mut constraints_by_source: HashMap<String, Vec<Expr>> = HashMap::new();
+    let mut constraints_by_source: HashMap<TableKey, Vec<Expr>> = HashMap::new();
     for conjunct in split_conjuncts(expr) {
         let refs = expr_referenced_policy_sources(&conjunct, &policy_sources);
         if refs.len() != 1 {
@@ -328,7 +315,7 @@ pub fn split_policy_by_source_local_conjuncts(
 
     let mut split = Vec::new();
     for source in sources {
-        let source_key = source.to_ascii_lowercase();
+        let source_key = TableKey::new(source);
         let Some(constraints) = constraints_by_source.remove(&source_key) else {
             continue;
         };
@@ -346,7 +333,7 @@ pub fn split_policy_by_source_local_conjuncts(
     (!split.is_empty()).then_some(split)
 }
 
-fn table_with_joins_source_tables(table: &TableWithJoins) -> HashSet<String> {
+fn table_with_joins_source_tables(table: &TableWithJoins) -> HashSet<TableKey> {
     let mut tables = table_factor_source_tables(&table.relation);
     for join in &table.joins {
         tables.extend(table_factor_source_tables(&join.relation));
@@ -354,9 +341,11 @@ fn table_with_joins_source_tables(table: &TableWithJoins) -> HashSet<String> {
     tables
 }
 
-pub fn table_factor_source_tables(factor: &TableFactor) -> HashSet<String> {
+pub fn table_factor_source_tables(factor: &TableFactor) -> HashSet<TableKey> {
     match factor {
-        TableFactor::Table { name, .. } => HashSet::from([name.to_string().to_ascii_lowercase()]),
+        TableFactor::Table { name, .. } => {
+            HashSet::from([TableKey::from_table(&TableName::from_object_name(name))])
+        }
         TableFactor::Derived { subquery, .. } => set_expr_source_tables(subquery.body.as_ref()),
         TableFactor::NestedJoin {
             table_with_joins, ..
@@ -365,28 +354,18 @@ pub fn table_factor_source_tables(factor: &TableFactor) -> HashSet<String> {
     }
 }
 
+fn policy_source_keys(sources: &[String]) -> HashSet<TableKey> {
+    sources.iter().map(|source| TableKey::new(source)).collect()
+}
+
 fn parse_constraint_expr(sql: &str) -> Result<Expr, String> {
-    let statement = parse_query(&format!("SELECT {sql}")).map_err(|err| err.to_string())?;
-    let Statement::Query(query) = statement else {
-        return Err("constraint expression".into());
-    };
-    let SetExpr::Select(select) = *query.body else {
-        return Err("constraint expression".into());
-    };
-    let Some(item) = select.projection.into_iter().next() else {
-        return Err("empty constraint expression".into());
-    };
-    match item {
-        SelectItem::UnnamedExpr(expr) => Ok(expr),
-        SelectItem::ExprWithAlias { expr, .. } => Ok(expr),
-        other => Err(format!("constraint projection {other}")),
-    }
+    parse_projection_expr(sql).map_err(|err| err.to_string())
 }
 
 fn expr_referenced_policy_sources(
     expr: &Expr,
-    policy_sources: &HashSet<String>,
-) -> HashSet<String> {
+    policy_sources: &HashSet<TableKey>,
+) -> HashSet<TableKey> {
     let mut refs = HashSet::new();
     collect_referenced_policy_sources(expr, policy_sources, &mut refs);
     refs
@@ -394,14 +373,14 @@ fn expr_referenced_policy_sources(
 
 fn collect_referenced_policy_sources(
     expr: &Expr,
-    policy_sources: &HashSet<String>,
-    refs: &mut HashSet<String>,
+    policy_sources: &HashSet<TableKey>,
+    refs: &mut HashSet<TableKey>,
 ) {
     match expr {
         Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
-            let table = parts[0].value.to_ascii_lowercase();
-            if policy_sources.contains(&table) {
-                refs.insert(table);
+            let table_key = TableKey::new(&parts[0].value);
+            if policy_sources.contains(&table_key) {
+                refs.insert(table_key);
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -525,8 +504,8 @@ mod tests {
     fn nullable_sources_include_right_side_of_left_join() {
         let select = select_from_sql("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id");
         let nullable = select_nullable_source_tables(&select);
-        assert!(nullable.contains("foo"));
-        assert!(!nullable.contains("bar"));
+        assert!(nullable.contains(&TableKey::new("foo")));
+        assert!(!nullable.contains(&TableKey::new("bar")));
     }
 
     #[test]
@@ -562,7 +541,7 @@ mod tests {
             on_fail: Resolution::Remove,
             description: None,
         };
-        let available = HashSet::from(["bar".to_string(), "foo".to_string()]);
+        let available = HashSet::from([TableKey::new("bar"), TableKey::new("foo")]);
         let split = split_policy_by_source_local_conjuncts(&policy, &available)
             .expect("policy should split");
         assert_eq!(split.len(), 2);
@@ -600,7 +579,7 @@ mod tests {
     fn union_source_tables_include_both_branches() {
         let set_expr = set_expr_from_sql("SELECT id FROM foo UNION ALL SELECT id FROM bar");
         let tables = set_expr_source_tables(&set_expr);
-        assert!(tables.contains("foo"));
-        assert!(tables.contains("bar"));
+        assert!(tables.contains(&TableKey::new("foo")));
+        assert!(tables.contains(&TableKey::new("bar")));
     }
 }

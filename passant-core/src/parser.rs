@@ -286,8 +286,14 @@ fn statement_kind(statement: &Statement) -> &'static str {
         Statement::Query(_) => "query",
         Statement::Update { .. } => "update",
         Statement::Insert(_) => "insert",
+        Statement::Copy { .. } => "copy",
         _ => "other",
     }
+}
+
+/// Human-readable statement label for diagnostics and fail-closed errors.
+pub fn statement_label(statement: &Statement) -> &'static str {
+    statement_kind(statement)
 }
 
 #[cfg(test)]

@@ -119,10 +119,16 @@ impl RewritePipeline {
             }
             match engine.rewrite(rewriter, &request)? {
                 RewriteAttempt::Applied(rewritten) => {
-                    return Ok(finalize_output(sql, rewritten, rewriter.policies()));
+                    return Ok(rewritten);
                 }
                 RewriteAttempt::Skipped => continue,
             }
+        }
+        if !rewriter.policies().is_empty() && request.kind == StatementKind::Passthrough {
+            return Err(RewriteError::unsupported_statement(format!(
+                "unsupported statement form with registered policies: {}",
+                crate::parser::statement_label(request.statement)
+            )));
         }
         Ok(sql.to_string())
     }
@@ -151,14 +157,6 @@ fn select_shape(query: &Query) -> Option<SelectShape> {
 
 pub(crate) fn query_has_limit(query: &Query) -> bool {
     query.limit.is_some() || query.offset.is_some() || query.fetch.is_some()
-}
-
-pub(crate) fn finalize_output(
-    original_sql: &str,
-    rewritten: String,
-    policies: &[PolicyIr],
-) -> String {
-    crate::rewriter::postprocess_rewritten_sql(original_sql, rewritten, policies)
 }
 
 #[cfg(test)]

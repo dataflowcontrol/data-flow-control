@@ -12,6 +12,8 @@ mod insert;
 mod invalidate;
 #[path = "kill.rs"]
 mod kill;
+#[path = "oracle.rs"]
+mod oracle;
 #[path = "remove.rs"]
 mod remove;
 #[path = "update.rs"]

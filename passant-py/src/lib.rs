@@ -1,9 +1,18 @@
 use passant_core::{
-    PassantPlanner, PassantRewriter, PolicyIr, Resolution, parse_policy_text, parse_query_to_ir,
+    CatalogSnapshot, PassantPlanner, PassantRewriter, PolicyIr, Resolution, RewriteError,
+    normalize_policy_dimensions, normalize_policy_sources, parse_policy_text, parse_query_to_ir,
+    validate_constraint_expression,
 };
+use pyo3::create_exception;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use serde::Deserialize;
+
+create_exception!(
+    _passant,
+    PassantRewriteError,
+    pyo3::exceptions::PyValueError
+);
 
 #[pyclass(module = "passant._passant")]
 #[derive(Clone)]
@@ -87,7 +96,7 @@ impl PyPlanner {
     fn transform_query(&self, query: String) -> PyResult<String> {
         PassantRewriter::new()
             .rewrite(&query)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(map_rewrite_error)
     }
 
     fn transform_query_with_policies(
@@ -99,20 +108,20 @@ impl PyPlanner {
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let mut rewriter = PassantRewriter::new();
         for spec in specs {
-            rewriter.register_policy(PolicyIr::CompatDfc {
-                sources: spec.sources,
-                required_sources: spec.required_sources,
-                dimensions: spec.dimensions,
-                sink: spec.sink,
-                sink_alias: spec.sink_alias,
-                constraint: spec.constraint,
-                on_fail: parse_resolution(&spec.on_fail)?,
-                description: spec.description,
-            });
+            rewriter
+                .register_validated_policy(PolicyIr::CompatDfc {
+                    sources: spec.sources,
+                    required_sources: spec.required_sources,
+                    dimensions: spec.dimensions,
+                    sink: spec.sink,
+                    sink_alias: spec.sink_alias,
+                    constraint: spec.constraint,
+                    on_fail: parse_resolution(&spec.on_fail)?,
+                    description: spec.description,
+                })
+                .map_err(map_rewrite_error)?;
         }
-        rewriter
-            .rewrite(&query)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+        rewriter.rewrite(&query).map_err(map_rewrite_error)
     }
 
     fn transform_query_with_all_policies(
@@ -128,31 +137,33 @@ impl PyPlanner {
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let mut rewriter = PassantRewriter::new();
         for spec in specs {
-            rewriter.register_policy(PolicyIr::CompatDfc {
-                sources: spec.sources,
-                required_sources: spec.required_sources,
-                dimensions: spec.dimensions,
-                sink: spec.sink,
-                sink_alias: spec.sink_alias,
-                constraint: spec.constraint,
-                on_fail: parse_resolution(&spec.on_fail)?,
-                description: spec.description,
-            });
-        }
-        for spec in aggregate_specs {
-            rewriter.register_policy(PolicyIr::CompatAggregate(
-                passant_core::AggregateDfcPolicy {
+            rewriter
+                .register_validated_policy(PolicyIr::CompatDfc {
                     sources: spec.sources,
+                    required_sources: spec.required_sources,
                     dimensions: spec.dimensions,
                     sink: spec.sink,
+                    sink_alias: spec.sink_alias,
                     constraint: spec.constraint,
+                    on_fail: parse_resolution(&spec.on_fail)?,
                     description: spec.description,
-                },
-            ));
+                })
+                .map_err(map_rewrite_error)?;
         }
-        rewriter
-            .rewrite(&query)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+        for spec in aggregate_specs {
+            rewriter
+                .register_validated_policy(PolicyIr::CompatAggregate(
+                    passant_core::AggregateDfcPolicy {
+                        sources: spec.sources,
+                        dimensions: spec.dimensions,
+                        sink: spec.sink,
+                        constraint: spec.constraint,
+                        description: spec.description,
+                    },
+                ))
+                .map_err(map_rewrite_error)?;
+        }
+        rewriter.rewrite(&query).map_err(map_rewrite_error)
     }
 
     fn aggregate_finalization_queries(
@@ -180,7 +191,7 @@ impl PyPlanner {
     fn register_policy_text(&mut self, policy_text: String) -> PyResult<()> {
         self.rewriter
             .register_policy_text(&policy_text)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(map_rewrite_error)
     }
 
     fn register_policy_specs(
@@ -189,7 +200,30 @@ impl PyPlanner {
         aggregate_policies_json: String,
     ) -> PyResult<()> {
         for policy in parse_policy_specs(&policies_json, &aggregate_policies_json)? {
-            self.rewriter.register_policy(policy);
+            self.rewriter
+                .register_validated_policy(policy)
+                .map_err(map_rewrite_error)?;
+        }
+        Ok(())
+    }
+
+    fn sync_catalog(&mut self, catalog_json: String) -> PyResult<()> {
+        let snapshot = serde_json::from_str::<CatalogSnapshot>(&catalog_json)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        self.rewriter.catalog_mut().load_snapshot(snapshot);
+        Ok(())
+    }
+
+    fn validate_policy_specs(
+        &self,
+        policies_json: String,
+        aggregate_policies_json: String,
+    ) -> PyResult<()> {
+        for policy in parse_policy_specs(&policies_json, &aggregate_policies_json)? {
+            self.rewriter
+                .catalog()
+                .validate_policy(&policy)
+                .map_err(map_rewrite_error)?;
         }
         Ok(())
     }
@@ -218,7 +252,7 @@ impl PyPlanner {
         let options = passant_core::RewriteOptions { use_partial_push };
         self.rewriter
             .rewrite_with_options(&query, options)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(map_rewrite_error)
     }
 
     fn explain_rewrite_registered(&self, query: String) -> PyResult<String> {
@@ -239,6 +273,15 @@ impl PyPlanner {
 
     fn aggregate_policies_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.rewriter.aggregate_policies())
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    fn has_registered_policies(&self) -> bool {
+        self.rewriter.has_registered_policies()
+    }
+
+    fn pgn_policies_json(&self) -> PyResult<String> {
+        serde_json::to_string_pretty(&self.rewriter.pgn_policies())
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
@@ -321,6 +364,15 @@ fn parse_sql_to_ir(query: String) -> PyResult<String> {
     serde_json::to_string_pretty(&ir).map_err(|err| PyValueError::new_err(err.to_string()))
 }
 
+fn map_rewrite_error(err: RewriteError) -> PyErr {
+    Python::with_gil(|py| -> PyResult<PyErr> {
+        let py_err = PassantRewriteError::new_err(err.to_string());
+        py_err.value(py).setattr("kind", err.kind().as_str())?;
+        Ok(py_err)
+    })
+    .unwrap_or_else(|e| e)
+}
+
 fn parse_policy_specs(
     policies_json: &str,
     aggregate_policies_json: &str,
@@ -380,12 +432,35 @@ fn parse_policy_to_json(policy_text: String) -> PyResult<String> {
     serde_json::to_string_pretty(&policy).map_err(|err| PyValueError::new_err(err.to_string()))
 }
 
+#[pyfunction]
+fn validate_constraint_expression_py(sql: String, label: String) -> PyResult<()> {
+    validate_constraint_expression(&sql, &label).map_err(map_rewrite_error)
+}
+
+#[pyfunction]
+fn normalize_policy_sources_py(sources: Vec<String>) -> PyResult<Vec<String>> {
+    normalize_policy_sources(&sources).map_err(map_policy_parse_error)
+}
+
+#[pyfunction]
+fn normalize_policy_dimensions_py(dimensions: Vec<String>) -> PyResult<Vec<String>> {
+    normalize_policy_dimensions(&dimensions).map_err(map_policy_parse_error)
+}
+
+fn map_policy_parse_error(err: passant_core::PolicyParseError) -> PyErr {
+    PyValueError::new_err(err.to_string())
+}
+
 #[pymodule]
 fn _passant(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDfcPolicy>()?;
     module.add_class::<PyPlanner>()?;
+    module.add("PassantRewriteError", _py.get_type::<PassantRewriteError>())?;
     module.add_function(wrap_pyfunction!(parse_sql_to_ir, module)?)?;
     module.add_function(wrap_pyfunction!(parse_policy_to_json, module)?)?;
+    module.add_function(wrap_pyfunction!(validate_constraint_expression_py, module)?)?;
+    module.add_function(wrap_pyfunction!(normalize_policy_sources_py, module)?)?;
+    module.add_function(wrap_pyfunction!(normalize_policy_dimensions_py, module)?)?;
     Ok(())
 }
 

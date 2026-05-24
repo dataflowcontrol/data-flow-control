@@ -45,7 +45,7 @@ Implemented behavior includes:
   inner aggregate contributions for source aggregates and count contributions
 - aggregate policy dimensions, including grouped finalization and per-dimension
   invalidation updates
-- DuckDB-backed catalog validation in the Python compatibility layer
+- Rust catalog validation in `passant-core/src/catalog.rs` (Python syncs DuckDB metadata at registration)
 - Python policy registration/deletion routes through stateful Rust
   `PassantRewriter` storage while preserving Python API mirror methods
 - Rust-backed policy list accessors exposed through PyO3 for DFC, aggregate,
@@ -85,10 +85,11 @@ Implemented behavior includes:
 
 ## Testing
 
-Passant uses a layered Rust test story aligned with the DFC paper's correctness
-claims. TPC-H performance experiments stay in `sql_rewriter/` and
-`vldb_2026_big_paper_experiments/`; Passant Rust tests focus on rewrite
-correctness and DuckDB execution semantics.
+Passant uses a layered test story aligned with the DFC paper's correctness
+claims. Rust tests focus on rewrite correctness and DuckDB execution semantics;
+Python also includes TPC-H correctness regressions for the supported query set.
+TPC-H performance experiments stay in `sql_rewriter/` and
+`vldb_2026_big_paper_experiments/`.
 
 ### Running tests
 
@@ -109,7 +110,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Python compatibility tests (PyO3 + catalog validation) run separately:
+Python compatibility tests (PyO3 + Rust catalog validation) run in CI and locally:
 
 ```bash
 uv sync --extra dev
@@ -128,6 +129,7 @@ uv run pytest
 | Paper examples | `passant-core/tests/paper_examples.rs` | TaxAgent policies, k-anonymity dominance, state-machine UPDATE |
 | CLI smoke tests | `passant-cli/tests/cli.rs` | `rewrite`, `explain`, `plan`, `parse-policy` |
 | Python compat | `python/tests/test_compat.py` | PyO3 bindings, catalog validation, end-to-end `SQLRewriter` |
+| Python TPC-H correctness | `python/tests/test_tpch.py` | Supported TPC-H query rewrites executed against DuckDB fixtures |
 | Completion gate | `passant-core/tests/completion/` | Feature-complete behavior tests (included in default `cargo test`) |
 
 Shared helpers live in `passant-core/tests/common/`.
@@ -149,6 +151,8 @@ Python completion gate tests live in `python/tests/test_completion_gate.py`
 | Source-set annotations | `src/source_sets.rs`, `tests/completion/source_sets.rs` |
 | State-machine workload (Section 5.5) | `tests/paper_examples.rs`, `tests/execution/update.rs` |
 
-### Explicitly out of scope for Rust tests
+### Explicitly Out Of Scope
 
-- TPC-H rewrite/performance suites (covered in Python/vldb experiments)
+- TPC-H performance benchmarking in Passant CI. Passant keeps correctness
+  regressions in Python; performance experiments stay in `sql_rewriter/` and
+  `vldb_2026_big_paper_experiments/`.

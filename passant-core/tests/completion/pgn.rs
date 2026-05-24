@@ -19,6 +19,7 @@ fn sample_pgn_policy() -> PolicyIr {
         constraint: "sum(foo.amount) <= 1000".to_string(),
         on_fail: Resolution::Remove,
         description: None,
+        source_text: None,
     })
 }
 
@@ -93,6 +94,7 @@ fn pgn_update_policy_kind() {
         constraint: "sum(foo.amount) <= 1000".to_string(),
         on_fail: Resolution::Invalidate,
         description: None,
+        source_text: None,
     });
     let rewriter = rewriter_with_policies(&[policy]);
     let sql = rewriter

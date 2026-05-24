@@ -61,6 +61,24 @@ fn delete_with_policies_is_unsupported() {
 }
 
 #[test]
+fn create_table_as_select_fails_closed_with_registered_policies() {
+    crate::common::assert_rewrite_fails_with(
+        "CREATE TABLE leak AS SELECT * FROM foo",
+        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        "create_table",
+    );
+}
+
+#[test]
+fn copy_select_fails_closed_with_registered_policies() {
+    crate::common::assert_rewrite_fails_with(
+        "COPY (SELECT * FROM foo) TO 'out.csv' (HEADER)",
+        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        "copy",
+    );
+}
+
+#[test]
 fn aggregate_policy_rejects_non_invalidate_resolution_at_parse() {
     let err = parse_policy_text(
         "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",

@@ -10,6 +10,8 @@ mod column_propagation;
 mod exists_join;
 #[path = "having_where.rs"]
 mod having_where;
+#[path = "identifiers.rs"]
+mod identifiers;
 #[path = "insert_shapes.rs"]
 mod insert_shapes;
 #[path = "multi_source.rs"]

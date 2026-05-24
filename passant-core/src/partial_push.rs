@@ -5,20 +5,28 @@ use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{BinaryOperator, Expr, Ident, Query, Select, SelectItem, SetExpr, Statement};
 
+use crate::identifiers::TableKey;
+
 use crate::optimizer::RewriteStrategy;
 use crate::policy::{PolicyIr, Resolution};
 use crate::rewrite_strategy::{RewriteAttempt, RewriteEngine, RewriteRequest, StatementKind};
 use crate::rewriter::{
     PassantRewriter, RewriteContext, RewriteError, TableScope, apply_policy_having,
     build_compat_dfc_filter_expr, collect_compound_columns_by_name, ensure_projection_aliases,
-    extract_policy_comparison, group_by_join_specs, kill_expr, outer_limited_projection,
+    extract_policy_comparison, group_by_join_specs, kill_expr, outer_limited_projection_items,
     parse_expr, policy_applicability, projected_column_name, replace_identifiers, resolver_expr,
     select_is_aggregation, unqualify_columns,
+};
+use crate::sql::{
+    alias_column, and_exprs, column_comparison, cte, empty_select, function_call,
+    partial_push_join_from, partial_push_split_query, passant_filter_temp_column, qualified_column,
+    qualified_wildcard, query_from_select, statement_from_query, table_factor, with_ctes,
 };
 
 const BASE_QUERY_CTE: &str = "base_query";
 const POLICY_EVAL_CTE: &str = "policy_eval";
 const LIMIT_CTE: &str = "cte";
+const PARTIAL_SCAN_CTE: &str = "__passant_partial";
 const GLOBAL_PARTIAL_PUSH_KEY: &str = "__passant_partial_push_key";
 
 pub(crate) struct ExtraDfcFilter {
@@ -78,7 +86,7 @@ impl RewriteEngine for PartialPushEngine {
         }
 
         let is_aggregation = select_is_aggregation(select);
-        let has_limit = query_limit_clause(query).is_some();
+        let has_limit = query_has_limit(query);
         let has_remove = has_remove_enforcement_policy(rewriter);
 
         let rewritten = if has_limit && has_remove {
@@ -113,13 +121,13 @@ fn has_applicable_enforcement_policies(rewriter: &PassantRewriter, select: &Sele
             return true;
         }
         policy.sources().iter().any(|source| {
-            let key = source.to_ascii_lowercase();
+            let key = TableKey::new(source);
             exists_subquery_tables.contains(&key) && !main_tables.contains(&key)
         })
     })
 }
 
-fn exists_subquery_policy_tables(select: &Select) -> HashSet<String> {
+fn exists_subquery_policy_tables(select: &Select) -> HashSet<TableKey> {
     let Some(where_expr) = &select.selection else {
         return HashSet::new();
     };
@@ -148,7 +156,7 @@ fn exists_subquery_policy_tables(select: &Select) -> HashSet<String> {
     tables
 }
 
-fn select_direct_base_tables(select: &Select) -> HashSet<String> {
+fn select_direct_base_tables(select: &Select) -> HashSet<TableKey> {
     TableScope::from_select(select).direct_base_tables
 }
 
@@ -179,30 +187,31 @@ fn partial_push_aggregation(
     statement: &Statement,
 ) -> Result<String, RewriteError> {
     let Statement::Query(query) = statement else {
-        return Err(RewriteError::Unsupported(
-            "partial-push requires a SELECT query".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push requires a SELECT query",
         ));
     };
     let SetExpr::Select(select) = query.body.as_ref() else {
-        return Err(RewriteError::Unsupported(
-            "partial-push requires a SELECT body".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push requires a SELECT body",
         ));
     };
 
-    let mut base_query = query.clone();
+    let mut base_query = *query.clone();
     if let SetExpr::Select(base_select) = base_query.body.as_mut() {
         ensure_projection_aliases(base_select);
     }
 
     let group_specs = group_by_join_specs(select)?;
-    let (policy_eval_sql, join_keys, _extra_dfc) =
-        build_policy_eval_sql(rewriter, select, &group_specs, false, None)?;
+    let (policy_eval_query, join_keys, _extra_dfc) =
+        build_policy_eval_query(rewriter, select, &group_specs, false, None)?;
 
-    let base_sql = Statement::Query(base_query).to_string();
-    let join_clause = partial_push_join_clause(&join_keys);
-    Ok(format!(
-        "WITH {BASE_QUERY_CTE} AS ({base_sql}), {POLICY_EVAL_CTE} AS ({policy_eval_sql}) SELECT {BASE_QUERY_CTE}.* {join_clause}"
+    Ok(statement_from_query(partial_push_split_query(
+        base_query,
+        policy_eval_query,
+        &join_keys,
     ))
+    .to_string())
 }
 
 fn partial_push_limit_aggregation(
@@ -210,13 +219,13 @@ fn partial_push_limit_aggregation(
     statement: &Statement,
 ) -> Result<String, RewriteError> {
     let Statement::Query(query) = statement else {
-        return Err(RewriteError::Unsupported(
-            "partial-push LIMIT rewrite requires a SELECT query".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push LIMIT rewrite requires a SELECT query",
         ));
     };
     let SetExpr::Select(select) = query.body.as_ref() else {
-        return Err(RewriteError::Unsupported(
-            "partial-push LIMIT rewrite requires a SELECT body".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push LIMIT rewrite requires a SELECT body",
         ));
     };
     let remove_policy = rewriter
@@ -224,58 +233,90 @@ fn partial_push_limit_aggregation(
         .iter()
         .find(|policy| policy.resolution() == Resolution::Remove)
         .ok_or_else(|| {
-            RewriteError::Unsupported("partial-push LIMIT rewrite requires a REMOVE policy".into())
+            RewriteError::unsupported_statement(
+                "partial-push LIMIT rewrite requires a REMOVE policy",
+            )
         })?;
 
-    let mut base_query = query.clone();
+    let mut base_query = *query.clone();
     if let SetExpr::Select(base_select) = base_query.body.as_mut() {
         ensure_projection_aliases(base_select);
     }
 
     let group_specs = group_by_join_specs(select)?;
     let (left, threshold, op) = extract_policy_comparison(remove_policy.constraint())?;
-    let dfc_projection = format!("{left} AS dfc");
+    let dfc_expr = parse_expr(&left)?;
 
-    let (policy_eval_sql, join_keys, extra_dfc) = build_policy_eval_sql(
+    let (policy_eval_query, join_keys, extra_dfc) = build_policy_eval_query(
         rewriter,
         select,
         &group_specs,
         true,
-        Some(dfc_projection.as_str()),
+        Some((dfc_expr, "dfc")),
     )?;
 
-    let base_sql = Statement::Query(base_query).to_string();
-    let join_clause = partial_push_join_clause(&join_keys);
-
-    let mut cte_select = format!("SELECT {BASE_QUERY_CTE}.*, {POLICY_EVAL_CTE}.dfc AS dfc");
+    let mut limit_select = empty_select();
+    limit_select.projection = vec![
+        qualified_wildcard(BASE_QUERY_CTE),
+        alias_column(POLICY_EVAL_CTE, "dfc", "dfc"),
+    ];
     for extra in &extra_dfc {
-        cte_select.push_str(&format!(
-            ", {POLICY_EVAL_CTE}.{} AS {}",
-            extra.alias, extra.alias
-        ));
+        limit_select
+            .projection
+            .push(alias_column(POLICY_EVAL_CTE, &extra.alias, &extra.alias));
     }
-    cte_select.push(' ');
-    cte_select.push_str(&join_clause);
+    limit_select.from = vec![partial_push_join_from(
+        BASE_QUERY_CTE,
+        POLICY_EVAL_CTE,
+        &join_keys,
+    )];
 
-    if let Some(order_by) = &query.order_by {
-        cte_select.push_str(&format!(" {order_by}"));
-    }
-    if let Some(limit) = query_limit_clause(query) {
-        cte_select.push_str(&format!(" {limit}"));
-    }
+    let mut limit_query = query_from_select(limit_select);
+    limit_query.order_by = query.order_by.clone();
+    limit_query.limit = query.limit.clone();
+    limit_query.offset = query.offset.clone();
+    limit_query.fetch = query.fetch.clone();
 
     let mut projection_select = select.clone();
     ensure_projection_aliases(&mut projection_select);
-    let outer_projection = outer_limited_projection(&projection_select);
-    let mut where_parts = vec![format!("dfc {op} {threshold}")];
+    let outer_projection = outer_limited_projection_items(&projection_select);
+
+    let mut where_exprs = vec![
+        column_comparison("dfc", op, parse_expr(&threshold)?).ok_or_else(|| {
+            RewriteError::unsupported_statement(
+                "partial-push LIMIT rewrite uses unsupported comparison operator",
+            )
+        })?,
+    ];
     for extra in &extra_dfc {
-        where_parts.push(format!("{} {} {}", extra.alias, extra.op, extra.threshold));
+        where_exprs.push(
+            column_comparison(&extra.alias, extra.op, parse_expr(&extra.threshold)?).ok_or_else(
+                || {
+                    RewriteError::unsupported_statement(
+                        "partial-push LIMIT rewrite uses unsupported comparison operator",
+                    )
+                },
+            )?,
+        );
     }
 
-    Ok(format!(
-        "WITH {BASE_QUERY_CTE} AS ({base_sql}), {POLICY_EVAL_CTE} AS ({policy_eval_sql}), {LIMIT_CTE} AS ({cte_select}) SELECT {outer_projection} FROM {LIMIT_CTE} WHERE {}",
-        where_parts.join(" AND ")
+    let mut outer_select = empty_select();
+    outer_select.projection = outer_projection;
+    outer_select.from = vec![sqlparser::ast::TableWithJoins {
+        relation: table_factor(LIMIT_CTE),
+        joins: Vec::new(),
+    }];
+    outer_select.selection = and_exprs(where_exprs);
+
+    Ok(statement_from_query(with_ctes(
+        vec![
+            cte(BASE_QUERY_CTE, base_query),
+            cte(POLICY_EVAL_CTE, policy_eval_query),
+            cte(LIMIT_CTE, limit_query),
+        ],
+        SetExpr::Select(Box::new(outer_select)),
     ))
+    .to_string())
 }
 
 fn partial_push_limit_scan(
@@ -283,13 +324,13 @@ fn partial_push_limit_scan(
     statement: &Statement,
 ) -> Result<String, RewriteError> {
     let Statement::Query(query) = statement else {
-        return Err(RewriteError::Unsupported(
-            "partial-push LIMIT scan rewrite requires a SELECT query".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push LIMIT scan rewrite requires a SELECT query",
         ));
     };
     let SetExpr::Select(select) = query.body.as_ref() else {
-        return Err(RewriteError::Unsupported(
-            "partial-push LIMIT scan rewrite requires a SELECT body".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push LIMIT scan rewrite requires a SELECT body",
         ));
     };
 
@@ -333,7 +374,7 @@ fn partial_push_limit_scan(
         unqualify_columns(&mut expr);
         for (name, source_expr) in source_columns {
             if !projected_names.contains(&name) {
-                let alias = format!("__passant_filter_{name}");
+                let alias = passant_filter_temp_column(&name);
                 propagated_filter_columns
                     .entry(name)
                     .or_insert((source_expr, alias));
@@ -349,17 +390,16 @@ fn partial_push_limit_scan(
             .map(|(name, (_, alias))| (name.clone(), alias.clone()))
             .collect::<HashMap<_, _>>();
         replace_identifiers(&mut expr, &replacements);
-        filters.push(expr.to_string());
+        filters.push(expr);
     }
 
     if filters.is_empty() {
-        return Err(RewriteError::Unsupported(
-            "partial-push LIMIT scan rewrite found no applicable filters".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push LIMIT scan rewrite found no applicable filters",
         ));
     }
 
-    let mut inner = query.clone();
-    let mut outer_projection = outer_limited_projection(select);
+    let mut inner = *query.clone();
     if let SetExpr::Select(inner_select) = inner.body.as_mut() {
         ensure_projection_aliases(inner_select);
         for (_, (expr, alias)) in propagated_filter_columns {
@@ -368,14 +408,27 @@ fn partial_push_limit_scan(
                 alias: Ident::new(alias),
             });
         }
-        outer_projection = outer_limited_projection(inner_select);
     }
 
-    Ok(format!(
-        "WITH __passant_partial AS ({}) SELECT {outer_projection} FROM __passant_partial WHERE {}",
-        Statement::Query(inner),
-        filters.join(" AND ")
+    let outer_projection = if let SetExpr::Select(inner_select) = inner.body.as_ref() {
+        outer_limited_projection_items(inner_select)
+    } else {
+        outer_limited_projection_items(select)
+    };
+
+    let mut outer_select = empty_select();
+    outer_select.projection = outer_projection;
+    outer_select.from = vec![sqlparser::ast::TableWithJoins {
+        relation: table_factor(PARTIAL_SCAN_CTE),
+        joins: Vec::new(),
+    }];
+    outer_select.selection = and_exprs(filters);
+
+    Ok(statement_from_query(with_ctes(
+        vec![cte(PARTIAL_SCAN_CTE, inner)],
+        SetExpr::Select(Box::new(outer_select)),
     ))
+    .to_string())
 }
 
 fn partial_push_scan(
@@ -383,33 +436,38 @@ fn partial_push_scan(
     statement: &Statement,
 ) -> Result<String, RewriteError> {
     let Statement::Query(query) = statement else {
-        return Err(RewriteError::Unsupported(
-            "partial-push scan rewrite requires a SELECT query".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push scan rewrite requires a SELECT query",
         ));
     };
     let SetExpr::Select(select) = query.body.as_ref() else {
-        return Err(RewriteError::Unsupported(
-            "partial-push scan rewrite requires a SELECT body".into(),
+        return Err(RewriteError::unsupported_statement(
+            "partial-push scan rewrite requires a SELECT body",
         ));
     };
 
     let scan_keys = group_by_join_specs(select).unwrap_or_default();
-    let (policy_eval_sql, join_keys, _) =
-        build_policy_eval_sql(rewriter, select, &scan_keys, false, None)?;
-    let base_sql = statement.to_string();
-    let join_clause = partial_push_join_clause(&join_keys);
-    Ok(format!(
-        "WITH {BASE_QUERY_CTE} AS ({base_sql}), {POLICY_EVAL_CTE} AS ({policy_eval_sql}) SELECT {BASE_QUERY_CTE}.* {join_clause}"
+    let (policy_eval_query, join_keys, _) =
+        build_policy_eval_query(rewriter, select, &scan_keys, false, None)?;
+    let base_query = match statement {
+        Statement::Query(query) => *query.clone(),
+        _ => unreachable!("validated above"),
+    };
+    Ok(statement_from_query(partial_push_split_query(
+        base_query,
+        policy_eval_query,
+        &join_keys,
     ))
+    .to_string())
 }
 
-fn build_policy_eval_sql(
+fn build_policy_eval_query(
     rewriter: &PassantRewriter,
     select: &Select,
     group_specs: &[(String, Expr)],
     include_primary_dfc: bool,
-    primary_dfc_projection: Option<&str>,
-) -> Result<(String, Vec<String>, Vec<ExtraDfcFilter>), RewriteError> {
+    primary_dfc: Option<(Expr, &str)>,
+) -> Result<(Query, Vec<String>, Vec<ExtraDfcFilter>), RewriteError> {
     let mut policy_eval = select.clone();
     policy_eval.having = None;
 
@@ -433,22 +491,22 @@ fn build_policy_eval_sql(
         group_specs.iter().map(|(name, _)| name.clone()).collect()
     };
 
-    if include_primary_dfc {
-        if let Some(projection) = primary_dfc_projection {
-            let expr = parse_expr(projection.split(" AS ").next().unwrap_or(projection))?;
-            policy_eval.projection.push(SelectItem::ExprWithAlias {
-                expr,
-                alias: Ident::new("dfc"),
-            });
-        }
+    if include_primary_dfc && let Some((expr, alias)) = primary_dfc {
+        policy_eval.projection.push(SelectItem::ExprWithAlias {
+            expr,
+            alias: Ident::new(alias),
+        });
     }
 
     for extra in &extra_dfc {
         policy_eval.projection.push(SelectItem::ExprWithAlias {
-            expr: parse_expr(&format!(
-                "max({}.{})",
-                extra.subquery_alias, extra.subquery_metric
-            ))?,
+            expr: function_call(
+                "max",
+                vec![qualified_column(
+                    &extra.subquery_alias,
+                    &extra.subquery_metric,
+                )],
+            ),
             alias: Ident::new(&extra.alias),
         });
     }
@@ -457,37 +515,11 @@ fn build_policy_eval_sql(
     skip.extend(in_handled);
     apply_policy_having(rewriter, &mut policy_eval, &skip)?;
 
-    Ok((policy_eval.to_string(), join_keys, extra_dfc))
+    Ok((query_from_select(policy_eval), join_keys, extra_dfc))
 }
 
-fn partial_push_join_clause(key_names: &[String]) -> String {
-    if key_names.is_empty() {
-        return format!("FROM {BASE_QUERY_CTE} CROSS JOIN {POLICY_EVAL_CTE}");
-    }
-    let conditions = key_names
-        .iter()
-        .map(|key| format!("{BASE_QUERY_CTE}.{key} = {POLICY_EVAL_CTE}.{key}"))
-        .collect::<Vec<_>>()
-        .join(" AND ");
-    format!("FROM {BASE_QUERY_CTE} JOIN {POLICY_EVAL_CTE} ON {conditions}")
-}
-
-fn query_limit_clause(query: &Query) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(limit) = &query.limit {
-        parts.push(format!("LIMIT {limit}"));
-    }
-    if let Some(offset) = &query.offset {
-        parts.push(format!("OFFSET {offset}"));
-    }
-    if let Some(fetch) = &query.fetch {
-        parts.push(fetch.to_string());
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
+fn query_has_limit(query: &Query) -> bool {
+    query.limit.is_some() || query.offset.is_some() || query.fetch.is_some()
 }
 
 fn projected_select_names(select: &Select) -> HashSet<String> {

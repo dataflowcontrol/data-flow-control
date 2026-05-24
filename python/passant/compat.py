@@ -3,17 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import json
-import re
 import tempfile
 
 import duckdb
-import sqlglot
-from sqlglot import exp
 
 try:
     from . import _passant
+    from ._passant import PassantRewriteError
 except ImportError:  # pragma: no cover - used before extension is built
     _passant = None
+    PassantRewriteError = None
 
 
 class Resolution(Enum):
@@ -53,11 +52,9 @@ class DFCPolicy:
             raise ValueError("Either sources or sink must be provided")
         if self.sink_alias is not None and self.sink is None:
             raise ValueError("sink_alias requires sink to be provided")
-        _validate_sql_expression(self.constraint, "constraint")
-        _validate_qualified_columns(self.constraint)
+        _validate_constraint_expression(self.constraint, "constraint")
         for dimension in self.dimensions:
-            _validate_sql_expression(dimension, "dimension")
-            _validate_qualified_columns(dimension)
+            _validate_constraint_expression(dimension, "dimension")
 
     @classmethod
     def from_policy_str(cls, policy_str: str) -> "DFCPolicy":
@@ -95,11 +92,9 @@ class AggregateDFCPolicy:
             raise ValueError("AggregateDFCPolicy currently only supports INVALIDATE resolution")
         if not self.sources and self.sink is None:
             raise ValueError("Either sources or sink must be provided")
-        _validate_sql_expression(self.constraint, "constraint")
-        _validate_qualified_columns(self.constraint)
+        _validate_constraint_expression(self.constraint, "constraint")
         for dimension in self.dimensions:
-            _validate_sql_expression(dimension, "dimension")
-            _validate_qualified_columns(dimension)
+            _validate_constraint_expression(dimension, "dimension")
 
     @classmethod
     def from_policy_str(cls, policy_str: str) -> "AggregateDFCPolicy":
@@ -144,7 +139,6 @@ class SQLRewriter:
         self.bedrock_model_id = bedrock_model_id
         self.recorder = recorder
         self._resolver_functions = {}
-        self._policies: list[DFCPolicy | AggregateDFCPolicy | PgnPolicy] = []
         self._planner = _passant.PyPlanner() if _passant is not None else None
         self._register_kill_udf()
         self._register_resolver_udf()
@@ -175,69 +169,53 @@ class SQLRewriter:
 
     def register_policy(self, policy: DFCPolicy | AggregateDFCPolicy | PgnPolicy) -> None:
         if isinstance(policy, DFCPolicy | AggregateDFCPolicy):
-            self._validate_policy_catalog(policy)
+            self._sync_catalog_to_rust()
             self._register_policy_in_rust(policy)
         elif isinstance(policy, PgnPolicy):
             if self._planner is not None:
                 self._planner.register_policy_text(policy.text)
-        self._policies.append(policy)
 
     def get_dfc_policies(self) -> list[DFCPolicy]:
-        policies = [policy for policy in self._policies if isinstance(policy, DFCPolicy)]
-        self._assert_rust_policy_count("dfc", len(policies))
-        return policies
+        if self._planner is None:
+            return []
+        return _dfc_policies_from_rust(self._planner.dfc_policies_json())
 
     def get_aggregate_policies(self) -> list[AggregateDFCPolicy]:
-        policies = [policy for policy in self._policies if isinstance(policy, AggregateDFCPolicy)]
-        self._assert_rust_policy_count("aggregate", len(policies))
-        return policies
+        if self._planner is None:
+            return []
+        return _aggregate_policies_from_rust(self._planner.aggregate_policies_json())
+
+    def get_pgn_policies(self) -> list[PgnPolicy]:
+        if self._planner is None:
+            return []
+        return _pgn_policies_from_rust(self._planner.pgn_policies_json())
 
     def delete_policy(
         self, sources=None, sink=None, constraint="", on_fail=None, description=None
     ) -> bool:
-        for idx, policy in enumerate(self._policies):
-            if sources is not None and getattr(policy, "sources", None) != sources:
-                continue
-            if sink is not None and getattr(policy, "sink", None) != sink:
-                continue
-            if constraint and getattr(policy, "constraint", None) != constraint:
-                continue
-            if on_fail is not None and getattr(policy, "on_fail", None) != on_fail:
-                continue
-            if description is not None and getattr(policy, "description", None) != description:
-                continue
-            if self._planner is not None and isinstance(policy, DFCPolicy | AggregateDFCPolicy):
-                deleted = self._planner.delete_policy(
-                    sources,
-                    sink,
-                    constraint or None,
-                    on_fail.value if isinstance(on_fail, Resolution) else on_fail,
-                    description,
-                )
-                if not deleted:
-                    return False
-            del self._policies[idx]
-            return True
-        return False
+        on_fail_value = on_fail.value if isinstance(on_fail, Resolution) else on_fail
+        if self._planner is None:
+            return False
+        return self._planner.delete_policy(
+            sources,
+            sink,
+            constraint or None,
+            on_fail_value,
+            description,
+        )
 
     def transform_query(self, query: str, use_partial_push: bool = False) -> str:
         if self._planner is None:
             return query
-        dfc_policies = self.get_dfc_policies()
-        aggregate_policies = self.get_aggregate_policies()
-        if not dfc_policies and not aggregate_policies:
+        if not self._planner.has_registered_policies():
             return self._planner.transform_query(query)
-        query = self._expand_insert_columns_from_catalog(query)
         return self._planner.transform_registered(query, use_partial_push)
 
     def explain_rewrite(self, query: str) -> str:
         if self._planner is None:
             return json.dumps({"chosen": {"rewritten_sql": query}}, indent=2)
-        dfc_policies = self.get_dfc_policies()
-        aggregate_policies = self.get_aggregate_policies()
-        if not dfc_policies and not aggregate_policies:
+        if not self._planner.has_registered_policies():
             return self._planner.explain_rewrite(query)
-        query = self._expand_insert_columns_from_catalog(query)
         return self._planner.explain_rewrite_registered(query)
 
     def execute(self, query: str, use_partial_push: bool = False):
@@ -286,6 +264,35 @@ class SQLRewriter:
                 violations[policy_id] = f"Error evaluating aggregate policy constraint: {exc}"
         return violations
 
+    def _sync_catalog_to_rust(self) -> None:
+        if self._planner is None:
+            return
+        tables: dict[str, dict] = {}
+        for table_name in self._list_catalog_tables():
+            column_types = self._get_table_columns(table_name)
+            tables[table_name] = {
+                "columns": list(column_types.keys()),
+                "types": column_types,
+            }
+        snapshot = {"tables": tables, "unique_columns": []}
+        self._planner.sync_catalog(json.dumps(snapshot))
+
+    def _list_catalog_tables(self) -> list[str]:
+        try:
+            rows = self.conn.execute(
+                "SELECT schema_name, table_name FROM duckdb_tables() "
+                "WHERE NOT internal AND NOT temporary"
+            ).fetchall()
+        except duckdb.Error:
+            rows = [("main", name) for (name,) in self.conn.execute("SHOW TABLES").fetchall()]
+        tables: list[str] = []
+        for schema, name in rows:
+            if schema and schema.lower() not in ("main", "temp"):
+                tables.append(f"{schema}.{name}")
+            else:
+                tables.append(name)
+        return tables
+
     def _register_policy_in_rust(self, policy: DFCPolicy | AggregateDFCPolicy) -> None:
         if self._planner is None:
             return
@@ -294,33 +301,20 @@ class SQLRewriter:
         policies_json, aggregate_policies_json = self._policy_json(dfc_policies, aggregate_policies)
         self._planner.register_policy_specs(policies_json, aggregate_policies_json)
 
-    def _assert_rust_policy_count(self, policy_type: str, expected: int) -> None:
-        if self._planner is None:
-            return
-        if policy_type == "dfc":
-            actual = len(json.loads(self._planner.dfc_policies_json()))
-        else:
-            actual = len(json.loads(self._planner.aggregate_policies_json()))
-        if actual != expected:
-            raise RuntimeError(
-                f"Rust policy storage mismatch for {policy_type} policies: "
-                f"expected {expected}, found {actual}"
-            )
-
     def _table_exists(self, table_name: str) -> bool:
         rows = self.conn.execute("SHOW TABLES").fetchall()
         return any(row[0].lower() == table_name.lower() for row in rows)
 
     def _get_table_columns(self, table_name: str) -> dict[str, str]:
         try:
-            rows = self.conn.execute(f"DESCRIBE {table_name}").fetchall()
+            rows = self.conn.execute(f"DESCRIBE {_quote_sql_identifier(table_name)}").fetchall()
         except duckdb.Error as exc:
             raise ValueError(f"Table '{table_name}' does not exist") from exc
-        return {row[0].lower(): str(row[1]).upper() for row in rows}
+        return {row[0]: str(row[1]).upper() for row in rows}
 
     def _get_table_column_names(self, table_name: str) -> list[str]:
         try:
-            rows = self.conn.execute(f"DESCRIBE {table_name}").fetchall()
+            rows = self.conn.execute(f"DESCRIBE {_quote_sql_identifier(table_name)}").fetchall()
         except duckdb.Error as exc:
             raise ValueError(f"Table '{table_name}' does not exist") from exc
         return [row[0] for row in rows]
@@ -359,100 +353,6 @@ class SQLRewriter:
         )
         return policies_json, aggregate_policies_json
 
-    def _expand_insert_columns_from_catalog(self, query: str) -> str:
-        try:
-            parsed = sqlglot.parse_one(query, read="duckdb")
-        except sqlglot.errors.ParseError:
-            return query
-        if not isinstance(parsed, exp.Insert) or isinstance(parsed.this, exp.Schema):
-            return query
-        if not isinstance(parsed.this, exp.Table):
-            return query
-        expression = parsed.args.get("expression")
-        if not isinstance(expression, exp.Select):
-            return query
-
-        columns = self._get_table_column_names(parsed.this.name)
-        parsed.set(
-            "this",
-            exp.Schema(
-                this=parsed.this.copy(),
-                expressions=[exp.to_identifier(column) for column in columns],
-            ),
-        )
-        return parsed.sql(dialect="duckdb")
-
-    def _validate_policy_catalog(self, policy: DFCPolicy | AggregateDFCPolicy) -> None:
-        source_columns = {}
-        for source in policy.sources:
-            if not self._table_exists(source):
-                raise ValueError(f"Source table '{source}' does not exist")
-            source_columns[source.lower()] = self._get_table_columns(source)
-
-        sink_columns = None
-        if policy.sink:
-            if not self._table_exists(policy.sink):
-                raise ValueError(f"Sink table '{policy.sink}' does not exist")
-            sink_columns = self._get_table_columns(policy.sink)
-
-        if (
-            isinstance(policy, DFCPolicy)
-            and policy.sink
-            and policy.on_fail == Resolution.INVALIDATE
-        ):
-            valid_type = (sink_columns or {}).get("valid")
-            if valid_type != "BOOLEAN":
-                raise ValueError(
-                    f"Sink table '{policy.sink}' must have a boolean column named 'valid' "
-                    "for INVALIDATE resolution policies"
-                )
-
-        if (
-            isinstance(policy, DFCPolicy)
-            and policy.sink
-            and policy.on_fail == Resolution.INVALIDATE_MESSAGE
-        ):
-            invalid_type = (sink_columns or {}).get("invalid_string", "")
-            if not any(token in invalid_type for token in ("CHAR", "VARCHAR", "STRING", "TEXT")):
-                raise ValueError(
-                    f"Sink table '{policy.sink}' must have a string column named "
-                    "'invalid_string' for INVALIDATE_MESSAGE resolution policies"
-                )
-
-        source_names = {source.lower() for source in policy.sources}
-        sink_names = {policy.sink.lower()} if policy.sink else set()
-        if policy.sink:
-            sink_names.add("_output_")
-        if isinstance(policy, DFCPolicy) and policy.sink_alias:
-            sink_names.add(policy.sink_alias.lower())
-
-        referenced_columns = _qualified_columns(policy.constraint)
-        if isinstance(policy, DFCPolicy | AggregateDFCPolicy):
-            for dimension in policy.dimensions:
-                referenced_columns.extend(_qualified_columns(dimension))
-
-        for table_name, column_name in referenced_columns:
-            table_key = table_name.lower()
-            column_key = column_name.lower()
-            if table_key in source_names:
-                if column_key not in source_columns[table_key]:
-                    raise ValueError(
-                        f"Column '{table_name}.{column_name}' referenced in constraint "
-                        f"does not exist in source table '{table_name}'"
-                    )
-            elif table_key in sink_names:
-                if sink_columns is not None and column_key not in sink_columns:
-                    raise ValueError(
-                        f"Column '{table_name}.{column_name}' referenced in constraint "
-                        f"does not exist in sink table '{policy.sink}'"
-                    )
-            else:
-                raise ValueError(
-                    f"Column '{table_name}.{column_name}' referenced in constraint "
-                    f"references table '{table_name}', which is not in sources "
-                    f"({policy.sources}) or sink ('{policy.sink}')"
-                )
-
     def get_stream_file_path(self):
         return self.stream_file_path
 
@@ -477,6 +377,22 @@ def _strip_passant_comment(sql: str) -> str:
     return sql
 
 
+def _quote_sql_identifier(name: str) -> str:
+    """Quote a DuckDB table identifier, including schema-qualified names."""
+    name = name.strip()
+    if not name:
+        raise ValueError("Table name must be non-empty")
+
+    def quote_part(part: str) -> str:
+        part = part.strip()
+        if part.startswith('"') and part.endswith('"'):
+            return part
+        escaped = part.replace('"', '""')
+        return f'"{escaped}"'
+
+    return ".".join(quote_part(part) for part in name.split("."))
+
+
 def _parse_policy_with_rust(policy_str: str) -> dict:
     if _passant is None:
         raise ValueError("Rust Passant extension is not available")
@@ -496,30 +412,63 @@ def _resolution_to_python(value) -> str:
     return mapping.get(str(value), str(value).upper())
 
 
-def _qualified_columns(sql: str) -> list[tuple[str, str]]:
-    return [
-        (match.group(1), match.group(2))
-        for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b", sql)
-    ]
+def _validate_constraint_expression(sql: str, label: str) -> None:
+    if _passant is None:
+        raise RuntimeError("Passant Rust extension is not built")
+    _passant.validate_constraint_expression_py(sql, label)
 
 
-def _validate_sql_expression(sql: str, label: str) -> None:
-    try:
-        parsed = sqlglot.parse_one(f"SELECT {sql}", read="duckdb")
-    except sqlglot.errors.ParseError as exc:
-        raise ValueError(f"Invalid {label} SQL expression '{sql}': {exc}") from exc
-    if not isinstance(parsed, exp.Select) or not parsed.expressions:
-        raise ValueError(f"Invalid {label} SQL expression '{sql}'")
-
-
-def _validate_qualified_columns(sql: str) -> None:
-    parsed = sqlglot.parse_one(f"SELECT {sql}", read="duckdb")
-    unqualified = [column.name for column in parsed.find_all(exp.Column) if not column.table]
-    if unqualified:
-        raise ValueError(
-            "All columns in constraints and dimensions must be qualified with table names. "
-            f"Unqualified columns found: {', '.join(unqualified)}"
+def _dfc_policies_from_rust(policies_json: str) -> list[DFCPolicy]:
+    policies: list[DFCPolicy] = []
+    for entry in json.loads(policies_json):
+        if "CompatDfc" not in entry:
+            continue
+        spec = entry["CompatDfc"]
+        policies.append(
+            DFCPolicy(
+                constraint=spec["constraint"],
+                on_fail=Resolution(_resolution_to_python(spec["on_fail"])),
+                sources=spec["sources"],
+                required_sources=spec.get("required_sources", []),
+                sink=spec.get("sink"),
+                sink_alias=spec.get("sink_alias"),
+                description=spec.get("description"),
+                dimensions=spec.get("dimensions", []),
+            )
         )
+    return policies
+
+
+def _aggregate_policies_from_rust(policies_json: str) -> list[AggregateDFCPolicy]:
+    policies: list[AggregateDFCPolicy] = []
+    for entry in json.loads(policies_json):
+        if "CompatAggregate" not in entry:
+            continue
+        spec = entry["CompatAggregate"]
+        policies.append(
+            AggregateDFCPolicy(
+                constraint=spec["constraint"],
+                on_fail=Resolution.INVALIDATE,
+                sources=spec["sources"],
+                sink=spec.get("sink"),
+                description=spec.get("description"),
+                dimensions=spec.get("dimensions", []),
+            )
+        )
+    return policies
+
+
+def _pgn_policies_from_rust(policies_json: str) -> list[PgnPolicy]:
+    policies: list[PgnPolicy] = []
+    for entry in json.loads(policies_json):
+        if "NativePgn" not in entry:
+            continue
+        spec = entry["NativePgn"]
+        text = spec.get("source_text")
+        if not text:
+            continue
+        policies.append(PgnPolicy(text=text))
+    return policies
 
 
 def _normalize_sources(sources: list[str] | None) -> list[str]:
@@ -527,17 +476,12 @@ def _normalize_sources(sources: list[str] | None) -> list[str]:
         raise ValueError("Sources must be provided (use an empty list for no sources)")
     if not isinstance(sources, list):
         raise ValueError("Sources must be provided as a list of table names")
-    normalized = []
-    seen = set()
-    for source in sources:
-        if not isinstance(source, str) or not source.strip():
-            raise ValueError("Sources must be non-empty strings")
-        key = source.strip().lower()
-        if key in seen:
-            raise ValueError(f"Duplicate source table '{source.strip()}' in sources list")
-        seen.add(key)
-        normalized.append(source.strip())
-    return normalized
+    if _passant is None:
+        raise RuntimeError("Passant Rust extension is not built")
+    try:
+        return _passant.normalize_policy_sources_py(sources)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _normalize_optional_sources(sources: list[str] | None) -> list[str]:
@@ -551,14 +495,9 @@ def _normalize_optional_dimensions(dimensions: list[str] | None) -> list[str]:
         return []
     if not isinstance(dimensions, list):
         raise ValueError("Dimensions must be provided as a list of qualified column names")
-    normalized = []
-    seen = set()
-    for dimension in dimensions:
-        if not isinstance(dimension, str) or not dimension.strip():
-            raise ValueError("Dimensions must be non-empty strings")
-        key = dimension.strip().lower()
-        if key in seen:
-            raise ValueError(f"Duplicate dimension '{dimension.strip()}' in dimensions list")
-        seen.add(key)
-        normalized.append(dimension.strip())
-    return normalized
+    if _passant is None:
+        raise RuntimeError("Passant Rust extension is not built")
+    try:
+        return _passant.normalize_policy_dimensions_py(dimensions)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc

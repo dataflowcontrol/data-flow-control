@@ -36,7 +36,7 @@ fn unique_equality_constraint_adds_count_distinct_guard() {
         "SELECT id, email FROM users",
         &[policy],
         users_unique_catalog(),
-        "SELECT id, email FROM users WHERE count(distinct users.email) = 1 AND users.email = 'alice@example.com'",
+        "SELECT id, email FROM users WHERE count(DISTINCT users.email) = 1 AND users.email = 'alice@example.com'",
     );
 }
 
@@ -56,7 +56,7 @@ fn unique_inequality_constraint_adds_count_distinct_guard() {
         "SELECT id, email FROM users",
         &[policy],
         users_unique_catalog(),
-        "SELECT id, email FROM users WHERE count(distinct users.email) = 1 AND users.email <> 'alice@example.com'",
+        "SELECT id, email FROM users WHERE count(DISTINCT users.email) = 1 AND users.email <> 'alice@example.com'",
     );
 }
 
@@ -95,6 +95,6 @@ fn unique_constraint_in_join_query_pushes_guard() {
         "SELECT users.id, orders.id FROM users JOIN orders ON users.id = orders.user_id",
         &[policy],
         users_unique_catalog(),
-        "SELECT users.id, orders.id FROM users JOIN orders ON users.id = orders.user_id WHERE count(distinct users.email) = 1 AND users.email = 'alice@example.com'",
+        "SELECT users.id, orders.id FROM users JOIN orders ON users.id = orders.user_id WHERE count(DISTINCT users.email) = 1 AND users.email = 'alice@example.com'",
     );
 }

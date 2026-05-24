@@ -1,4 +1,4 @@
-use passant_core::{AggregateDfcPolicy, PolicyIr, Resolution};
+use passant_core::{AggregateDfcPolicy, PassantRewriter, PolicyIr, Resolution};
 
 use crate::common::{
     aggregate_policy, dfc_policy, dfc_policy_sink, dfc_policy_with, rewriter_with_policies,
@@ -93,6 +93,34 @@ fn dfc_policies_json_roundtrip_filters_policy_type() {
         rewriter.aggregate_policies()[0],
         PolicyIr::CompatAggregate(_)
     ));
+}
+
+#[test]
+fn has_registered_policies_tracks_all_policy_types() {
+    let empty = PassantRewriter::new();
+    assert!(!empty.has_registered_policies());
+    assert!(!empty.has_compat_policies());
+    let dfc = rewriter_with_policies(&[dfc_policy(&["foo"], "max(foo.id) > 1")]);
+    assert!(dfc.has_registered_policies());
+    assert!(dfc.has_compat_policies());
+}
+
+#[test]
+fn pgn_policies_json_roundtrip_preserves_source_text() {
+    let mut rewriter = PassantRewriter::new();
+    let text = "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE";
+    rewriter
+        .register_policy_text(text)
+        .expect("pgn policy text should register");
+    assert_eq!(rewriter.pgn_policies().len(), 1);
+    assert!(rewriter.has_registered_policies());
+    assert!(!rewriter.has_compat_policies());
+    let pgn_policies = rewriter.pgn_policies();
+    let stored = match &pgn_policies[0] {
+        PolicyIr::NativePgn(pgn) => pgn,
+        _ => panic!("expected NativePgn"),
+    };
+    assert_eq!(stored.source_text.as_deref(), Some(text));
 }
 
 #[test]

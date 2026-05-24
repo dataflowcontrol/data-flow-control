@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::explain::{ExplainStep, RewriteExplanation};
+use crate::identifiers::TableKey;
 use crate::ir::QueryIr;
 use crate::optimizer::{CandidatePlan, RewriteOptimizer, RewriteStrategy};
 use crate::policy::PolicyIr;
@@ -32,6 +33,12 @@ pub struct ChosenPlan {
     pub rewritten_sql: String,
     pub finalize_metadata: Vec<String>,
     pub rewrite_error: Option<String>,
+    /// Human-readable reasons the chosen strategy was selected.
+    #[serde(default)]
+    pub strategy_reasons: Vec<String>,
+    /// Strategies considered but not selected (strategy + reason).
+    #[serde(default)]
+    pub skipped_strategies: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,9 +106,10 @@ impl PassantPlanner {
             ExplainStep {
                 stage: "optimize".into(),
                 detail: format!(
-                    "Chose {:?} from {} candidate(s)",
+                    "Chose {:?} from {} candidate(s): {}",
                     result.chosen.strategy,
-                    result.candidates.len()
+                    result.candidates.len(),
+                    result.chosen.strategy_reasons.join("; ")
                 ),
             },
         ];
@@ -136,7 +144,7 @@ impl PassantPlanner {
         let base_tables = query
             .direct_base_tables()
             .into_iter()
-            .map(|table| table.to_ascii_lowercase())
+            .map(|table| TableKey::new(&table))
             .collect::<std::collections::HashSet<_>>();
         let sink = sink_name(query);
         policies
@@ -145,22 +153,22 @@ impl PassantPlanner {
                 let required_sources = policy
                     .required_sources()
                     .iter()
-                    .map(|source| source.to_ascii_lowercase())
+                    .map(|source| TableKey::new(source))
                     .collect::<std::collections::HashSet<_>>();
                 let sources_match = policy.sources().iter().all(|source| {
-                    let source_key = source.to_ascii_lowercase();
+                    let source_key = TableKey::new(source);
                     if policy.sink().is_some() && required_sources.contains(&source_key) {
                         return true;
                     }
                     base_tables.contains(&source_key)
                         || visible
                             .iter()
-                            .any(|table| table.eq_ignore_ascii_case(source))
+                            .any(|table| TableKey::new(table) == source_key)
                 });
                 let sink_match = match policy.sink() {
-                    Some(policy_sink) => sink
-                        .as_deref()
-                        .is_some_and(|query_sink| query_sink.eq_ignore_ascii_case(policy_sink)),
+                    Some(policy_sink) => sink.as_deref().is_some_and(|query_sink| {
+                        TableKey::new(query_sink) == TableKey::new(policy_sink)
+                    }),
                     None => true,
                 };
                 sources_match && sink_match
@@ -231,10 +239,19 @@ impl PassantPlanner {
         candidates: &[CandidatePlan],
         policies: &[PolicyIr],
     ) -> ChosenPlan {
-        let chosen = candidates
-            .first()
+        let chosen_candidate = candidates.first();
+        let chosen = chosen_candidate
             .map(|candidate| candidate.strategy)
             .unwrap_or(RewriteStrategy::CompatibilityFallback);
+        let strategy_reasons = chosen_candidate
+            .map(|candidate| candidate.reasons.clone())
+            .unwrap_or_default();
+        let skipped_strategies = candidates
+            .iter()
+            .skip(1)
+            .take(3)
+            .map(|candidate| format!("{:?}: {}", candidate.strategy, candidate.reasons.join("; ")))
+            .collect();
 
         let finalize_metadata = if scope.has_finalize_capable_sink {
             vec!["sink_finalize_capable".to_string()]
@@ -261,6 +278,8 @@ impl PassantPlanner {
             rewritten_sql,
             finalize_metadata,
             rewrite_error,
+            strategy_reasons,
+            skipped_strategies,
         }
     }
 }

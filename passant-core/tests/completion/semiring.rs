@@ -91,7 +91,7 @@ fn distributive_sum_decomposition_across_sources() {
     );
     assert_eq!(
         sql,
-        "SELECT foo.id FROM foo INNER JOIN bar ON foo.id = bar.id AND foo.amount + bar.amount > 100"
+        "SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id AND foo.amount + bar.amount > 100"
     );
 }
 

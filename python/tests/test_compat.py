@@ -36,6 +36,20 @@ def test_python_compat_delete_policy_updates_rust_storage():
     assert rewriter.fetchall("SELECT id FROM foo") == [(1,)]
 
 
+def test_python_compat_get_pgn_policies_roundtrip():
+    from passant.compat import PgnPolicy
+
+    rewriter = SQLRewriter()
+    text = (
+        "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) "
+        "CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE"
+    )
+    rewriter.register_policy(PgnPolicy.from_text(text))
+    assert rewriter.get_pgn_policies() == [PgnPolicy(text=text)]
+    assert rewriter._planner.has_registered_policies()
+    assert rewriter.get_dfc_policies() == []
+
+
 def test_python_compat_dfc_policy_from_policy_str_uses_rust_parser():
     policy = DFCPolicy.from_policy_str(
         "SOURCE foo SINK reports CONSTRAINT max(foo.id) > 1 ON FAIL KILL DESCRIPTION stop bad rows"
@@ -347,16 +361,14 @@ def test_python_compat_cross_source_non_distributive_aggregate_comparison_uses_p
 def test_python_compat_rejects_mixed_row_and_non_distributive_aggregate_policy():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            constraint="foo.id > 0 AND avg(foo.id) > 1",
-            on_fail=Resolution.REMOVE,
+    with pytest.raises(ValueError, match="must be aggregated"):
+        rewriter.register_policy(
+            DFCPolicy(
+                sources=["foo"],
+                constraint="foo.id > 0 AND avg(foo.id) > 1",
+                on_fail=Resolution.REMOVE,
+            )
         )
-    )
-
-    with pytest.raises(Exception, match="GROUP BY"):
-        rewriter.execute("SELECT id FROM foo")
 
 
 def test_python_compat_explain_rewrite_reports_unsupported_rewrite_error():

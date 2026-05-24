@@ -1,6 +1,31 @@
 use passant_core::{AggregateDfcPolicy, PassantRewriter, PolicyIr, Resolution};
 
 #[test]
+fn rewriter_expands_insert_columns_from_catalog_for_sink_policy() {
+    let mut catalog = passant_core::TableCatalog::new();
+    catalog.register_table("reports", vec!["id".into(), "status".into()]);
+    let mut rewriter = PassantRewriter::with_catalog(catalog);
+    rewriter.register_policy(PolicyIr::CompatDfc {
+        sources: vec!["foo".to_string()],
+        required_sources: Vec::new(),
+        dimensions: Vec::new(),
+        sink: Some("reports".to_string()),
+        sink_alias: None,
+        constraint: "reports.status = 'approved' AND max(foo.id) > 1".to_string(),
+        on_fail: Resolution::Remove,
+        description: None,
+    });
+
+    let sql = rewriter
+        .rewrite("INSERT INTO reports SELECT foo.id, foo.status FROM foo")
+        .expect("query should rewrite");
+    assert_eq!(
+        sql,
+        "INSERT INTO reports (id, status) SELECT foo.id, foo.status FROM foo WHERE foo.status = 'approved' AND foo.id > 1"
+    );
+}
+
+#[test]
 fn rewriter_maps_insert_sink_columns_to_select_outputs() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {

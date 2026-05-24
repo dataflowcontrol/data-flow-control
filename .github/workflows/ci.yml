@@ -37,6 +37,27 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Completion progress (ignored tests)
-        run: cargo test --workspace -- --include-ignored --quiet 2>&1 | tail -5
-        continue-on-error: true
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: passant
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Build Python extension
+        run: uv run maturin develop --release
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Pytest
+        run: uv run pytest

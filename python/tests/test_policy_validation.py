@@ -89,9 +89,6 @@ def test_policy_required_sources_must_be_subset():
         )
 
 
-@pytest.mark.skip(
-    reason="Passant does not yet validate unaggregated source columns at registration"
-)
 def test_register_policy_rejects_unaggregated_source_column():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE users (age INTEGER)")
