@@ -247,13 +247,26 @@ fn parse_pgn_policy(normalized: &str) -> Result<PolicyIr, PolicyParseError> {
     let sources = clause_value(
         &remainder,
         &["SOURCE", "SOURCES"],
-        &["SINK", "DIMENSION", "AGGREGATE", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
+        &[
+            "SINK",
+            "DIMENSION",
+            "AGGREGATE",
+            "CONSTRAINT",
+            "ON FAIL",
+            "DESCRIPTION",
+        ],
     )
     .unwrap_or_default();
     let raw_sink = clause_value(
         &remainder,
         &["SINK"],
-        &["DIMENSION", "AGGREGATE", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
+        &[
+            "DIMENSION",
+            "AGGREGATE",
+            "CONSTRAINT",
+            "ON FAIL",
+            "DESCRIPTION",
+        ],
     )
     .and_then(blank_to_none);
     let (sink, sink_alias) = raw_sink

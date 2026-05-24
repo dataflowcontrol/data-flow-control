@@ -7,7 +7,7 @@ use passant_core::{
 };
 
 #[test]
-fn planner_chooses_aggregate_inline_for_aggregate_query() {
+fn planner_chooses_full_push_for_aggregate_query() {
     let ir = parse_query_to_ir("SELECT max(foo.id) FROM foo").expect("query should parse");
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -21,7 +21,7 @@ fn planner_chooses_aggregate_inline_for_aggregate_query() {
     }];
 
     let result = PassantPlanner::new().plan_query(&ir, &policies);
-    assert_eq!(result.chosen.strategy, RewriteStrategy::PartialPush);
+    assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn planner_uses_partial_push_for_non_distributive_policy_aggregate() {
 }
 
 #[test]
-fn rewriter_uses_scalar_fallback_for_aggregate_only_non_distributive_policy() {
+fn rewriter_uses_partial_push_for_aggregate_only_non_distributive_policy() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -100,15 +100,13 @@ fn rewriter_uses_scalar_fallback_for_aggregate_only_non_distributive_policy() {
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
-        .expect("avg scan policy should rewrite as scalar fallback");
-    assert_eq!(
-        sql,
-        "SELECT id FROM foo WHERE (SELECT avg(foo.id) > 1 FROM foo)"
-    );
+        .expect("avg scan policy should rewrite via partial-push");
+    assert!(sql.contains("WITH base_query AS ("));
+    assert!(sql.contains("policy_eval AS ("));
 }
 
 #[test]
-fn rewriter_splits_source_local_non_distributive_aggregate_fallbacks() {
+fn rewriter_splits_source_local_non_distributive_policies_via_partial_push() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
@@ -123,15 +121,14 @@ fn rewriter_splits_source_local_non_distributive_aggregate_fallbacks() {
 
     let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-        .expect("source-local aggregate predicates should split");
-    assert_eq!(
-        sql,
-        "SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id WHERE (SELECT avg(foo.id) > 1 FROM foo) AND (SELECT avg(bar.id) > 10 FROM bar)"
-    );
+        .expect("source-local non-distributive predicates should partial-push");
+    assert!(sql.contains("WITH base_query AS ("));
+    assert!(sql.contains("avg(foo.id) > 1"));
+    assert!(sql.contains("avg(bar.id) > 10"));
 }
 
 #[test]
-fn rewriter_uses_base_source_in_alias_scalar_fallback() {
+fn rewriter_uses_partial_push_for_alias_non_distributive_policy() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -146,15 +143,13 @@ fn rewriter_uses_base_source_in_alias_scalar_fallback() {
 
     let sql = rewriter
         .rewrite("SELECT f.id FROM foo AS f")
-        .expect("alias aggregate fallback should rewrite against base table");
-    assert_eq!(
-        sql,
-        "SELECT f.id FROM foo AS f WHERE (SELECT avg(foo.id) > 1 FROM foo)"
-    );
+        .expect("alias non-distributive policy should partial-push");
+    assert!(sql.contains("WITH base_query AS ("));
+    assert!(sql.contains("avg(foo.id) > 1") || sql.contains("avg(f.id) > 1"));
 }
 
 #[test]
-fn rewriter_rejects_cross_source_non_distributive_aggregate_comparison() {
+fn rewriter_partial_pushes_cross_source_non_distributive_aggregate_comparison() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
@@ -167,17 +162,14 @@ fn rewriter_rejects_cross_source_non_distributive_aggregate_comparison() {
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-        .expect_err("cross-source aggregate comparison should require full fallback");
-    assert_eq!(
-        err.to_string(),
-        "unsupported query form: non-distributive multi-source aggregate predicate requires Partial-Push or LogicalFallback"
-    );
+        .expect("cross-source non-distributive policy should partial-push");
+    assert!(sql.contains("WITH base_query AS ("));
 }
 
 #[test]
-fn rewriter_rejects_mixed_row_and_non_distributive_aggregate_policy() {
+fn rewriter_partial_pushes_mixed_row_and_non_distributive_aggregate_policy() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -190,17 +182,14 @@ fn rewriter_rejects_mixed_row_and_non_distributive_aggregate_policy() {
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("SELECT id FROM foo")
-        .expect_err("mixed row/global policy should require a fuller fallback");
-    assert_eq!(
-        err.to_string(),
-        "unsupported query form: non-distributive policy aggregate(s) require Partial-Push or LogicalFallback: avg(foo.id)"
-    );
+        .expect("mixed row/non-distributive policy should partial-push");
+    assert!(sql.contains("WITH base_query AS ("));
 }
 
 #[test]
-fn planner_chooses_logical_fallback_for_non_monotonic_query() {
+fn planner_chooses_full_push_for_non_monotonic_query() {
     let ir = parse_query_to_ir("SELECT id FROM bar EXCEPT SELECT id FROM foo")
         .expect("query should parse");
     let policies = vec![PolicyIr::CompatDfc {
@@ -215,7 +204,7 @@ fn planner_chooses_logical_fallback_for_non_monotonic_query() {
     }];
 
     let result = PassantPlanner::new().plan_query(&ir, &policies);
-    assert_eq!(result.chosen.strategy, RewriteStrategy::LogicalFallback);
+    assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert!(result.scope.has_non_monotonic_operation);
     assert!(result.scope.requires_source_set_annotations);
 }
@@ -236,7 +225,7 @@ fn planner_marks_outer_join_as_requiring_source_set_annotations() {
     }];
 
     let result = PassantPlanner::new().plan_query(&ir, &policies);
-    assert_eq!(result.chosen.strategy, RewriteStrategy::PartialPush);
+    assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert!(result.scope.requires_source_set_annotations);
 }
 

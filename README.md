@@ -17,11 +17,9 @@ Implemented behavior includes:
 
 - `sqlparser-rs` as the parser frontend
 - a Passant-owned `QueryIr`
-- a heuristic rewrite optimizer with explain output and explicit `FullPush`,
-  `PartialPush`, and `LogicalFallback` strategy candidates
-- semiring aggregate analysis for policy constraints, exposed through explain
-  metadata and used to avoid unsafe Full-Push choices for non-distributive
-  aggregates
+- a heuristic rewrite optimizer with explain output and explicit `FullPush` and
+  `PartialPush` strategy candidates (Full-Push for semiring-distributive policies,
+  Partial-Push only when required by non-distributive aggregates)
 - a Rust `PassantRewriter`
 - PGN/compat policy parsing for `SOURCE`/`SOURCES`, `REQUIRED`, `SINK`,
   aliases, `DIMENSION`, `_OUTPUT_`, `CONSTRAINT`, `ON FAIL`, `DESCRIPTION`,

@@ -17,7 +17,7 @@ fn aggregate_policy_with_filter_clause_in_constraint() {
     assert_rewrite(
         "INSERT INTO irs_form SELECT amount, kind FROM bank_txn",
         &[policy],
-        "INSERT INTO irs_form SELECT amount, kind, sum(irs_form.amount) filter (where irs_form.kind = 'Income') AS __passant_agg_0 FROM bank_txn",
+        "INSERT INTO irs_form SELECT amount, kind, CASE WHEN kind = 'Income' THEN amount ELSE 0 END AS __passant_agg_0 FROM bank_txn",
     );
 }
 

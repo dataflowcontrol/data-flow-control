@@ -4,8 +4,8 @@
 use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{
-    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, JoinOperator,
-    Select, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins,
+    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, JoinOperator, Select,
+    SelectItem, SetExpr, Statement, TableFactor, TableWithJoins,
 };
 
 use crate::parser::parse_query;
@@ -487,11 +487,13 @@ fn split_conjuncts(expr: Expr) -> Vec<Expr> {
 
 fn join_conjuncts(mut conjuncts: Vec<Expr>) -> Expr {
     let first = conjuncts.remove(0);
-    conjuncts.into_iter().fold(first, |left, right| Expr::BinaryOp {
-        left: Box::new(left),
-        op: BinaryOperator::And,
-        right: Box::new(right),
-    })
+    conjuncts
+        .into_iter()
+        .fold(first, |left, right| Expr::BinaryOp {
+            left: Box::new(left),
+            op: BinaryOperator::And,
+            right: Box::new(right),
+        })
 }
 
 #[cfg(test)]

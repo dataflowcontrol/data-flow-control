@@ -27,22 +27,22 @@ fn scan_count_if_transforms_to_case_when() {
 }
 
 #[test]
-fn scan_array_agg_transforms_to_single_element_array() {
-    let policy = PolicyIr::CompatDfc {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimensions: Vec::new(),
-        sink: None,
-        sink_alias: None,
-        constraint: "array_agg(foo.id) = [foo.id]".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    };
-    assert_rewrite(
+fn scan_array_agg_non_distributive_uses_partial_push() {
+    let sql = rewrite(
         "SELECT id FROM foo",
-        &[policy],
-        "SELECT id FROM foo WHERE [foo.id] = [foo.id]",
+        &[PolicyIr::CompatDfc {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimensions: Vec::new(),
+            sink: None,
+            sink_alias: None,
+            constraint: "array_agg(foo.id) = [foo.id]".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        }],
     );
+    assert!(sql.contains("WITH base_query AS ("));
+    assert!(sql.contains("policy_eval AS ("));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn scan_count_distinct_equality_expands_to_row_predicate() {
 }
 
 #[test]
-fn scan_avg_non_distributive_uses_scalar_subquery_fallback() {
+fn scan_avg_non_distributive_uses_partial_push() {
     let sql = rewrite(
         "SELECT id FROM foo",
         &[PolicyIr::CompatDfc {
@@ -96,10 +96,9 @@ fn scan_avg_non_distributive_uses_scalar_subquery_fallback() {
             description: None,
         }],
     );
-    assert!(
-        sql.contains("(SELECT avg("),
-        "expected scalar subquery fallback for avg(): {sql}"
-    );
+    assert!(sql.contains("WITH base_query AS ("));
+    assert!(sql.contains("policy_eval AS ("));
+    assert!(sql.contains("avg(foo.amount) > 100"));
 }
 
 #[test]

@@ -127,11 +127,19 @@ class PgnPolicy:
 
 
 class SQLRewriter:
-    def __init__(self, conn=None, stream_file_path=None, bedrock_client=None, bedrock_model_id=None, recorder=None):
+    def __init__(
+        self,
+        conn=None,
+        stream_file_path=None,
+        bedrock_client=None,
+        bedrock_model_id=None,
+        recorder=None,
+    ):
         self.conn = conn or duckdb.connect()
-        self.stream_file_path = stream_file_path or tempfile.NamedTemporaryFile(
-            mode="w", delete=False, suffix=".txt"
-        ).name
+        self.stream_file_path = (
+            stream_file_path
+            or tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt").name
+        )
         self.bedrock_client = bedrock_client
         self.bedrock_model_id = bedrock_model_id
         self.recorder = recorder
@@ -184,7 +192,9 @@ class SQLRewriter:
         self._assert_rust_policy_count("aggregate", len(policies))
         return policies
 
-    def delete_policy(self, sources=None, sink=None, constraint="", on_fail=None, description=None) -> bool:
+    def delete_policy(
+        self, sources=None, sink=None, constraint="", on_fail=None, description=None
+    ) -> bool:
         for idx, policy in enumerate(self._policies):
             if sources is not None and getattr(policy, "sources", None) != sources:
                 continue
@@ -210,8 +220,7 @@ class SQLRewriter:
             return True
         return False
 
-    def transform_query(self, query: str, use_two_phase: bool = False) -> str:
-        _ = use_two_phase
+    def transform_query(self, query: str, use_partial_push: bool = False) -> str:
         if self._planner is None:
             return query
         dfc_policies = self.get_dfc_policies()
@@ -219,7 +228,7 @@ class SQLRewriter:
         if not dfc_policies and not aggregate_policies:
             return self._planner.transform_query(query)
         query = self._expand_insert_columns_from_catalog(query)
-        return self._planner.transform_registered(query)
+        return self._planner.transform_registered(query, use_partial_push)
 
     def explain_rewrite(self, query: str) -> str:
         if self._planner is None:
@@ -231,16 +240,16 @@ class SQLRewriter:
         query = self._expand_insert_columns_from_catalog(query)
         return self._planner.explain_rewrite_registered(query)
 
-    def execute(self, query: str, use_two_phase: bool = False):
-        rewritten = self.transform_query(query, use_two_phase=use_two_phase)
+    def execute(self, query: str, use_partial_push: bool = False):
+        rewritten = self.transform_query(query, use_partial_push=use_partial_push)
         executable = _strip_passant_comment(rewritten)
         return self.conn.execute(executable)
 
-    def fetchall(self, query: str, use_two_phase: bool = False):
-        return self.execute(query, use_two_phase=use_two_phase).fetchall()
+    def fetchall(self, query: str, use_partial_push: bool = False):
+        return self.execute(query, use_partial_push=use_partial_push).fetchall()
 
-    def fetchone(self, query: str, use_two_phase: bool = False):
-        return self.execute(query, use_two_phase=use_two_phase).fetchone()
+    def fetchone(self, query: str, use_partial_push: bool = False):
+        return self.execute(query, use_partial_push=use_partial_push).fetchone()
 
     def finalize_aggregate_policies(self, sink_table: str) -> dict[str, str | None]:
         policies = [
@@ -386,7 +395,11 @@ class SQLRewriter:
                 raise ValueError(f"Sink table '{policy.sink}' does not exist")
             sink_columns = self._get_table_columns(policy.sink)
 
-        if isinstance(policy, DFCPolicy) and policy.sink and policy.on_fail == Resolution.INVALIDATE:
+        if (
+            isinstance(policy, DFCPolicy)
+            and policy.sink
+            and policy.on_fail == Resolution.INVALIDATE
+        ):
             valid_type = (sink_columns or {}).get("valid")
             if valid_type != "BOOLEAN":
                 raise ValueError(
@@ -444,7 +457,9 @@ class SQLRewriter:
         return self.stream_file_path
 
     def reset_stream_file_path(self) -> None:
-        self.stream_file_path = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt").name
+        self.stream_file_path = tempfile.NamedTemporaryFile(
+            mode="w", delete=False, suffix=".txt"
+        ).name
 
     def close(self) -> None:
         self.conn.close()
@@ -499,11 +514,7 @@ def _validate_sql_expression(sql: str, label: str) -> None:
 
 def _validate_qualified_columns(sql: str) -> None:
     parsed = sqlglot.parse_one(f"SELECT {sql}", read="duckdb")
-    unqualified = [
-        column.name
-        for column in parsed.find_all(exp.Column)
-        if not column.table
-    ]
+    unqualified = [column.name for column in parsed.find_all(exp.Column) if not column.table]
     if unqualified:
         raise ValueError(
             "All columns in constraints and dimensions must be qualified with table names. "

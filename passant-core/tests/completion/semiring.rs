@@ -59,7 +59,7 @@ fn full_push_nested_subquery_join_uses_semiring_not_scalar_fallback() {
 }
 
 #[test]
-fn partial_push_left_join_preserves_nullable_side_semantics() {
+fn full_push_left_join_preserves_nullable_side_semantics() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["bar".to_string()],
         required_sources: Vec::new(),
@@ -74,15 +74,12 @@ fn partial_push_left_join_preserves_nullable_side_semantics() {
         "SELECT foo.id, bar.amount FROM foo LEFT JOIN bar ON foo.id = bar.id",
         &policies,
     );
-    assert_eq!(result.chosen.strategy, RewriteStrategy::PartialPush);
+    assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     let sql = rewrite(
         "SELECT foo.id, bar.amount FROM foo LEFT JOIN bar ON foo.id = bar.id",
         &policies,
     );
-    assert!(
-        sql.contains("LEFT JOIN"),
-        "partial push should preserve outer join shape: {sql}"
-    );
+    assert!(sql.contains("LEFT JOIN"));
 }
 
 #[test]
@@ -145,6 +142,7 @@ fn aggregation_query_full_push_inlines_having_semiring() {
         "SELECT foo.category, sum(foo.amount) FROM foo GROUP BY foo.category",
         &policies,
     );
+    assert!(!sql.contains("WITH base_query AS ("));
     assert_eq!(
         sql,
         "SELECT foo.category, sum(foo.amount) FROM foo GROUP BY foo.category HAVING sum(foo.amount) > 100"

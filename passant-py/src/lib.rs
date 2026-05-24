@@ -213,9 +213,11 @@ impl PyPlanner {
         ))
     }
 
-    fn transform_registered(&self, query: String) -> PyResult<String> {
+    #[pyo3(signature = (query, use_partial_push=false))]
+    fn transform_registered(&self, query: String, use_partial_push: bool) -> PyResult<String> {
+        let options = passant_core::RewriteOptions { use_partial_push };
         self.rewriter
-            .rewrite(&query)
+            .rewrite_with_options(&query, options)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 

@@ -15,7 +15,11 @@ dev = [
     "maturin>=1.7.0",
     "pytest>=8.4.2",
     "ruff>=0.11.0",
+    "sql-rewriter",
 ]
+
+[tool.uv.sources]
+sql-rewriter = { path = "../sql_rewriter", editable = true }
 
 [build-system]
 requires = ["maturin>=1.7,<2"]

@@ -7,7 +7,6 @@ use crate::policy::{PolicyIr, Resolution};
 pub enum RewriteStrategy {
     FullPush,
     PartialPush,
-    LogicalFallback,
     RootFilter,
     ProjectionPropagation,
     SinkMappedRewrite,
@@ -47,10 +46,10 @@ impl RewriteOptimizer {
             .collect::<Vec<_>>();
         if scope.has_non_monotonic_operation {
             candidates.push(CandidatePlan {
-                strategy: RewriteStrategy::LogicalFallback,
+                strategy: RewriteStrategy::FullPush,
                 score: 5,
                 reasons: vec![
-                    "Query contains a non-monotonic construct that requires source-set semantics or a logical fallback".into(),
+                    "Query contains a non-monotonic construct; enforce via source-set splitting under Full-Push".into(),
                 ],
                 applied_policies: policy_names.clone(),
             });
@@ -64,24 +63,12 @@ impl RewriteOptimizer {
                 )],
                 applied_policies: policy_names.clone(),
             });
-        } else if scope.is_aggregation || scope.has_outer_join || scope.has_sink_mapping {
-            let reason = if scope.requires_source_set_annotations {
-                "Policy enforcement needs source-set-aware propagation before final aggregation, outer join, or sink mapping"
-            } else {
-                "Policy enforcement needs boundary-aware propagation before final aggregation, outer join, or sink mapping"
-            };
-            candidates.push(CandidatePlan {
-                strategy: RewriteStrategy::PartialPush,
-                score: 5,
-                reasons: vec![reason.into()],
-                applied_policies: policy_names.clone(),
-            });
         } else {
             candidates.push(CandidatePlan {
                 strategy: RewriteStrategy::FullPush,
                 score: 5,
                 reasons: vec![
-                    "Query is monotonic in the supported SPJU fragment; policy predicates can be pushed to contributing tuples".into(),
+                    "Policy aggregates are semiring; predicates can be pushed inline during query execution".into(),
                 ],
                 applied_policies: policy_names.clone(),
             });
@@ -184,11 +171,11 @@ mod tests {
     }
 
     #[test]
-    fn non_monotonic_scope_prefers_logical_fallback() {
+    fn non_monotonic_scope_prefers_full_push() {
         let mut scope = empty_scope();
         scope.has_non_monotonic_operation = true;
         let candidates = RewriteOptimizer.rank_candidates(&scope, &[sample_policy()]);
-        assert_eq!(candidates[0].strategy, RewriteStrategy::LogicalFallback);
+        assert_eq!(candidates[0].strategy, RewriteStrategy::FullPush);
     }
 
     #[test]

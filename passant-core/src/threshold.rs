@@ -132,10 +132,7 @@ fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<Thresh
         left.to_string()
     };
     Some(ThresholdPredicate {
-        key: ThresholdKey {
-            lhs,
-            direction,
-        },
+        key: ThresholdKey { lhs, direction },
         value,
         strict,
     })

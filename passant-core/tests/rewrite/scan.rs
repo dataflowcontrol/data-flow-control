@@ -208,7 +208,7 @@ fn rewriter_filters_after_limit_for_remove_policy() {
         .expect("query should rewrite");
     assert_eq!(
         sql,
-        "SELECT id FROM (SELECT id FROM foo ORDER BY id LIMIT 1) AS __passant_limited WHERE id > 1"
+        "SELECT id FROM foo WHERE foo.id > 1 ORDER BY id LIMIT 1"
     );
 }
 
@@ -231,7 +231,7 @@ fn rewriter_filters_after_offset_for_remove_policy() {
         .expect("query should rewrite");
     assert_eq!(
         sql,
-        "SELECT id FROM (SELECT id FROM foo ORDER BY id OFFSET 1) AS __passant_limited WHERE id > 2"
+        "SELECT id FROM foo WHERE foo.id > 2 ORDER BY id OFFSET 1"
     );
 }
 
@@ -254,7 +254,7 @@ fn rewriter_filters_after_limit_offset_for_remove_policy() {
         .expect("query should rewrite");
     assert_eq!(
         sql,
-        "SELECT id FROM (SELECT id FROM foo ORDER BY id LIMIT 2 OFFSET 1) AS __passant_limited WHERE id > 2"
+        "SELECT id FROM foo WHERE foo.id > 2 ORDER BY id LIMIT 2 OFFSET 1"
     );
 }
 
@@ -277,7 +277,7 @@ fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
         .expect("query should rewrite");
     assert_eq!(
         sql,
-        "SELECT id FROM (SELECT id, foo.secret AS __passant_filter_secret FROM foo ORDER BY id LIMIT 1) AS __passant_limited WHERE __passant_filter_secret > 1"
+        "SELECT id FROM foo WHERE foo.secret > 1 ORDER BY id LIMIT 1"
     );
 }
 

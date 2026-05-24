@@ -3,6 +3,7 @@ mod common;
 
 mod aggregate_policy;
 mod conformance;
+mod partial_push;
 mod pgn;
 mod pgn_unique;
 mod policy_storage;

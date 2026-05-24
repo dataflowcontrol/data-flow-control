@@ -245,7 +245,12 @@ impl PassantPlanner {
         for policy in policies {
             rewriter.register_policy(policy.clone());
         }
-        let rewrite_result = rewriter.rewrite(query.raw_sql());
+        let rewrite_result = rewriter.rewrite_with_options(
+            query.raw_sql(),
+            crate::rewriter::RewriteOptions {
+                use_partial_push: chosen == crate::optimizer::RewriteStrategy::PartialPush,
+            },
+        );
         let (rewritten_sql, rewrite_error) = match rewrite_result {
             Ok(sql) => (sql, None),
             Err(err) => (query.raw_sql().to_string(), Some(err.to_string())),

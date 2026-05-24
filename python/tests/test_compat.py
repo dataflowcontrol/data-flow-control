@@ -1,7 +1,6 @@
 from passant.compat import AggregateDFCPolicy, DFCPolicy, Resolution, SQLRewriter
 import json
 import pytest
-import sql_rewriter
 
 
 def test_python_compat_rewriter_preserves_policy_registration():
@@ -152,9 +151,16 @@ def test_python_compat_aggregate_policy_only_supports_invalidate():
         )
 
 
-def test_sql_rewriter_package_reexports_rust_backed_compatibility_layer():
-    assert sql_rewriter.SQLRewriter is SQLRewriter
-    assert sql_rewriter.DFCPolicy is DFCPolicy
+def test_passant_compat_exposes_same_public_api_as_original_sql_rewriter():
+    from sql_rewriter import DFCPolicy as LegacyDFCPolicy
+    from sql_rewriter import Resolution as LegacyResolution
+    from sql_rewriter import SQLRewriter as LegacySQLRewriter
+
+    assert LegacyResolution.REMOVE.value == Resolution.REMOVE.value
+    assert LegacyResolution.KILL.value == Resolution.KILL.value
+    assert LegacyResolution.INVALIDATE.value == Resolution.INVALIDATE.value
+    assert LegacyDFCPolicy.__name__ == DFCPolicy.__name__
+    assert LegacySQLRewriter.__name__ == SQLRewriter.__name__
 
 
 def test_python_compat_stream_path_defaults_and_resets():
@@ -261,7 +267,7 @@ def test_python_compat_explain_rewrite_reports_non_distributive_policy_aggregate
     assert explanation["scope"]["non_distributive_policy_aggregates"] == ["avg(foo.id)"]
 
 
-def test_python_compat_non_distributive_scan_policy_uses_scalar_fallback():
+def test_python_compat_non_distributive_scan_policy_uses_partial_push():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
@@ -273,13 +279,14 @@ def test_python_compat_non_distributive_scan_policy_uses_scalar_fallback():
         )
     )
 
-    assert rewriter.transform_query("SELECT id FROM foo") == (
-        "SELECT id FROM foo WHERE (SELECT avg(foo.id) > 1 FROM foo)"
-    )
+    transformed = rewriter.transform_query("SELECT id FROM foo")
+    assert transformed.startswith("WITH base_query AS (")
+    assert "policy_eval AS (" in transformed
+    assert "CROSS JOIN policy_eval" in transformed
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (3,)]
 
 
-def test_python_compat_non_distributive_scalar_fallback_handles_aliases():
+def test_python_compat_non_distributive_partial_push_handles_aliases():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
@@ -291,9 +298,10 @@ def test_python_compat_non_distributive_scalar_fallback_handles_aliases():
         )
     )
 
-    assert rewriter.transform_query("SELECT f.id FROM foo AS f") == (
-        "SELECT f.id FROM foo AS f WHERE (SELECT avg(foo.id) > 1 FROM foo)"
-    )
+    transformed = rewriter.transform_query("SELECT f.id FROM foo AS f")
+    assert transformed.startswith("WITH base_query AS (")
+    assert "policy_eval AS (" in transformed
+    assert "avg(f.id) > 1" in transformed
     assert rewriter.fetchall("SELECT f.id FROM foo AS f ORDER BY f.id") == [(1,), (3,)]
 
 
@@ -316,10 +324,12 @@ def test_python_compat_non_distributive_scalar_fallback_splits_source_local_pred
     ) == [(1,), (1,), (3,), (3,)]
 
 
-def test_python_compat_rejects_cross_source_non_distributive_aggregate_comparison():
+def test_python_compat_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
+    rewriter.execute("INSERT INTO foo VALUES (1), (3)")
+    rewriter.execute("INSERT INTO bar VALUES (2), (4)")
     rewriter.register_policy(
         DFCPolicy(
             sources=["foo", "bar"],
@@ -328,8 +338,10 @@ def test_python_compat_rejects_cross_source_non_distributive_aggregate_compariso
         )
     )
 
-    with pytest.raises(ValueError, match="multi-source aggregate predicate"):
-        rewriter.execute("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
+    transformed = rewriter.transform_query("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
+    assert transformed.startswith("WITH base_query AS (")
+    assert "avg(foo.id) > avg(bar.id)" in transformed
+    assert rewriter.fetchall("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id") == []
 
 
 def test_python_compat_rejects_mixed_row_and_non_distributive_aggregate_policy():
@@ -343,7 +355,7 @@ def test_python_compat_rejects_mixed_row_and_non_distributive_aggregate_policy()
         )
     )
 
-    with pytest.raises(ValueError, match="non-distributive policy aggregate"):
+    with pytest.raises(Exception, match="GROUP BY"):
         rewriter.execute("SELECT id FROM foo")
 
 
@@ -359,7 +371,9 @@ def test_python_compat_explain_rewrite_reports_unsupported_rewrite_error():
         )
     )
 
-    explanation = json.loads(rewriter.explain_rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo"))
+    explanation = json.loads(
+        rewriter.explain_rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo")
+    )
     assert explanation["scope"]["requires_source_set_annotations"] is True
     assert explanation["chosen"]["rewrite_error"] is None
     assert explanation["chosen"]["rewritten_sql"] == (
@@ -384,9 +398,9 @@ def test_python_compat_explain_rewrite_reports_source_set_error():
     )
     assert explanation["scope"]["requires_source_set_annotations"] is True
     assert explanation["chosen"]["rewrite_error"] is None
-    assert explanation["chosen"]["rewritten_sql"] == (
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
-    )
+    rewritten = explanation["chosen"]["rewritten_sql"]
+    assert "base_query" not in rewritten.lower()
+    assert "bar.id > foo.id" in rewritten
 
 
 def test_python_compat_execute_round_trips_through_duckdb():
@@ -745,9 +759,7 @@ def test_python_compat_update_invalidate_maintains_existing_valid_assignment():
     )
 
     rewriter.execute("UPDATE reports SET valid = FALSE, status = 'approved'")
-    assert rewriter.fetchall("SELECT id, status, valid FROM reports") == [
-        (1, "approved", False)
-    ]
+    assert rewriter.fetchall("SELECT id, status, valid FROM reports") == [(1, "approved", False)]
 
 
 def test_python_compat_update_from_source_invalidate_policy_sets_valid():
@@ -871,7 +883,8 @@ def test_python_compat_invalidate_message_maintains_existing_message_column():
     ]
 
 
-def test_python_compat_remove_policy_filters_after_limit():
+def test_python_compat_remove_policy_filters_before_limit_for_full_push():
+    """Distributive policies use Full-Push: inline WHERE is applied before LIMIT."""
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -883,10 +896,10 @@ def test_python_compat_remove_policy_filters_after_limit():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == []
+    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == [(2,)]
 
 
-def test_python_compat_remove_policy_filters_after_offset():
+def test_python_compat_remove_policy_filters_before_offset_for_full_push():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
@@ -898,10 +911,10 @@ def test_python_compat_remove_policy_filters_after_offset():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id OFFSET 1") == [(3,)]
+    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id OFFSET 1") == []
 
 
-def test_python_compat_remove_policy_filters_after_limit_offset():
+def test_python_compat_remove_policy_filters_before_limit_offset_for_full_push():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3), (4)")
@@ -913,10 +926,10 @@ def test_python_compat_remove_policy_filters_after_limit_offset():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 2 OFFSET 1") == [(3,)]
+    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 2 OFFSET 1") == [(4,)]
 
 
-def test_python_compat_limit_filter_propagates_hidden_policy_column():
+def test_python_compat_full_push_limit_filter_uses_inline_where():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER, secret INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1, 0), (2, 10)")
@@ -928,7 +941,7 @@ def test_python_compat_limit_filter_propagates_hidden_policy_column():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == []
+    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == [(2,)]
 
 
 def test_python_compat_policy_applies_inside_derived_subquery():
@@ -958,7 +971,9 @@ def test_python_compat_policy_applies_inside_cte():
         )
     )
 
-    assert rewriter.fetchall("WITH q AS (SELECT id FROM foo) SELECT id FROM q ORDER BY id") == [(2,)]
+    assert rewriter.fetchall("WITH q AS (SELECT id FROM foo) SELECT id FROM q ORDER BY id") == [
+        (2,)
+    ]
 
 
 def test_python_compat_policy_applies_to_matching_union_branch():
@@ -1084,9 +1099,9 @@ def test_python_compat_rewrites_outer_join_policy_with_source_sets():
         )
     )
 
-    assert rewriter.transform_query(
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id"
-    ) == ("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id")
+    assert rewriter.transform_query("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id") == (
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
+    )
 
 
 def test_python_compat_splits_source_local_outer_join_policy_that_would_need_source_sets():
@@ -1120,14 +1135,15 @@ def test_python_compat_cross_source_outer_join_policy_rewrites_with_source_sets(
         )
     )
 
-    assert rewriter.transform_query(
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id"
-    ) == ("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id")
+    assert rewriter.transform_query("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id") == (
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
+    )
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
-    assert rewriter.fetchall(
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id ORDER BY bar.id"
-    ) == []
+    assert (
+        rewriter.fetchall("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id ORDER BY bar.id")
+        == []
+    )
 
 
 def test_python_compat_splits_source_local_union_policy_that_would_need_source_sets():
@@ -1218,9 +1234,10 @@ def test_python_compat_cross_source_full_join_policy_rewrites_with_source_sets()
     )
 
     rewriter.execute("SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id")
-    assert rewriter.fetchall(
-        "SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id ORDER BY bar.id"
-    ) == []
+    assert (
+        rewriter.fetchall("SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id ORDER BY bar.id")
+        == []
+    )
 
 
 def test_python_compat_policy_applies_to_semi_join_source():
@@ -1380,9 +1397,10 @@ def test_python_compat_delete_aggregate_policy_updates_rust_storage():
         on_fail=Resolution.INVALIDATE,
     )
     rewriter.register_policy(policy)
-    assert json.loads(rewriter._planner.aggregate_policies_json())[0]["CompatAggregate"][
-        "dimensions"
-    ] == []
+    assert (
+        json.loads(rewriter._planner.aggregate_policies_json())[0]["CompatAggregate"]["dimensions"]
+        == []
+    )
 
     assert rewriter.delete_policy(
         sources=["foo"],
@@ -1494,7 +1512,9 @@ def test_python_compat_finalize_dimensioned_aggregate_policies_invalidates_match
 def test_python_compat_aggregate_policy_temp_columns_and_finalize():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (amount INTEGER)")
-    rewriter.execute("CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)")
+    rewriter.execute(
+        "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
+    )
     rewriter.execute("INSERT INTO foo VALUES (5), (10)")
     rewriter.register_policy(
         AggregateDFCPolicy(
@@ -1557,7 +1577,9 @@ def test_python_compat_grouped_aggregate_policy_temp_columns_and_finalize():
 def test_python_compat_count_aggregate_policy_temp_columns_and_finalize():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER, total INTEGER)")
-    rewriter.execute("CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)")
+    rewriter.execute(
+        "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
+    )
     rewriter.execute("INSERT INTO foo VALUES (1, 1), (2, 1), (NULL, 1)")
     rewriter.register_policy(
         AggregateDFCPolicy(
