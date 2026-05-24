@@ -3,7 +3,6 @@
 use passant_core::threshold_dominates;
 
 #[test]
-#[ignore = "completion: threshold_equality"]
 fn count_distinct_equality_policies_dominance() {
     assert!(threshold_dominates(
         "count(distinct foo.id) = 1",
@@ -16,7 +15,6 @@ fn count_distinct_equality_policies_dominance() {
 }
 
 #[test]
-#[ignore = "completion: threshold_inequality"]
 fn count_distinct_inequality_policies_dominance() {
     assert!(threshold_dominates(
         "count(distinct foo.id) != 1",
@@ -25,7 +23,6 @@ fn count_distinct_inequality_policies_dominance() {
 }
 
 #[test]
-#[ignore = "completion: threshold_parametric"]
 fn parametric_k_anonymity_template_dominance() {
     assert!(threshold_dominates(
         "count(distinct receipts.customer_id) >= 5",
@@ -34,14 +31,12 @@ fn parametric_k_anonymity_template_dominance() {
 }
 
 #[test]
-#[ignore = "completion: threshold_mixed_ops"]
 fn mixed_comparison_operators_do_not_false_positive() {
     assert!(!threshold_dominates("max(foo.id) > 10", "max(foo.id) = 10"));
     assert!(!threshold_dominates("max(foo.id) = 10", "max(foo.id) > 10"));
 }
 
 #[test]
-#[ignore = "completion: threshold_planner_integration"]
 fn planner_applies_dominance_before_rewrite() {
     use passant_core::{PolicyIr, Resolution};
 

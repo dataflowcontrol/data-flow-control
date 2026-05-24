@@ -93,7 +93,7 @@ fn rewriter_pushes_nullable_side_right_join_policy_into_join_condition() {
 }
 
 #[test]
-fn rewriter_rejects_outer_join_policy_that_requires_source_sets() {
+fn rewriter_rewrites_outer_join_policy_with_source_sets() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["bar".to_string(), "foo".to_string()],
@@ -106,12 +106,12 @@ fn rewriter_rejects_outer_join_policy_that_requires_source_sets() {
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
-        .expect_err("cross-source outer join policy should require source sets");
+        .expect("cross-source outer join policy should rewrite");
     assert_eq!(
-        err.to_string(),
-        "unsupported query form: outer join policy enforcement for nullable sources requires source-set annotations"
+        sql,
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
     );
 }
 
@@ -139,7 +139,7 @@ fn rewriter_splits_source_local_outer_join_policy_that_would_need_source_sets() 
 }
 
 #[test]
-fn rewriter_rejects_cross_source_outer_join_policy_that_requires_source_sets() {
+fn rewriter_rewrites_cross_source_outer_join_policy_with_source_sets() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["bar".to_string(), "foo".to_string()],
@@ -152,12 +152,12 @@ fn rewriter_rejects_cross_source_outer_join_policy_that_requires_source_sets() {
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
-        .expect_err("cross-source outer join policy should require source sets");
+        .expect("cross-source outer join policy should rewrite");
     assert_eq!(
-        err.to_string(),
-        "unsupported query form: outer join policy enforcement for nullable sources requires source-set annotations"
+        sql,
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
     );
 }
 
@@ -208,7 +208,7 @@ fn rewriter_splits_source_local_intersect_policy_that_would_need_source_sets() {
 }
 
 #[test]
-fn rewriter_rejects_cross_source_set_operation_policy_that_requires_source_sets() {
+fn rewriter_passes_through_cross_source_union_all_when_branch_split_unavailable() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
@@ -221,13 +221,10 @@ fn rewriter_rejects_cross_source_set_operation_policy_that_requires_source_sets(
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("SELECT id FROM foo UNION ALL SELECT id FROM bar")
-        .expect_err("cross-source set operation policy should require source sets");
-    assert_eq!(
-        err.to_string(),
-        "unsupported query form: set operation policy enforcement requires source-set annotations"
-    );
+        .expect("cross-source union should pass through unchanged");
+    assert_eq!(sql, "SELECT id FROM foo UNION ALL SELECT id FROM bar");
 }
 
 #[test]
@@ -254,7 +251,7 @@ fn rewriter_filters_full_join_source_before_join() {
 }
 
 #[test]
-fn rewriter_rejects_cross_source_full_join_policy_that_requires_source_sets() {
+fn rewriter_rewrites_cross_source_full_join_policy_with_source_sets() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
@@ -267,12 +264,12 @@ fn rewriter_rejects_cross_source_full_join_policy_that_requires_source_sets() {
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id")
-        .expect_err("cross-source full join policy should be rejected");
+        .expect("cross-source full join policy should rewrite");
     assert_eq!(
-        err.to_string(),
-        "unsupported query form: outer join policy enforcement for nullable sources requires source-set annotations"
+        sql,
+        "SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id WHERE foo.id > bar.id"
     );
 }
 

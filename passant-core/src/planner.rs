@@ -6,6 +6,7 @@ use crate::optimizer::{CandidatePlan, RewriteOptimizer, RewriteStrategy};
 use crate::policy::PolicyIr;
 use crate::rewriter::PassantRewriter;
 use crate::semiring;
+use crate::threshold;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ScopeInfo {
@@ -53,7 +54,8 @@ impl PassantPlanner {
 
     pub fn plan_query(&self, query: &QueryIr, policies: &[PolicyIr]) -> PlanQueryResult {
         let scope = self.scope_info(query, policies);
-        let applicable_policies = self.matching_policies(query, policies);
+        let applicable_policies =
+            threshold::prune_dominated_remove_policies(&self.matching_policies(query, policies));
         let candidate_policies = if applicable_policies.is_empty()
             && scope.has_non_monotonic_operation
             && !policies.is_empty()
@@ -131,6 +133,11 @@ impl PassantPlanner {
 
     fn matching_policies(&self, query: &QueryIr, policies: &[PolicyIr]) -> Vec<PolicyIr> {
         let visible = visible_tables(query);
+        let base_tables = query
+            .direct_base_tables()
+            .into_iter()
+            .map(|table| table.to_ascii_lowercase())
+            .collect::<std::collections::HashSet<_>>();
         let sink = sink_name(query);
         policies
             .iter()
@@ -141,14 +148,14 @@ impl PassantPlanner {
                     .map(|source| source.to_ascii_lowercase())
                     .collect::<std::collections::HashSet<_>>();
                 let sources_match = policy.sources().iter().all(|source| {
-                    if policy.sink().is_some()
-                        && required_sources.contains(&source.to_ascii_lowercase())
-                    {
+                    let source_key = source.to_ascii_lowercase();
+                    if policy.sink().is_some() && required_sources.contains(&source_key) {
                         return true;
                     }
-                    visible
-                        .iter()
-                        .any(|table| table.eq_ignore_ascii_case(source))
+                    base_tables.contains(&source_key)
+                        || visible
+                            .iter()
+                            .any(|table| table.eq_ignore_ascii_case(source))
                 });
                 let sink_match = match policy.sink() {
                     Some(policy_sink) => sink

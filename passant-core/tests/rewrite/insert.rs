@@ -227,13 +227,13 @@ fn rewriter_adds_simple_aggregate_policy_temp_columns_to_insert() {
         .expect("query should rewrite");
     assert_eq!(
         sql,
-        "INSERT INTO reports (total, _passant_agg_1) SELECT foo.amount, foo.amount AS _passant_agg_1 FROM foo"
+        "INSERT INTO reports (total, __passant_agg_0, __passant_agg_1) SELECT foo.amount, foo.amount AS __passant_agg_0, foo.amount AS __passant_agg_1 FROM foo"
     );
 
     let queries = rewriter.finalize_aggregate_queries("reports");
     assert_eq!(
         queries[0].sql,
-        "SELECT (sum(_passant_agg_1) > sum(reports.total)) AS constraint_result FROM reports"
+        "SELECT (sum(__passant_agg_0) > sum(reports.total)) AS constraint_result FROM reports"
     );
 }
 
@@ -255,13 +255,13 @@ fn rewriter_adds_grouped_aggregate_policy_temp_columns_to_insert() {
         .expect("grouped insert should rewrite");
     assert_eq!(
         sql,
-        "INSERT INTO reports (region, total, _passant_agg_1) SELECT foo.region, sum(foo.amount), sum(foo.amount) AS _passant_agg_1 FROM foo GROUP BY foo.region"
+        "INSERT INTO reports (region, total, __passant_agg_0, __passant_agg_1) SELECT foo.region, sum(foo.amount), sum(foo.amount) AS __passant_agg_0, sum(foo.amount) AS __passant_agg_1 FROM foo GROUP BY foo.region"
     );
 
     let queries = rewriter.finalize_aggregate_queries("reports");
     assert_eq!(
         queries[0].sql,
-        "SELECT reports.region, (sum(_passant_agg_1) >= sum(reports.total)) AS constraint_result FROM reports GROUP BY reports.region"
+        "SELECT reports.region, (sum(__passant_agg_0) >= sum(reports.total)) AS constraint_result FROM reports GROUP BY reports.region"
     );
 }
 
@@ -281,13 +281,13 @@ fn rewriter_uses_count_contributions_for_aggregate_policy_temp_columns() {
         .expect("count temp insert should rewrite");
     assert_eq!(
         sql,
-        "INSERT INTO reports (total, _passant_agg_1) SELECT foo.total, CASE WHEN foo.id IS NOT NULL THEN 1 ELSE 0 END AS _passant_agg_1 FROM foo"
+        "INSERT INTO reports (total, __passant_agg_0, __passant_agg_1) SELECT foo.total, foo.id AS __passant_agg_0, foo.total AS __passant_agg_1 FROM foo"
     );
 
     let queries = rewriter.finalize_aggregate_queries("reports");
     assert_eq!(
         queries[0].sql,
-        "SELECT (sum(_passant_agg_1) >= sum(reports.total)) AS constraint_result FROM reports"
+        "SELECT (sum(__passant_agg_0) >= sum(reports.total)) AS constraint_result FROM reports"
     );
 }
 
@@ -314,16 +314,16 @@ fn rewriter_uses_consistent_aggregate_temp_columns_across_policies() {
         .expect("query should rewrite");
     assert_eq!(
         sql,
-        "INSERT INTO reports (total, _passant_agg_1, _passant_agg_2) SELECT foo.amount, foo.amount AS _passant_agg_1, foo.tax AS _passant_agg_2 FROM foo"
+        "INSERT INTO reports (total, __passant_agg_0, __passant_agg_1, __passant_agg_2) SELECT foo.amount, foo.amount AS __passant_agg_0, foo.amount AS __passant_agg_1, foo.tax AS __passant_agg_2 FROM foo"
     );
 
     let queries = rewriter.finalize_aggregate_queries("reports");
     assert_eq!(
         queries[0].sql,
-        "SELECT (sum(_passant_agg_1) > sum(reports.total)) AS constraint_result FROM reports"
+        "SELECT (sum(__passant_agg_0) > sum(reports.total)) AS constraint_result FROM reports"
     );
     assert_eq!(
         queries[1].sql,
-        "SELECT (sum(_passant_agg_2) > sum(reports.total)) AS constraint_result FROM reports"
+        "SELECT (sum(__passant_agg_2) > sum(reports.total)) AS constraint_result FROM reports"
     );
 }

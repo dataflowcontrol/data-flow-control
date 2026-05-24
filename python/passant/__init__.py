@@ -1,7 +1,7 @@
 from .compat import (
     AggregateDFCPolicy,
     DFCPolicy,
-    FlowGuardPolicy,
+    PgnPolicy,
     Resolution,
     SQLRewriter,
 )
@@ -9,7 +9,7 @@ from .compat import (
 __all__ = [
     "AggregateDFCPolicy",
     "DFCPolicy",
-    "FlowGuardPolicy",
+    "PgnPolicy",
     "Resolution",
     "SQLRewriter",
 ]

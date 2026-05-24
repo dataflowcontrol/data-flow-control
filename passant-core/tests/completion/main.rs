@@ -3,7 +3,7 @@ mod common;
 
 mod aggregate_policy;
 mod conformance;
-mod flowguard;
+mod pgn;
 mod pgn_unique;
 mod policy_storage;
 mod semiring;

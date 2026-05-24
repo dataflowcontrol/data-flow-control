@@ -118,11 +118,11 @@ class AggregateDFCPolicy:
 
 
 @dataclass(eq=True)
-class FlowGuardPolicy:
+class PgnPolicy:
     text: str
 
     @classmethod
-    def from_text(cls, text: str) -> "FlowGuardPolicy":
+    def from_text(cls, text: str) -> "PgnPolicy":
         return cls(text=text)
 
 
@@ -136,7 +136,7 @@ class SQLRewriter:
         self.bedrock_model_id = bedrock_model_id
         self.recorder = recorder
         self._resolver_functions = {}
-        self._policies: list[DFCPolicy | AggregateDFCPolicy | FlowGuardPolicy] = []
+        self._policies: list[DFCPolicy | AggregateDFCPolicy | PgnPolicy] = []
         self._planner = _passant.PyPlanner() if _passant is not None else None
         self._register_kill_udf()
         self._register_resolver_udf()
@@ -165,10 +165,13 @@ class SQLRewriter:
             pass
         self.conn.create_function(name, function, [], "BOOLEAN")
 
-    def register_policy(self, policy: DFCPolicy | AggregateDFCPolicy | FlowGuardPolicy) -> None:
+    def register_policy(self, policy: DFCPolicy | AggregateDFCPolicy | PgnPolicy) -> None:
         if isinstance(policy, DFCPolicy | AggregateDFCPolicy):
             self._validate_policy_catalog(policy)
             self._register_policy_in_rust(policy)
+        elif isinstance(policy, PgnPolicy):
+            if self._planner is not None:
+                self._planner.register_policy_text(policy.text)
         self._policies.append(policy)
 
     def get_dfc_policies(self) -> list[DFCPolicy]:

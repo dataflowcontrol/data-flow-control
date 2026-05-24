@@ -39,7 +39,7 @@ pub enum PolicyParseError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FlowGuardPolicyKind {
+pub enum PgnPolicyKind {
     Over,
     Update,
 }
@@ -53,8 +53,8 @@ pub struct PolicyScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlowGuardPolicy {
-    pub kind: FlowGuardPolicyKind,
+pub struct PgnPolicy {
+    pub kind: PgnPolicyKind,
     pub scope: PolicyScope,
     pub aggregations: Vec<String>,
     pub constraint: String,
@@ -85,7 +85,7 @@ pub enum PolicyIr {
         description: Option<String>,
     },
     CompatAggregate(AggregateDfcPolicy),
-    NativeFlowGuard(FlowGuardPolicy),
+    NativePgn(PgnPolicy),
 }
 
 impl PolicyIr {
@@ -93,7 +93,7 @@ impl PolicyIr {
         match self {
             PolicyIr::CompatDfc { sources, .. } => sources,
             PolicyIr::CompatAggregate(policy) => &policy.sources,
-            PolicyIr::NativeFlowGuard(policy) => &policy.scope.sources,
+            PolicyIr::NativePgn(policy) => &policy.scope.sources,
         }
     }
 
@@ -102,7 +102,7 @@ impl PolicyIr {
             PolicyIr::CompatDfc {
                 required_sources, ..
             } => required_sources,
-            PolicyIr::CompatAggregate(_) | PolicyIr::NativeFlowGuard(_) => &[],
+            PolicyIr::CompatAggregate(_) | PolicyIr::NativePgn(_) => &[],
         }
     }
 
@@ -110,7 +110,7 @@ impl PolicyIr {
         match self {
             PolicyIr::CompatDfc { sink, .. } => sink.as_deref(),
             PolicyIr::CompatAggregate(policy) => policy.sink.as_deref(),
-            PolicyIr::NativeFlowGuard(policy) => policy.scope.sink.as_deref(),
+            PolicyIr::NativePgn(policy) => policy.scope.sink.as_deref(),
         }
     }
 
@@ -118,7 +118,7 @@ impl PolicyIr {
         match self {
             PolicyIr::CompatDfc { dimensions, .. } => dimensions,
             PolicyIr::CompatAggregate(policy) => &policy.dimensions,
-            PolicyIr::NativeFlowGuard(policy) => &policy.scope.dimensions,
+            PolicyIr::NativePgn(policy) => &policy.scope.dimensions,
         }
     }
 
@@ -126,7 +126,7 @@ impl PolicyIr {
         match self {
             PolicyIr::CompatDfc { constraint, .. } => constraint,
             PolicyIr::CompatAggregate(policy) => &policy.constraint,
-            PolicyIr::NativeFlowGuard(policy) => &policy.constraint,
+            PolicyIr::NativePgn(policy) => &policy.constraint,
         }
     }
 
@@ -134,7 +134,7 @@ impl PolicyIr {
         match self {
             PolicyIr::CompatDfc { on_fail, .. } => *on_fail,
             PolicyIr::CompatAggregate(_) => Resolution::Invalidate,
-            PolicyIr::NativeFlowGuard(policy) => policy.on_fail,
+            PolicyIr::NativePgn(policy) => policy.on_fail,
         }
     }
 
@@ -142,7 +142,7 @@ impl PolicyIr {
         match self {
             PolicyIr::CompatDfc { .. } => "compat_dfc",
             PolicyIr::CompatAggregate(_) => "compat_aggregate",
-            PolicyIr::NativeFlowGuard(_) => "flowguard",
+            PolicyIr::NativePgn(_) => "pgn",
         }
     }
 }
@@ -157,6 +157,10 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
     let mut normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return Err(PolicyParseError::Empty);
+    }
+
+    if strip_keyword_prefix(&mut normalized, "PGN") {
+        return parse_pgn_policy(&normalized);
     }
 
     let is_aggregate = strip_keyword_prefix(&mut normalized, "AGGREGATE");
@@ -229,6 +233,88 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
         on_fail: Resolution::parse(&resolution)?,
         description,
     })
+}
+
+fn parse_pgn_policy(normalized: &str) -> Result<PolicyIr, PolicyParseError> {
+    let mut remainder = normalized.to_string();
+    let kind = if strip_keyword_prefix(&mut remainder, "OVER") {
+        PgnPolicyKind::Over
+    } else if strip_keyword_prefix(&mut remainder, "UPDATE") {
+        PgnPolicyKind::Update
+    } else {
+        return Err(PolicyParseError::MissingClause("OVER or UPDATE"));
+    };
+    let sources = clause_value(
+        &remainder,
+        &["SOURCE", "SOURCES"],
+        &["SINK", "DIMENSION", "AGGREGATE", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
+    )
+    .unwrap_or_default();
+    let raw_sink = clause_value(
+        &remainder,
+        &["SINK"],
+        &["DIMENSION", "AGGREGATE", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
+    )
+    .and_then(blank_to_none);
+    let (sink, sink_alias) = raw_sink
+        .as_deref()
+        .map(parse_name_alias)
+        .transpose()?
+        .unwrap_or((None, None));
+    let dimensions = clause_value(
+        &remainder,
+        &["DIMENSION", "DIMENSIONS"],
+        &["AGGREGATE", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
+    )
+    .map(|value| parse_dimensions(&value))
+    .transpose()?
+    .unwrap_or_default();
+    let aggregations = clause_value(
+        &remainder,
+        &["AGGREGATE"],
+        &["CONSTRAINT", "ON FAIL", "DESCRIPTION"],
+    )
+    .and_then(blank_to_none)
+    .ok_or(PolicyParseError::MissingClause("AGGREGATE"))?;
+    let mut constraint = clause_value(&remainder, &["CONSTRAINT"], &["ON FAIL", "DESCRIPTION"])
+        .and_then(blank_to_none)
+        .ok_or(PolicyParseError::MissingClause("CONSTRAINT"))?;
+    let resolution = clause_value(&remainder, &["ON FAIL"], &["DESCRIPTION"])
+        .and_then(blank_to_none)
+        .ok_or(PolicyParseError::MissingClause("ON FAIL"))?;
+    let description = clause_value(&remainder, &["DESCRIPTION"], &[]).and_then(blank_to_none);
+
+    let parsed_sources = parse_sources(&sources)?;
+    constraint = rewrite_constraint_source_aliases(&constraint, &parsed_sources.aliases);
+    let dimensions: Vec<String> = dimensions
+        .into_iter()
+        .map(|dimension| rewrite_constraint_source_aliases(&dimension, &parsed_sources.aliases))
+        .collect();
+    validate_sql_expression(&constraint, "constraint")?;
+    for dimension in &dimensions {
+        validate_sql_expression(dimension.as_str(), "dimension")?;
+    }
+    for aggregation in aggregations.split(',') {
+        validate_sql_expression(aggregation.trim(), "aggregate")?;
+    }
+
+    Ok(PolicyIr::NativePgn(PgnPolicy {
+        kind,
+        scope: PolicyScope {
+            sources: parsed_sources.sources,
+            sink,
+            sink_alias,
+            dimensions,
+        },
+        aggregations: aggregations
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect(),
+        constraint,
+        on_fail: Resolution::parse(&resolution)?,
+        description,
+    }))
 }
 
 fn strip_keyword_prefix(text: &mut String, keyword: &str) -> bool {
@@ -430,5 +516,14 @@ mod tests {
         )
         .expect("aggregate policy should parse");
         assert!(matches!(policy, PolicyIr::CompatAggregate(_)));
+    }
+
+    #[test]
+    fn pgn_keyword_parses_into_native_pgn_policy() {
+        let policy = parse_policy_text(
+            "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE",
+        )
+        .expect("pgn policy should parse");
+        assert!(matches!(policy, PolicyIr::NativePgn(_)));
     }
 }

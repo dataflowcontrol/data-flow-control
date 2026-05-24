@@ -14,6 +14,8 @@ pub(crate) struct ThresholdKey {
 pub(crate) enum ThresholdDirection {
     Greater,
     Less,
+    Equal,
+    NotEqual,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,8 @@ pub(crate) fn threshold_dominates_predicates(
         ThresholdDirection::Less => {
             left.value < right.value || (same_value && left.strict && !right.strict)
         }
+        ThresholdDirection::Equal => left.value < right.value,
+        ThresholdDirection::NotEqual => left.value < right.value,
     }
 }
 
@@ -102,9 +106,8 @@ pub fn prune_dominated_remove_policies(policies: &[PolicyIr]) -> Vec<PolicyIr> {
 }
 
 fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<ThresholdPredicate> {
-    let Expr::BinaryOp { left, op, right } =
-        strip_supported_aggregates(parse_constraint_expr(constraint).ok()?)
-    else {
+    let expr = parse_constraint_expr(constraint).ok()?;
+    let Expr::BinaryOp { left, op, right } = expr else {
         return None;
     };
     let (direction, strict) = match op {
@@ -112,15 +115,25 @@ fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<Thresh
         BinaryOperator::GtEq => (ThresholdDirection::Greater, false),
         BinaryOperator::Lt => (ThresholdDirection::Less, true),
         BinaryOperator::LtEq => (ThresholdDirection::Less, false),
+        BinaryOperator::Eq => (ThresholdDirection::Equal, true),
+        BinaryOperator::NotEq => (ThresholdDirection::NotEqual, true),
         _ => return None,
     };
     let Expr::Value(value) = *right else {
         return None;
     };
     let value = value.to_string().parse::<f64>().ok()?;
+    let lhs = if matches!(
+        direction,
+        ThresholdDirection::Greater | ThresholdDirection::Less
+    ) {
+        strip_supported_aggregates(*left).to_string()
+    } else {
+        left.to_string()
+    };
     Some(ThresholdPredicate {
         key: ThresholdKey {
-            lhs: left.to_string(),
+            lhs,
             direction,
         },
         value,

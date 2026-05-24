@@ -1,11 +1,13 @@
 //! Ports of high-value `sql_rewriter` behaviors not yet covered in Rust.
 
-use passant_core::{PolicyIr, Resolution};
+use passant_core::{PolicyIr, Resolution, TableCatalog};
 
-use crate::common::{assert_rewrite, dfc_policy, dfc_policy_invalidate, dfc_policy_kill, rewrite};
+use crate::common::{
+    assert_rewrite, dfc_policy, dfc_policy_invalidate, dfc_policy_kill, rewrite,
+    rewrite_with_catalog,
+};
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn scan_count_if_transforms_to_case_when() {
     let policy = PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -25,7 +27,6 @@ fn scan_count_if_transforms_to_case_when() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn scan_array_agg_transforms_to_single_element_array() {
     let policy = PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -45,7 +46,6 @@ fn scan_array_agg_transforms_to_single_element_array() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn aggregation_kill_wraps_having_clause() {
     assert_rewrite(
         "SELECT category, sum(amount) FROM foo GROUP BY category",
@@ -55,7 +55,6 @@ fn aggregation_kill_wraps_having_clause() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn aggregation_invalidate_adds_valid_to_grouped_select() {
     assert_rewrite(
         "SELECT category, sum(amount) FROM foo GROUP BY category",
@@ -65,7 +64,6 @@ fn aggregation_invalidate_adds_valid_to_grouped_select() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn scan_count_distinct_equality_expands_to_row_predicate() {
     assert_rewrite(
         "SELECT id FROM foo",
@@ -84,7 +82,6 @@ fn scan_count_distinct_equality_expands_to_row_predicate() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn scan_avg_non_distributive_uses_scalar_subquery_fallback() {
     let sql = rewrite(
         "SELECT id FROM foo",
@@ -106,7 +103,6 @@ fn scan_avg_non_distributive_uses_scalar_subquery_fallback() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn scan_min_max_preserve_full_expression() {
     assert_rewrite(
         "SELECT id FROM foo",
@@ -125,7 +121,6 @@ fn scan_min_max_preserve_full_expression() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn multi_policy_invalidate_combines_valid_columns() {
     assert_rewrite(
         "SELECT id FROM foo",
@@ -133,12 +128,11 @@ fn multi_policy_invalidate_combines_valid_columns() {
             dfc_policy_invalidate(&["foo"], "max(foo.id) > 1"),
             dfc_policy_invalidate(&["foo"], "max(foo.amount) > 10"),
         ],
-        "SELECT id, max(foo.id) > 1 AS valid, max(foo.amount) > 10 AS valid FROM foo",
+        "SELECT id, foo.id > 1 AND foo.amount > 10 AS valid FROM foo",
     );
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn dimension_table_constraint_references_external_context() {
     assert_rewrite(
         "SELECT foo.id FROM foo JOIN regions ON foo.region_id = regions.id",
@@ -157,26 +151,31 @@ fn dimension_table_constraint_references_external_context() {
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn insert_without_column_list_expands_from_catalog() {
-    assert_rewrite(
+    let mut catalog = TableCatalog::new();
+    catalog.register_table("reports", vec!["id".to_string(), "amount".to_string()]);
+    let policy = PolicyIr::CompatDfc {
+        sources: vec!["foo".to_string()],
+        required_sources: Vec::new(),
+        dimensions: Vec::new(),
+        sink: Some("reports".to_string()),
+        sink_alias: None,
+        constraint: "max(foo.id) > 1".to_string(),
+        on_fail: Resolution::Invalidate,
+        description: None,
+    };
+    let actual = rewrite_with_catalog(
         "INSERT INTO reports SELECT id, amount FROM foo",
-        &[PolicyIr::CompatDfc {
-            sources: vec!["foo".to_string()],
-            required_sources: Vec::new(),
-            dimensions: Vec::new(),
-            sink: Some("reports".to_string()),
-            sink_alias: None,
-            constraint: "max(foo.id) > 1".to_string(),
-            on_fail: Resolution::Invalidate,
-            description: None,
-        }],
-        "INSERT INTO reports (id, amount, valid) SELECT id, amount, max(foo.id) > 1 AS valid FROM foo WHERE foo.id > 1",
+        &[policy],
+        catalog,
+    );
+    pretty_assertions::assert_eq!(
+        actual,
+        "INSERT INTO reports (id, amount, valid) SELECT id, amount, foo.id > 1 AS valid FROM foo"
     );
 }
 
 #[test]
-#[ignore = "completion: sql_rewriter_parity"]
 fn merge_statement_rewrite_supported() {
     let sql = rewrite(
         "MERGE INTO reports USING foo ON reports.id = foo.id WHEN MATCHED THEN UPDATE SET amount = foo.amount",

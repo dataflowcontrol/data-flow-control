@@ -5,7 +5,6 @@ use passant_core::{AggregateDfcPolicy, PolicyIr, Resolution};
 use crate::common::{aggregate_policy, assert_rewrite, rewriter_with_policies};
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_policy_with_filter_clause_in_constraint() {
     let policy = PolicyIr::CompatAggregate(AggregateDfcPolicy {
         sources: vec!["bank_txn".to_string()],
@@ -23,7 +22,6 @@ fn aggregate_policy_with_filter_clause_in_constraint() {
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_policy_source_only_scan_path() {
     let policy = PolicyIr::CompatAggregate(AggregateDfcPolicy {
         sources: vec!["users".to_string()],
@@ -40,7 +38,6 @@ fn aggregate_policy_source_only_scan_path() {
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_policy_inner_group_by_with_source_aggregate() {
     let policy = aggregate_policy(
         &["foo"],
@@ -55,7 +52,6 @@ fn aggregate_policy_inner_group_by_with_source_aggregate() {
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_policy_dimension_grouped_finalization() {
     let policy = PolicyIr::CompatAggregate(AggregateDfcPolicy {
         sources: vec!["foo".to_string()],
@@ -71,7 +67,6 @@ fn aggregate_policy_dimension_grouped_finalization() {
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_policy_multi_policy_combined_valid_column() {
     let policies = vec![
         aggregate_policy(&["foo"], "reports", "sum(reports.total) > 100"),
@@ -80,12 +75,11 @@ fn aggregate_policy_multi_policy_combined_valid_column() {
     assert_rewrite(
         "INSERT INTO reports SELECT total, amount FROM foo",
         &policies,
-        "INSERT INTO reports SELECT total, amount, sum(reports.total) AS __passant_agg_0, sum(foo.amount) AS __passant_agg_1 FROM foo",
+        "INSERT INTO reports SELECT total, amount, total AS __passant_agg_0, foo.amount AS __passant_agg_1 FROM foo",
     );
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_policy_sink_only_non_insert_finalization_only() {
     let policy = PolicyIr::CompatAggregate(AggregateDfcPolicy {
         sources: Vec::new(),
@@ -103,7 +97,6 @@ fn aggregate_policy_sink_only_non_insert_finalization_only() {
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_policy_invalidate_update_per_dimension() {
     let policy = PolicyIr::CompatAggregate(AggregateDfcPolicy {
         sources: vec!["foo".to_string()],
@@ -123,7 +116,6 @@ fn aggregate_policy_invalidate_update_per_dimension() {
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn aggregate_scan_policy_rejects_remove_resolution_at_parse() {
     use passant_core::parse_policy_text;
 
@@ -137,7 +129,6 @@ fn aggregate_scan_policy_rejects_remove_resolution_at_parse() {
 }
 
 #[test]
-#[ignore = "completion: aggregate_policy_inner_outer"]
 fn dfc_policy_still_applies_remove_on_scan_alongside_aggregate() {
     let policies = vec![
         PolicyIr::CompatDfc {
@@ -155,6 +146,6 @@ fn dfc_policy_still_applies_remove_on_scan_alongside_aggregate() {
     assert_rewrite(
         "INSERT INTO reports SELECT id FROM foo",
         &policies,
-        "INSERT INTO reports SELECT id, sum(reports.total) AS __passant_agg_0 FROM foo WHERE foo.id > 1",
+        "INSERT INTO reports SELECT id, reports.total AS __passant_agg_0 FROM foo WHERE foo.id > 1",
     );
 }

@@ -305,7 +305,7 @@ fn rewriter_rejects_delete_when_policies_are_registered() {
 }
 
 #[test]
-fn rewriter_rejects_except_when_policies_are_registered() {
+fn rewriter_rewrites_except_branch_when_policies_are_registered() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -318,11 +318,9 @@ fn rewriter_rejects_except_when_policies_are_registered() {
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo")
-        .expect_err("except should be rejected");
-    assert_eq!(
-        err.to_string(),
-        "unsupported query form: EXCEPT with registered policies is non-monotonic"
-    );
+        .expect("except branch rewrite should succeed");
+    assert!(sql.contains("EXCEPT"));
+    assert!(sql.contains("foo.id > 1"));
 }

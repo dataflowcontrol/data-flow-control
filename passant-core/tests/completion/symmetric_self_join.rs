@@ -5,7 +5,6 @@ use passant_core::{PolicyIr, Resolution};
 use crate::common::{plan_query, rewrite};
 
 #[test]
-#[ignore = "completion: symmetric_self_join"]
 fn self_join_three_aliases_applies_policy_once_per_occurrence_not_factorial() {
     let policy = PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -32,7 +31,6 @@ fn self_join_three_aliases_applies_policy_once_per_occurrence_not_factorial() {
 }
 
 #[test]
-#[ignore = "completion: symmetric_self_join"]
 fn explain_does_not_expand_policy_permutations_for_self_join() {
     use passant_core::PassantPlanner;
 
@@ -55,7 +53,6 @@ fn explain_does_not_expand_policy_permutations_for_self_join() {
 }
 
 #[test]
-#[ignore = "completion: symmetric_self_join"]
 fn self_join_execution_remove_filters_each_alias() {
     #[path = "../common/duckdb.rs"]
     mod duckdb;
@@ -84,7 +81,6 @@ fn self_join_execution_remove_filters_each_alias() {
 }
 
 #[test]
-#[ignore = "completion: symmetric_self_join"]
 fn self_join_sink_write_preserves_alias_symmetry() {
     let policy = PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],

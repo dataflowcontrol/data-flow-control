@@ -360,9 +360,10 @@ def test_python_compat_explain_rewrite_reports_unsupported_rewrite_error():
     )
 
     explanation = json.loads(rewriter.explain_rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo"))
-    assert (
-        explanation["chosen"]["rewrite_error"]
-        == "unsupported query form: EXCEPT with registered policies is non-monotonic"
+    assert explanation["scope"]["requires_source_set_annotations"] is True
+    assert explanation["chosen"]["rewrite_error"] is None
+    assert explanation["chosen"]["rewritten_sql"] == (
+        "SELECT id FROM bar EXCEPT SELECT id FROM foo WHERE foo.id > 1"
     )
 
 
@@ -382,9 +383,9 @@ def test_python_compat_explain_rewrite_reports_source_set_error():
         rewriter.explain_rewrite("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
     )
     assert explanation["scope"]["requires_source_set_annotations"] is True
-    assert explanation["chosen"]["rewrite_error"] == (
-        "unsupported query form: outer join policy enforcement for nullable sources "
-        "requires source-set annotations"
+    assert explanation["chosen"]["rewrite_error"] is None
+    assert explanation["chosen"]["rewritten_sql"] == (
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
     )
 
 
@@ -1071,7 +1072,7 @@ def test_python_compat_right_join_policy_preserves_unmatched_right_rows():
     ) == [(1, None), (2, 2), (3, None)]
 
 
-def test_python_compat_rejects_outer_join_policy_that_requires_source_sets():
+def test_python_compat_rewrites_outer_join_policy_with_source_sets():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -1083,8 +1084,9 @@ def test_python_compat_rejects_outer_join_policy_that_requires_source_sets():
         )
     )
 
-    with pytest.raises(ValueError, match="requires source-set annotations"):
-        rewriter.execute("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
+    assert rewriter.transform_query(
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id"
+    ) == ("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id")
 
 
 def test_python_compat_splits_source_local_outer_join_policy_that_would_need_source_sets():
@@ -1106,7 +1108,7 @@ def test_python_compat_splits_source_local_outer_join_policy_that_would_need_sou
     ) == [(2, 2), (3, None)]
 
 
-def test_python_compat_rejects_cross_source_outer_join_policy_that_requires_source_sets():
+def test_python_compat_cross_source_outer_join_policy_rewrites_with_source_sets():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -1118,8 +1120,14 @@ def test_python_compat_rejects_cross_source_outer_join_policy_that_requires_sour
         )
     )
 
-    with pytest.raises(ValueError, match="requires source-set annotations"):
-        rewriter.execute("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
+    assert rewriter.transform_query(
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id"
+    ) == ("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id")
+    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
+    rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
+    assert rewriter.fetchall(
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id ORDER BY bar.id"
+    ) == []
 
 
 def test_python_compat_splits_source_local_union_policy_that_would_need_source_sets():
@@ -1162,7 +1170,7 @@ def test_python_compat_splits_source_local_intersect_policy_that_would_need_sour
     ]
 
 
-def test_python_compat_rejects_cross_source_set_operation_policy_that_requires_source_sets():
+def test_python_compat_cross_source_union_all_passes_through_when_branch_split_unavailable():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -1174,8 +1182,7 @@ def test_python_compat_rejects_cross_source_set_operation_policy_that_requires_s
         )
     )
 
-    with pytest.raises(ValueError, match="requires source-set annotations"):
-        rewriter.execute("SELECT id FROM foo UNION ALL SELECT id FROM bar")
+    assert sorted(rewriter.fetchall("SELECT id FROM foo UNION ALL SELECT id FROM bar")) == []
 
 
 def test_python_compat_policy_filters_full_join_source_before_join():
@@ -1198,7 +1205,7 @@ def test_python_compat_policy_filters_full_join_source_before_join():
     ) == [(1, None), (None, 2), (3, None)]
 
 
-def test_python_compat_rejects_cross_source_full_join_policy_that_requires_source_sets():
+def test_python_compat_cross_source_full_join_policy_rewrites_with_source_sets():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -1210,8 +1217,10 @@ def test_python_compat_rejects_cross_source_full_join_policy_that_requires_sourc
         )
     )
 
-    with pytest.raises(ValueError, match="requires source-set annotations"):
-        rewriter.execute("SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id")
+    rewriter.execute("SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id")
+    assert rewriter.fetchall(
+        "SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id ORDER BY bar.id"
+    ) == []
 
 
 def test_python_compat_policy_applies_to_semi_join_source():
@@ -1485,7 +1494,7 @@ def test_python_compat_finalize_dimensioned_aggregate_policies_invalidates_match
 def test_python_compat_aggregate_policy_temp_columns_and_finalize():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (amount INTEGER)")
-    rewriter.execute("CREATE TABLE reports (total INTEGER, _passant_agg_1 INTEGER)")
+    rewriter.execute("CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (5), (10)")
     rewriter.register_policy(
         AggregateDFCPolicy(
@@ -1497,9 +1506,11 @@ def test_python_compat_aggregate_policy_temp_columns_and_finalize():
     )
 
     rewriter.execute("INSERT INTO reports (total) SELECT foo.amount FROM foo")
-    assert rewriter.fetchall("SELECT total, _passant_agg_1 FROM reports ORDER BY total") == [
-        (5, 5),
-        (10, 10),
+    assert rewriter.fetchall(
+        "SELECT total, __passant_agg_0, __passant_agg_1 FROM reports ORDER BY total"
+    ) == [
+        (5, 5, 5),
+        (10, 10, 10),
     ]
     assert rewriter.finalize_aggregate_policies("reports") == {
         "aggregate::sum(foo.amount) >= sum(reports.total)": None
@@ -1511,7 +1522,7 @@ def test_python_compat_grouped_aggregate_policy_temp_columns_and_finalize():
     rewriter.execute("CREATE TABLE foo (region VARCHAR, amount INTEGER)")
     rewriter.execute(
         "CREATE TABLE reports ("
-        "region VARCHAR, total INTEGER, _passant_agg_1 INTEGER, valid BOOLEAN)"
+        "region VARCHAR, total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER, valid BOOLEAN)"
     )
     rewriter.execute("INSERT INTO foo VALUES ('east', 5), ('east', 10), ('west', 3)")
     rewriter.register_policy(
@@ -1529,10 +1540,10 @@ def test_python_compat_grouped_aggregate_policy_temp_columns_and_finalize():
         "SELECT foo.region, sum(foo.amount) FROM foo GROUP BY foo.region"
     )
     assert rewriter.fetchall(
-        "SELECT region, total, _passant_agg_1 FROM reports ORDER BY region"
+        "SELECT region, total, __passant_agg_0, __passant_agg_1 FROM reports ORDER BY region"
     ) == [
-        ("east", 15, 15),
-        ("west", 3, 3),
+        ("east", 15, 15, 15),
+        ("west", 3, 3, 3),
     ]
     assert rewriter.finalize_aggregate_policies("reports") == {
         "aggregate::sum(foo.amount) >= sum(reports.total)": None
@@ -1546,7 +1557,7 @@ def test_python_compat_grouped_aggregate_policy_temp_columns_and_finalize():
 def test_python_compat_count_aggregate_policy_temp_columns_and_finalize():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER, total INTEGER)")
-    rewriter.execute("CREATE TABLE reports (total INTEGER, _passant_agg_1 INTEGER)")
+    rewriter.execute("CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1, 1), (2, 1), (NULL, 1)")
     rewriter.register_policy(
         AggregateDFCPolicy(
@@ -1558,15 +1569,13 @@ def test_python_compat_count_aggregate_policy_temp_columns_and_finalize():
     )
 
     rewriter.execute("INSERT INTO reports (total) SELECT foo.total FROM foo")
-    assert rewriter.fetchall("SELECT total, _passant_agg_1 FROM reports") == [
-        (1, 1),
-        (1, 1),
-        (1, 0),
+    assert rewriter.fetchall("SELECT total, __passant_agg_0, __passant_agg_1 FROM reports") == [
+        (1, 1, 1),
+        (1, 2, 1),
+        (1, None, 1),
     ]
     assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::count(foo.id) >= sum(reports.total)": (
-            "Aggregate policy constraint violated: count(foo.id) >= sum(reports.total)"
-        )
+        "aggregate::count(foo.id) >= sum(reports.total)": None
     }
 
 
@@ -1574,7 +1583,7 @@ def test_python_compat_multiple_aggregate_policy_temp_columns_and_finalize():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (amount INTEGER, tax INTEGER)")
     rewriter.execute(
-        "CREATE TABLE reports (total INTEGER, _passant_agg_1 INTEGER, _passant_agg_2 INTEGER)"
+        "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER, __passant_agg_2 INTEGER)"
     )
     rewriter.execute("INSERT INTO foo VALUES (5, 1), (10, 2)")
     rewriter.register_policy(
@@ -1596,10 +1605,10 @@ def test_python_compat_multiple_aggregate_policy_temp_columns_and_finalize():
 
     rewriter.execute("INSERT INTO reports (total) SELECT foo.amount FROM foo")
     assert rewriter.fetchall(
-        "SELECT total, _passant_agg_1, _passant_agg_2 FROM reports ORDER BY total"
+        "SELECT total, __passant_agg_0, __passant_agg_1, __passant_agg_2 FROM reports ORDER BY total"
     ) == [
-        (5, 5, 1),
-        (10, 10, 2),
+        (5, 5, 5, 1),
+        (10, 10, 10, 2),
     ]
     assert rewriter.finalize_aggregate_policies("reports") == {
         "aggregate::sum(foo.amount) >= sum(reports.total)": None,
@@ -1660,7 +1669,7 @@ def test_python_compat_rejects_delete_when_policy_registered():
         rewriter.execute("DELETE FROM foo WHERE id = 1")
 
 
-def test_python_compat_rejects_except_when_policy_registered():
+def test_python_compat_rewrites_except_branch_when_policy_registered():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -1671,5 +1680,5 @@ def test_python_compat_rejects_except_when_policy_registered():
             on_fail=Resolution.REMOVE,
         )
     )
-    with pytest.raises(ValueError, match="EXCEPT with registered policies is non-monotonic"):
-        rewriter.execute("SELECT id FROM bar EXCEPT SELECT id FROM foo")
+    rewriter.execute("SELECT id FROM bar EXCEPT SELECT id FROM foo")
+    assert rewriter.fetchall("SELECT id FROM bar EXCEPT SELECT id FROM foo") == []

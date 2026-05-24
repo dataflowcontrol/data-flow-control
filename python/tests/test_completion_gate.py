@@ -14,6 +14,7 @@ def test_count_if_scan_rewrites_to_case_when():
   from passant.compat import DFCPolicy, Resolution, SQLRewriter
 
   rewriter = SQLRewriter()
+  rewriter.execute("CREATE TABLE foo (id INTEGER)")
   rewriter.register_policy(
       DFCPolicy(
           sources=["foo"],
@@ -32,6 +33,7 @@ def test_delete_policy_removes_registered_policy():
   from passant.compat import DFCPolicy, Resolution, SQLRewriter
 
   rewriter = SQLRewriter()
+  rewriter.execute("CREATE TABLE foo (id INTEGER)")
   policy = DFCPolicy(
       sources=["foo"],
       constraint="max(foo.id) > 1",
@@ -47,11 +49,11 @@ def test_delete_policy_removes_registered_policy():
   assert rewriter.get_dfc_policies() == []
 
 
-def test_flowguard_policy_text_parses():
-  from passant.compat import FlowGuardPolicy
+def test_pgn_policy_text_parses():
+  from passant.compat import PgnPolicy
 
-  policy = FlowGuardPolicy.from_text(
-      "FLOWGUARD OVER SOURCE foo SINK reports "
+  policy = PgnPolicy.from_text(
+      "PGN OVER SOURCE foo SINK reports "
       "AGGREGATE sum(foo.amount) CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE"
   )
-  assert "FLOWGUARD" in policy.text
+  assert "PGN" in policy.text

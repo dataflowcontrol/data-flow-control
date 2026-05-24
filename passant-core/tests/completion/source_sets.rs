@@ -18,7 +18,6 @@ fn cross_source_policy() -> PolicyIr {
 }
 
 #[test]
-#[ignore = "completion: source_set_annotations"]
 fn outer_join_nullable_source_policy_with_source_sets() {
     assert_rewrite(
         "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id",
@@ -28,7 +27,6 @@ fn outer_join_nullable_source_policy_with_source_sets() {
 }
 
 #[test]
-#[ignore = "completion: source_set_annotations"]
 fn full_outer_join_cross_source_policy_with_source_sets() {
     assert_rewrite(
         "SELECT bar.id FROM bar FULL JOIN foo ON bar.id = foo.id",
@@ -38,7 +36,6 @@ fn full_outer_join_cross_source_policy_with_source_sets() {
 }
 
 #[test]
-#[ignore = "completion: source_set_annotations"]
 fn union_all_cross_source_policy_with_source_sets() {
     assert_rewrite(
         "SELECT id FROM foo UNION ALL SELECT id FROM bar",
@@ -57,7 +54,6 @@ fn union_all_cross_source_policy_with_source_sets() {
 }
 
 #[test]
-#[ignore = "completion: source_set_annotations"]
 fn except_cross_source_policy_with_source_sets() {
     let sql = rewrite(
         "SELECT id FROM bar EXCEPT SELECT id FROM foo",
@@ -68,7 +64,6 @@ fn except_cross_source_policy_with_source_sets() {
 }
 
 #[test]
-#[ignore = "completion: source_set_annotations"]
 fn anti_join_probe_cross_source_policy_with_source_sets() {
     assert_rewrite(
         "SELECT bar.id FROM bar ANTI JOIN foo ON bar.id = foo.id",
@@ -78,7 +73,6 @@ fn anti_join_probe_cross_source_policy_with_source_sets() {
 }
 
 #[test]
-#[ignore = "completion: source_set_annotations"]
 fn scope_flags_require_source_sets_for_cross_source_outer_join() {
     use crate::common::plan_query;
 
@@ -90,7 +84,6 @@ fn scope_flags_require_source_sets_for_cross_source_outer_join() {
 }
 
 #[test]
-#[ignore = "completion: source_set_annotations"]
 fn insert_sink_write_applies_per_tuple_source_sets() {
     assert_rewrite(
         "INSERT INTO reports SELECT bar.id, foo.amount FROM bar LEFT JOIN foo ON bar.id = foo.id",

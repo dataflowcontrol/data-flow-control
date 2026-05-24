@@ -68,6 +68,16 @@ impl PassantSelect {
         visible
     }
 
+    pub fn direct_base_tables(&self) -> Vec<String> {
+        let mut bases = Vec::new();
+        for from_item in &self.from {
+            for table in &from_item.tables {
+                bases.push(table.name.clone());
+            }
+        }
+        bases
+    }
+
     pub fn is_aggregation(&self) -> bool {
         !self.group_by.is_empty()
             || self
@@ -106,6 +116,27 @@ impl QueryIr {
             QueryIr::InsertSelect { raw_sql, .. } => raw_sql,
             QueryIr::Update { raw_sql, .. } => raw_sql,
             QueryIr::Passthrough { raw_sql, .. } => raw_sql,
+        }
+    }
+
+    pub fn direct_base_tables(&self) -> Vec<String> {
+        match self {
+            QueryIr::Select(select) => select.direct_base_tables(),
+            QueryIr::InsertSelect { select, sink, .. } => {
+                let mut bases = select.direct_base_tables();
+                bases.push(sink.name.clone());
+                bases
+            }
+            QueryIr::Update { sink, from, .. } => {
+                let mut bases = vec![sink.name.clone()];
+                for item in from {
+                    for table in &item.tables {
+                        bases.push(table.name.clone());
+                    }
+                }
+                bases
+            }
+            QueryIr::Passthrough { .. } => Vec::new(),
         }
     }
 }

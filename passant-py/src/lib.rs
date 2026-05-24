@@ -177,6 +177,12 @@ impl PyPlanner {
         finalization_queries_json(&rewriter, &sink_table)
     }
 
+    fn register_policy_text(&mut self, policy_text: String) -> PyResult<()> {
+        self.rewriter
+            .register_policy_text(&policy_text)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     fn register_policy_specs(
         &mut self,
         policies_json: String,

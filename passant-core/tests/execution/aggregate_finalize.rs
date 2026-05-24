@@ -20,7 +20,7 @@ fn finalize_aggregate_policies_invalidates_sink_rows() {
 fn aggregate_temp_columns_and_finalize_invalidate_violating_sink() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (amount INTEGER)");
-    db.exec("CREATE TABLE reports (total INTEGER, valid BOOLEAN, _passant_agg_1 INTEGER)");
+    db.exec("CREATE TABLE reports (total INTEGER, valid BOOLEAN, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (2)");
     db.register_policy(aggregate_policy(
         &["foo"],

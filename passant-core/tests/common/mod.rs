@@ -2,7 +2,7 @@
 
 use passant_core::{
     AggregateDfcPolicy, PassantPlanner, PassantRewriter, PlanQueryResult, PolicyIr, Resolution,
-    RewriteError, RewriteStrategy, parse_query_to_ir,
+    RewriteError, RewriteStrategy, TableCatalog, parse_query_to_ir,
 };
 
 pub fn dfc_policy(sources: &[&str], constraint: &str) -> PolicyIr {
@@ -72,6 +72,16 @@ pub fn rewrite(sql: &str, policies: &[PolicyIr]) -> String {
 
 pub fn rewrite_result(sql: &str, policies: &[PolicyIr]) -> Result<String, RewriteError> {
     rewriter_with_policies(policies).rewrite(sql)
+}
+
+pub fn rewrite_with_catalog(sql: &str, policies: &[PolicyIr], catalog: TableCatalog) -> String {
+    let mut rewriter = PassantRewriter::with_catalog(catalog);
+    for policy in policies {
+        rewriter.register_policy(policy.clone());
+    }
+    rewriter
+        .rewrite(sql)
+        .unwrap_or_else(|err| panic!("rewrite failed for {sql:?}: {err}"))
 }
 
 pub fn assert_rewrite(sql: &str, policies: &[PolicyIr], expected: &str) {

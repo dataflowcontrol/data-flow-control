@@ -18,7 +18,6 @@ fn multi_source_sum_policy() -> PolicyIr {
 }
 
 #[test]
-#[ignore = "completion: semiring_full_push"]
 fn full_push_inner_join_decomposes_distributive_sum() {
     let policies = vec![multi_source_sum_policy()];
     assert_explain_strategy(
@@ -38,7 +37,6 @@ fn full_push_inner_join_decomposes_distributive_sum() {
 }
 
 #[test]
-#[ignore = "completion: semiring_full_push"]
 fn full_push_nested_subquery_join_uses_semiring_not_scalar_fallback() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -61,7 +59,6 @@ fn full_push_nested_subquery_join_uses_semiring_not_scalar_fallback() {
 }
 
 #[test]
-#[ignore = "completion: semiring_partial_push"]
 fn partial_push_left_join_preserves_nullable_side_semantics() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["bar".to_string()],
@@ -89,7 +86,6 @@ fn partial_push_left_join_preserves_nullable_side_semantics() {
 }
 
 #[test]
-#[ignore = "completion: semiring_distributive_decomposition"]
 fn distributive_sum_decomposition_across_sources() {
     let policies = vec![multi_source_sum_policy()];
     let sql = rewrite(
@@ -103,7 +99,6 @@ fn distributive_sum_decomposition_across_sources() {
 }
 
 #[test]
-#[ignore = "completion: semiring_non_distributive_fallback"]
 fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],
@@ -135,7 +130,6 @@ fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
 }
 
 #[test]
-#[ignore = "completion: semiring_full_push"]
 fn aggregation_query_full_push_inlines_having_semiring() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["foo".to_string()],

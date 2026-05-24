@@ -257,7 +257,7 @@ fn planner_can_defer_aggregate_policy_finalize() {
 }
 
 #[test]
-fn planner_records_rewrite_error_in_explain_output() {
+fn planner_records_successful_except_rewrite_in_explain_output() {
     let ir = parse_query_to_ir("SELECT id FROM bar EXCEPT SELECT id FROM foo")
         .expect("query should parse");
     let policies = vec![PolicyIr::CompatDfc {
@@ -272,18 +272,11 @@ fn planner_records_rewrite_error_in_explain_output() {
     }];
 
     let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
-    assert_eq!(
-        explanation.chosen.rewrite_error.as_deref(),
-        Some("unsupported query form: EXCEPT with registered policies is non-monotonic")
-    );
-    assert_eq!(
-        explanation.steps.last().map(|step| step.stage.as_str()),
-        Some("fallback")
-    );
+    assert!(explanation.chosen.rewrite_error.is_none());
 }
 
 #[test]
-fn planner_records_source_set_rewrite_error_in_explain_output() {
+fn planner_records_successful_source_set_rewrite_in_explain_output() {
     let ir = parse_query_to_ir("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
         .expect("query should parse");
     let policies = vec![PolicyIr::CompatDfc {
@@ -298,15 +291,6 @@ fn planner_records_source_set_rewrite_error_in_explain_output() {
     }];
 
     let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
-    assert_eq!(
-        explanation.chosen.rewrite_error.as_deref(),
-        Some(
-            "unsupported query form: outer join policy enforcement for nullable sources requires source-set annotations"
-        )
-    );
+    assert!(explanation.chosen.rewrite_error.is_none());
     assert!(explanation.scope.requires_source_set_annotations);
-    assert_eq!(
-        explanation.steps.last().map(|step| step.stage.as_str()),
-        Some("fallback")
-    );
 }

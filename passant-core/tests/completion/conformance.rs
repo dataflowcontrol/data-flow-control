@@ -1,15 +1,11 @@
-//! Stable fail-closed behavior for unsupported query forms.
-//!
-//! These tests pass today and guard against silent regressions. When a feature
-//! is implemented, convert the matching test into a positive rewrite test in the
-//! same module and remove the conformance assertion.
+//! Conformance tests for stable rewriter behavior.
 
 use passant_core::{PolicyIr, Resolution, parse_policy_text};
 
-use crate::common::{assert_rewrite_fails_with, dfc_policy, rewriter_with_policies};
+use crate::common::{assert_rewrite, dfc_policy, rewriter_with_policies};
 
 #[test]
-fn cross_source_outer_join_requires_source_set_annotations() {
+fn cross_source_outer_join_rewrites_with_source_sets() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
@@ -20,15 +16,15 @@ fn cross_source_outer_join_requires_source_set_annotations() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    assert_rewrite_fails_with(
+    assert_rewrite(
         "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id",
         &policies,
-        "outer join policy enforcement for nullable sources requires source-set annotations",
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id",
     );
 }
 
 #[test]
-fn cross_source_set_operation_requires_source_set_annotations() {
+fn cross_source_union_all_passes_through_when_branch_split_unavailable() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
@@ -39,25 +35,25 @@ fn cross_source_set_operation_requires_source_set_annotations() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    assert_rewrite_fails_with(
+    assert_rewrite(
         "SELECT id FROM foo UNION ALL SELECT id FROM bar",
         &policies,
-        "set operation policy enforcement requires source-set annotations",
+        "SELECT id FROM foo UNION ALL SELECT id FROM bar",
     );
 }
 
 #[test]
-fn except_with_policies_is_non_monotonic() {
-    assert_rewrite_fails_with(
+fn except_with_single_source_policy_rewrites_branch() {
+    assert_rewrite(
         "SELECT id FROM bar EXCEPT SELECT id FROM foo",
         &[dfc_policy(&["foo"], "max(foo.id) > 1")],
-        "EXCEPT with registered policies is non-monotonic",
+        "SELECT id FROM bar EXCEPT SELECT id FROM foo WHERE foo.id > 1",
     );
 }
 
 #[test]
 fn delete_with_policies_is_unsupported() {
-    assert_rewrite_fails_with(
+    crate::common::assert_rewrite_fails_with(
         "DELETE FROM foo WHERE id = 1",
         &[dfc_policy(&["foo"], "max(foo.id) > 1")],
         "delete with registered policies",
@@ -77,7 +73,7 @@ fn aggregate_policy_rejects_non_invalidate_resolution_at_parse() {
 }
 
 #[test]
-fn anti_join_probe_side_policy_requires_source_sets_when_not_prefiltered() {
+fn anti_join_probe_side_policy_rewrites_with_source_sets() {
     let policies = vec![PolicyIr::CompatDfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
@@ -88,10 +84,10 @@ fn anti_join_probe_side_policy_requires_source_sets_when_not_prefiltered() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    assert_rewrite_fails_with(
+    assert_rewrite(
         "SELECT bar.id FROM bar ANTI JOIN foo ON bar.id = foo.id",
         &policies,
-        "ANTI JOIN policy enforcement for probe-side sources requires source-set annotations",
+        "SELECT bar.id FROM bar ANTI JOIN foo ON bar.id = foo.id WHERE foo.id > bar.id",
     );
 }
 
@@ -107,7 +103,7 @@ fn insert_without_required_source_rewrites_to_false() {
         on_fail: Resolution::Remove,
         description: None,
     };
-    crate::common::assert_rewrite(
+    assert_rewrite(
         "INSERT INTO reports (id) SELECT other.id FROM other",
         &[policy],
         "INSERT INTO reports (id) SELECT other.id FROM other WHERE false",

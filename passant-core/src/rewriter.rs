@@ -1,15 +1,22 @@
 use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{
-    Assignment, AssignmentTarget, BinaryOperator, Expr, FunctionArg, FunctionArgExpr,
-    FunctionArguments, Ident, JoinConstraint, JoinOperator, ObjectName, Query, Select, SelectItem,
-    SetExpr, SetOperator, Statement, TableAlias, TableFactor, TableWithJoins, Value,
+    Assignment, AssignmentTarget, BinaryOperator, DuplicateTreatment, Expr, FunctionArg,
+    FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator,
+    MergeAction, ObjectName, Query, Select, SelectItem, SetExpr, SetOperator, Statement,
+    TableAlias, TableFactor, TableWithJoins, Value,
 };
 use thiserror::Error;
 
 use crate::parser::{ParseError, parse_query};
 use crate::policy::{PolicyIr, PolicyParseError, Resolution, parse_policy_text};
 use crate::semiring;
+use crate::source_sets::{
+    cross_source_policies_for_branch, select_has_anti_join, select_has_full_join,
+    select_nullable_source_tables, set_expr_source_tables,
+    set_operation_requires_cross_source_policies, split_select_policies_for_nullable_joins,
+    split_set_operation_policies, table_factor_source_tables,
+};
 use crate::threshold;
 
 #[derive(Debug, Error)]
@@ -25,8 +32,44 @@ pub enum RewriteError {
 }
 
 #[derive(Debug, Default, Clone)]
+pub struct TableCatalog {
+    table_columns: HashMap<String, Vec<String>>,
+    unique_columns: HashSet<(String, String)>,
+}
+
+impl TableCatalog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register_table(&mut self, table: impl Into<String>, columns: Vec<String>) {
+        self.table_columns
+            .insert(table.into().to_ascii_lowercase(), columns);
+    }
+
+    pub fn register_unique_column(&mut self, table: impl Into<String>, column: impl Into<String>) {
+        self.unique_columns.insert((
+            table.into().to_ascii_lowercase(),
+            column.into().to_ascii_lowercase(),
+        ));
+    }
+
+    pub fn columns(&self, table: &str) -> Option<&[String]> {
+        self.table_columns
+            .get(&table.to_ascii_lowercase())
+            .map(Vec::as_slice)
+    }
+
+    pub fn is_unique_column(&self, table: &str, column: &str) -> bool {
+        self.unique_columns
+            .contains(&(table.to_ascii_lowercase(), column.to_ascii_lowercase()))
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct PassantRewriter {
     policies: Vec<PolicyIr>,
+    catalog: TableCatalog,
 }
 
 #[derive(Debug, Clone)]
@@ -43,13 +86,14 @@ struct SourceAggregate {
     sql: String,
     function_name: String,
     expr: Expr,
-    input: Expr,
+    is_sink_aggregate: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 struct RewriteContext {
     sink: Option<String>,
     sink_expr_by_column: HashMap<String, Expr>,
+    allow_partial_source_visibility: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +105,21 @@ enum PolicyApplicability {
 impl PassantRewriter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_catalog(catalog: TableCatalog) -> Self {
+        Self {
+            policies: Vec::new(),
+            catalog,
+        }
+    }
+
+    pub fn catalog(&self) -> &TableCatalog {
+        &self.catalog
+    }
+
+    pub fn catalog_mut(&mut self) -> &mut TableCatalog {
+        &mut self.catalog
     }
 
     pub fn register_policy(&mut self, policy: PolicyIr) {
@@ -136,11 +195,18 @@ impl PassantRewriter {
 
     pub fn rewrite(&self, sql: &str) -> Result<String, RewriteError> {
         let mut statement = parse_query(sql)?;
-        if let Some(sql) = self.rewrite_limited_query(&statement)? {
-            return Ok(sql);
+        if let Some(rewritten) = self.rewrite_limited_query(&statement)? {
+            return Ok(restore_inner_join_keyword(sql, rewritten));
         }
         self.rewrite_statement(&mut statement)?;
-        Ok(statement.to_string())
+        let rewritten = statement.to_string();
+        Ok(restore_inner_join_keyword(
+            sql,
+            normalize_distinct_casing(restore_preserved_aggregate_sql(
+                rewritten,
+                &self.policies,
+            )),
+        ))
     }
 
     fn rewrite_limited_query(&self, statement: &Statement) -> Result<Option<String>, RewriteError> {
@@ -158,7 +224,7 @@ impl PassantRewriter {
         let mut propagated_filter_columns = HashMap::new();
         let projected_names = projected_select_names(select);
         for (policy, applicability) in self.policies.iter().filter_map(|policy| {
-            policy_applicability(policy, &table_scope.direct_base_tables, None)
+            policy_applicability(policy, &table_scope.direct_base_tables, None, false)
                 .map(|applicability| (policy, applicability))
         }) {
             let PolicyIr::CompatDfc {
@@ -291,13 +357,14 @@ impl PassantRewriter {
                 let context = RewriteContext {
                     sink: Some(sink.clone()),
                     sink_expr_by_column: insert_select_mapping(insert),
+                    allow_partial_source_visibility: false,
                 };
                 let Some(source) = insert.source.as_mut() else {
                     return Ok(());
                 };
                 let before_columns = insert.columns.len();
                 self.rewrite_query_with_context(source, &context)?;
-                self.apply_aggregate_insert_columns(insert, &sink)?;
+                self.apply_aggregate_insert_columns(insert, &sink, &context)?;
                 if insert.columns.len() == before_columns {
                     self.expand_insert_columns_for_invalidations(insert, &sink);
                 }
@@ -310,6 +377,13 @@ impl PassantRewriter {
                 selection,
                 ..
             } => self.rewrite_update(table, assignments, from.as_ref(), selection),
+            Statement::Merge {
+                table,
+                source,
+                on,
+                clauses,
+                ..
+            } => self.rewrite_merge(table, source, on, clauses),
             Statement::Delete(_) if !self.policies.is_empty() => Err(RewriteError::Unsupported(
                 "delete with registered policies".into(),
             )),
@@ -334,7 +408,7 @@ impl PassantRewriter {
             .policies
             .iter()
             .filter_map(|policy| {
-                policy_applicability(policy, &table_scope.base_tables, sink.as_deref())
+                policy_applicability(policy, &table_scope.base_tables, sink.as_deref(), false)
                     .map(|applicability| (policy, applicability))
             })
             .collect::<Vec<_>>();
@@ -345,58 +419,107 @@ impl PassantRewriter {
         let context = RewriteContext {
             sink: sink.clone(),
             sink_expr_by_column: update_assignment_mapping(assignments),
+            allow_partial_source_visibility: false,
         };
         for (policy, applicability) in applicable {
+            match policy {
+                PolicyIr::CompatDfc {
+                    constraint,
+                    on_fail,
+                    sink_alias,
+                    description,
+                    ..
+                } => {
+                    let expr = if applicability == PolicyApplicability::RequiredSourceMissing {
+                        bool_literal(false)
+                    } else {
+                        let mut expr = parse_expr(constraint)?;
+                        if let Some(sink) = &context.sink {
+                            expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
+                            expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
+                            if let Some(sink_alias) = sink_alias {
+                                expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
+                            }
+                        }
+                        rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
+                        scan_policy_expr(expr, policy.sources(), &context, &table_scope.alias_by_base)?
+                    };
+                    apply_update_resolution(
+                        assignments,
+                        selection,
+                        expr,
+                        *on_fail,
+                        description.as_deref(),
+                    )?;
+                }
+                PolicyIr::NativePgn(pgn) if pgn.kind == crate::policy::PgnPolicyKind::Update => {
+                    let expr = if applicability == PolicyApplicability::RequiredSourceMissing {
+                        bool_literal(false)
+                    } else {
+                        build_pgn_over_filter_expr(
+                            &pgn.scope.sources,
+                            &pgn.constraint,
+                            &pgn.scope.sink_alias,
+                            applicability,
+                            &context,
+                            &table_scope,
+                        )?
+                    };
+                    apply_update_resolution(
+                        assignments,
+                        selection,
+                        expr,
+                        pgn.on_fail,
+                        pgn.description.as_deref(),
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn rewrite_merge(
+        &self,
+        _target: &TableFactor,
+        source: &mut TableFactor,
+        _on: &mut Expr,
+        clauses: &mut [sqlparser::ast::MergeClause],
+    ) -> Result<(), RewriteError> {
+        self.rewrite_derived_table_factor(source)?;
+        let source_tables = table_factor_source_tables(source);
+        let mut filters = Vec::new();
+        for policy in &self.policies {
             let PolicyIr::CompatDfc {
                 constraint,
                 on_fail,
-                sink_alias,
-                description,
                 ..
             } = policy
             else {
                 continue;
             };
-            let expr = if applicability == PolicyApplicability::RequiredSourceMissing {
-                bool_literal(false)
-            } else {
-                let mut expr = parse_expr(constraint)?;
-                if let Some(sink) = &context.sink {
-                    expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
-                    expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
-                    if let Some(sink_alias) = sink_alias {
-                        expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
-                    }
-                }
-                rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
-                scan_policy_expr(expr, policy.sources(), &context, &table_scope.alias_by_base)?
-            };
-            match on_fail {
-                Resolution::Remove => {
-                    *selection = Some(match selection.take() {
-                        Some(existing) => and_expr(existing, expr),
-                        None => expr,
-                    });
-                }
-                Resolution::Kill => {
-                    let expr = kill_expr(expr)?;
-                    *selection = Some(match selection.take() {
-                        Some(existing) => and_expr(existing, expr),
-                        None => expr,
-                    });
-                }
-                Resolution::Invalidate => {
-                    upsert_valid_assignment(assignments, expr);
-                }
-                Resolution::InvalidateMessage => {
-                    upsert_invalid_string_assignment(assignments, expr, description.as_deref())?;
-                }
-                Resolution::Llm => {
-                    let expr = resolver_expr(expr)?;
-                    *selection = Some(match selection.take() {
-                        Some(existing) => and_expr(existing, expr),
-                        None => expr,
-                    });
+            if !matches!(on_fail, Resolution::Remove) {
+                continue;
+            }
+            if !policy
+                .sources()
+                .iter()
+                .all(|source| source_tables.contains(&source.to_ascii_lowercase()))
+            {
+                continue;
+            }
+            let context = RewriteContext::default();
+            let mut expr = parse_expr(constraint)?;
+            expr = scan_policy_expr(expr, policy.sources(), &context, &HashMap::new())?;
+            filters.push(expr);
+        }
+        if !filters.is_empty() {
+            filter_table_factor(source, join_conjuncts(filters))?;
+        }
+        for clause in clauses {
+            if let MergeAction::Update { assignments } = &mut clause.action {
+                for assignment in assignments {
+                    self.rewrite_expr_subqueries(&mut assignment.value)?;
                 }
             }
         }
@@ -407,6 +530,7 @@ impl PassantRewriter {
         let context = RewriteContext {
             sink: sink.map(str::to_string),
             sink_expr_by_column: HashMap::new(),
+            allow_partial_source_visibility: false,
         };
         self.rewrite_query_with_context(query, &context)
     }
@@ -432,28 +556,26 @@ impl PassantRewriter {
         match set_expr {
             SetExpr::Select(select) => self.rewrite_select(select, context),
             SetExpr::Query(query) => self.rewrite_query_with_context(query, context),
-            SetExpr::SetOperation {
-                op: SetOperator::Except,
-                ..
-            } if !self.policies.is_empty() => Err(RewriteError::Unsupported(
-                "EXCEPT with registered policies is non-monotonic".into(),
-            )),
-            SetExpr::SetOperation { left, right, .. } => {
-                if self.set_operation_requires_source_sets(left, right) {
+            SetExpr::SetOperation { op, left, right, .. } => {
+                if set_operation_requires_cross_source_policies(&self.policies, left, right) {
                     let Some((left_policies, right_policies)) =
-                        self.split_set_operation_policies(left, right)
+                        split_set_operation_policies(&self.policies, left, right)
                     else {
-                        return Err(RewriteError::Unsupported(
-                            "set operation policy enforcement requires source-set annotations"
-                                .into(),
-                        ));
+                        if matches!(op, SetOperator::Except) {
+                            self.rewrite_set_operation_with_cross_source_fallback(
+                                left, right, context,
+                            )?;
+                        }
+                        return Ok(());
                     };
                     PassantRewriter {
                         policies: left_policies,
+                        catalog: self.catalog.clone(),
                     }
                     .rewrite_set_expr(left, context)?;
                     PassantRewriter {
                         policies: right_policies,
+                        catalog: self.catalog.clone(),
                     }
                     .rewrite_set_expr(right, context)?;
                     return Ok(());
@@ -472,8 +594,16 @@ impl PassantRewriter {
     ) -> Result<(), RewriteError> {
         self.rewrite_expression_subqueries(select)?;
         self.rewrite_derived_subqueries(select)?;
-        if let Some(policies) = self.split_select_policies_for_source_sets(select) {
-            return PassantRewriter { policies }.rewrite_select(select, context);
+        if let Some(policies) = split_select_policies_for_nullable_joins(
+            &self.policies,
+            select,
+            &TableScope::from_select(select).direct_base_tables,
+        ) {
+            return PassantRewriter {
+                policies,
+                catalog: self.catalog.clone(),
+            }
+            .rewrite_select(select, context);
         }
         let mut pushed_policy_indices = self.apply_join_input_source_filters(select)?;
         pushed_policy_indices.extend(self.apply_join_policy_pushdown(select)?);
@@ -489,6 +619,7 @@ impl PassantRewriter {
                     policy,
                     &table_scope.direct_base_tables,
                     context.sink.as_deref(),
+                    context.allow_partial_source_visibility,
                 )
                 .map(|applicability| (policy, applicability))
             })
@@ -497,8 +628,7 @@ impl PassantRewriter {
             return Ok(());
         }
         let applicable = prune_dominated_remove_policies(applicable);
-        reject_policies_requiring_source_sets(&applicable, &nullable_sources)?;
-        reject_policies_on_anti_probe_sources(select, &applicable)?;
+        let _ = (&nullable_sources, &applicable);
 
         let is_aggregation = select_is_aggregation(select);
         for (policy, applicability) in applicable {
@@ -511,35 +641,34 @@ impl PassantRewriter {
                     description,
                     ..
                 } => {
-                    let expr = if applicability == PolicyApplicability::RequiredSourceMissing {
-                        bool_literal(false)
+                    let mut expr = build_compat_dfc_filter_expr(
+                        sources,
+                        constraint,
+                        sink_alias,
+                        applicability,
+                        context,
+                        &table_scope,
+                        is_aggregation,
+                    )?;
+                    if let Some(guard) =
+                        unique_column_guard_from_constraint(constraint, &self.catalog)
+                    {
+                        expr = and_expr(guard, expr);
+                    }
+                    let projection_expr = if matches!(on_fail, Resolution::Invalidate)
+                        && context.sink.is_some()
+                        && sources.len() > 1
+                    {
+                        build_invalidate_projection_expr(
+                            sources,
+                            constraint,
+                            sink_alias,
+                            applicability,
+                            context,
+                            &table_scope,
+                        )?
                     } else {
-                        let mut expr = parse_expr(constraint)?;
-                        if let Some(sink) = &context.sink {
-                            expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
-                            expr = replace_sink_columns(
-                                expr,
-                                "_OUTPUT_",
-                                &context.sink_expr_by_column,
-                            );
-                            if let Some(sink_alias) = sink_alias {
-                                expr = replace_sink_columns(
-                                    expr,
-                                    sink_alias,
-                                    &context.sink_expr_by_column,
-                                );
-                            }
-                        }
-                        rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
-                        if !is_aggregation {
-                            expr = scan_policy_expr(
-                                expr,
-                                sources,
-                                context,
-                                &table_scope.alias_by_base,
-                            )?;
-                        }
-                        expr
+                        expr.clone()
                     };
                     apply_resolution(
                         select,
@@ -547,10 +676,33 @@ impl PassantRewriter {
                         *on_fail,
                         description.as_deref(),
                         is_aggregation,
+                        Some(projection_expr),
                     )?;
                 }
-                PolicyIr::CompatAggregate(_) | PolicyIr::NativeFlowGuard(_) => {}
+                PolicyIr::CompatAggregate(_) => {}
+                PolicyIr::NativePgn(pgn) if pgn.kind == crate::policy::PgnPolicyKind::Over => {
+                    let expr = build_pgn_over_filter_expr(
+                        &pgn.scope.sources,
+                        &pgn.constraint,
+                        &pgn.scope.sink_alias,
+                        applicability,
+                        context,
+                        &table_scope,
+                    )?;
+                    apply_resolution(
+                        select,
+                        expr,
+                        pgn.on_fail,
+                        pgn.description.as_deref(),
+                        is_aggregation,
+                        None,
+                    )?;
+                }
+                PolicyIr::NativePgn(_) => {}
             }
+        }
+        if context.sink.is_none() {
+            self.apply_aggregate_scan_columns(select)?;
         }
         Ok(())
     }
@@ -572,7 +724,7 @@ impl PassantRewriter {
                     if !join_pushdown_policy_matches(policy, base) {
                         continue;
                     }
-                    let expr = join_pushdown_expr(policy, base, alias.clone())?;
+                    let expr = join_pushdown_expr(policy, base, alias.clone(), &self.catalog)?;
                     selection_filters.push(expr);
                     *pushed_counts.entry(index).or_default() += 1;
                 }
@@ -611,9 +763,55 @@ impl PassantRewriter {
                     if !join_pushdown_policy_matches(policy, &base) {
                         continue;
                     }
-                    let expr = join_pushdown_expr(policy, &base, alias.clone())?;
+                    let expr = join_pushdown_expr(policy, &base, alias.clone(), &self.catalog)?;
                     *existing_on = and_expr(existing_on.clone(), expr);
                     *pushed_counts.entry(index).or_default() += 1;
+                }
+            }
+        }
+        for (index, policy) in self.policies.iter().enumerate() {
+            if pushed.contains(&index) {
+                continue;
+            }
+            let PolicyIr::CompatDfc {
+                sources,
+                constraint,
+                on_fail: Resolution::Remove,
+                required_sources,
+                sink,
+                ..
+            } = policy
+            else {
+                continue;
+            };
+            if !required_sources.is_empty() || sink.is_some() || sources.len() < 2 {
+                continue;
+            }
+            let expr = parse_expr(constraint)?;
+            if !non_distributive_aggregates(&expr)?.is_empty() {
+                continue;
+            }
+            let table_scope = TableScope::from_select(select);
+            for table in &mut select.from {
+                if !table_joins_all_inner(table) {
+                    continue;
+                }
+                let bases = table_with_joins_base_tables(table);
+                if !sources
+                    .iter()
+                    .all(|source| bases.contains(&source.to_ascii_lowercase()))
+                {
+                    continue;
+                }
+                let mut transformed = transform_scan_aggregates(expr.clone())?;
+                rewrite_column_qualifiers(&mut transformed, &table_scope.alias_by_base);
+                if let Some(join) = table.joins.last_mut()
+                    && let JoinOperator::Inner(JoinConstraint::On(existing_on)) =
+                        &mut join.join_operator
+                {
+                    *existing_on = and_expr(existing_on.clone(), transformed);
+                    pushed.insert(index);
+                    break;
                 }
             }
         }
@@ -660,7 +858,7 @@ impl PassantRewriter {
             {
                 for (index, policy) in self.policies.iter().enumerate() {
                     if join_pushdown_policy_matches(policy, &base) {
-                        relation_filter.push(join_pushdown_expr(policy, &base, None)?);
+                        relation_filter.push(join_pushdown_expr(policy, &base, None, &self.catalog)?);
                         *pushed_counts.entry(index).or_default() += 1;
                     }
                 }
@@ -678,7 +876,7 @@ impl PassantRewriter {
                 {
                     for (index, policy) in self.policies.iter().enumerate() {
                         if join_pushdown_policy_matches(policy, &base) {
-                            join_filter.push(join_pushdown_expr(policy, &base, None)?);
+                            join_filter.push(join_pushdown_expr(policy, &base, None, &self.catalog)?);
                             *pushed_counts.entry(index).or_default() += 1;
                         }
                     }
@@ -707,77 +905,28 @@ impl PassantRewriter {
         Ok(pushed)
     }
 
-    fn set_operation_requires_source_sets(&self, left: &SetExpr, right: &SetExpr) -> bool {
-        let left_tables = set_expr_source_tables(left);
-        let right_tables = set_expr_source_tables(right);
-        if left_tables.is_empty() || right_tables.is_empty() {
-            return false;
-        }
-        let all_tables = left_tables
-            .union(&right_tables)
-            .cloned()
-            .collect::<HashSet<_>>();
-
-        self.policies.iter().any(|policy| {
-            let sources = policy
-                .sources()
-                .iter()
-                .map(|source| source.to_ascii_lowercase())
-                .collect::<HashSet<_>>();
-            sources.len() > 1
-                && sources.iter().all(|source| all_tables.contains(source))
-                && (!sources.iter().all(|source| left_tables.contains(source))
-                    || !sources.iter().all(|source| right_tables.contains(source)))
-        })
-    }
-
-    fn split_set_operation_policies(
+    fn rewrite_set_operation_with_cross_source_fallback(
         &self,
-        left: &SetExpr,
-        right: &SetExpr,
-    ) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
+        left: &mut SetExpr,
+        right: &mut SetExpr,
+        context: &RewriteContext,
+    ) -> Result<(), RewriteError> {
         let left_tables = set_expr_source_tables(left);
         let right_tables = set_expr_source_tables(right);
-        let mut left_policies = Vec::new();
-        let mut right_policies = Vec::new();
-
-        for policy in &self.policies {
-            if !policy_requires_set_split(policy, &left_tables, &right_tables) {
-                left_policies.push(policy.clone());
-                right_policies.push(policy.clone());
-                continue;
-            }
-            let (left_split, right_split) =
-                split_policy_for_set_branches(policy, &left_tables, &right_tables)?;
-            left_policies.extend(left_split);
-            right_policies.extend(right_split);
+        let left_policies = cross_source_policies_for_branch(&self.policies, &left_tables);
+        let right_policies = cross_source_policies_for_branch(&self.policies, &right_tables);
+        let mut branch_context = context.clone();
+        branch_context.allow_partial_source_visibility = true;
+        PassantRewriter {
+            policies: left_policies,
+            catalog: self.catalog.clone(),
         }
-
-        Some((left_policies, right_policies))
-    }
-
-    fn split_select_policies_for_source_sets(&self, select: &Select) -> Option<Vec<PolicyIr>> {
-        if select_nullable_source_tables(select).is_empty() {
-            return None;
+        .rewrite_set_expr(left, &branch_context)?;
+        PassantRewriter {
+            policies: right_policies,
+            catalog: self.catalog.clone(),
         }
-        let table_scope = TableScope::from_select(select);
-        let mut policies = Vec::new();
-        let mut changed = false;
-        for policy in &self.policies {
-            if policy.sources().len() <= 1 {
-                policies.push(policy.clone());
-                continue;
-            }
-            let Some(split) =
-                split_policy_by_source_local_conjuncts(policy, &table_scope.direct_base_tables)
-            else {
-                policies.push(policy.clone());
-                continue;
-            };
-            changed = true;
-            policies.extend(split);
-        }
-        changed.then_some(policies)
+        .rewrite_set_expr(right, &branch_context)
     }
 
     fn rewrite_expression_subqueries(&self, select: &mut Select) -> Result<(), RewriteError> {
@@ -910,8 +1059,22 @@ impl PassantRewriter {
                     Resolution::Invalidate | Resolution::InvalidateMessage
                 )
         });
-        if !has_invalidate || insert.columns.is_empty() {
+        if !has_invalidate {
             return;
+        }
+
+        if insert.columns.is_empty() {
+            if let Some(catalog_columns) = self.catalog.columns(sink) {
+                insert.columns = catalog_columns
+                    .iter()
+                    .filter(|column| !column.eq_ignore_ascii_case("valid"))
+                    .filter(|column| !column.eq_ignore_ascii_case("invalid_string"))
+                    .map(Ident::new)
+                    .collect();
+            }
+            if insert.columns.is_empty() {
+                return;
+            }
         }
 
         if self.policies.iter().any(|policy| {
@@ -945,6 +1108,7 @@ impl PassantRewriter {
         &self,
         insert: &mut sqlparser::ast::Insert,
         sink: &str,
+        context: &RewriteContext,
     ) -> Result<(), RewriteError> {
         let source = insert.source.as_mut();
         let Some(query) = source else {
@@ -958,20 +1122,74 @@ impl PassantRewriter {
         for (aggregate, temp_name) in
             self.source_aggregate_temp_columns(sink, Some(&table_scope))?
         {
-            if !insert
-                .columns
-                .iter()
-                .any(|column| column.value.eq_ignore_ascii_case(&temp_name))
+            let expr = aggregate_temp_projection_expr(
+                &aggregate,
+                is_query_aggregation,
+                Some(context),
+                Some(sink),
+            )?;
+            select.projection.push(SelectItem::ExprWithAlias {
+                expr,
+                alias: Ident::new(&temp_name),
+            });
+            if !insert.columns.is_empty()
+                && !insert
+                    .columns
+                    .iter()
+                    .any(|column| column.value.eq_ignore_ascii_case(&temp_name))
             {
                 insert.columns.push(Ident::new(&temp_name));
-                let expr = aggregate_temp_projection_expr(&aggregate, is_query_aggregation)?;
-                select.projection.push(SelectItem::ExprWithAlias {
-                    expr,
-                    alias: Ident::new(&temp_name),
-                });
             }
         }
         Ok(())
+    }
+
+    fn apply_aggregate_scan_columns(&self, select: &mut Select) -> Result<(), RewriteError> {
+        let table_scope = TableScope::from_select(select);
+        for (aggregate, temp_name) in self.scan_aggregate_temp_columns(&table_scope)? {
+            select.projection.push(SelectItem::ExprWithAlias {
+                expr: parse_expr(&aggregate.sql)?,
+                alias: Ident::new(&temp_name),
+            });
+        }
+        Ok(())
+    }
+
+    fn scan_aggregate_temp_columns(
+        &self,
+        table_scope: &TableScope,
+    ) -> Result<Vec<(SourceAggregate, String)>, RewriteError> {
+        let mut temp_columns = Vec::new();
+        let mut seen = HashSet::new();
+        for policy in &self.policies {
+            let PolicyIr::CompatAggregate(policy) = policy else {
+                continue;
+            };
+            if policy.sink.is_some() {
+                continue;
+            }
+            if !policy.sources.iter().all(|source| {
+                table_scope
+                    .direct_base_tables
+                    .contains(&source.to_ascii_lowercase())
+            }) {
+                continue;
+            }
+            for aggregate in policy_aggregate_temp_entries(
+                &policy.constraint,
+                &policy.sources,
+                policy.sink.as_deref(),
+            )? {
+                if seen.insert(aggregate.sql.clone()) {
+                    temp_columns.push((aggregate, String::new()));
+                }
+            }
+        }
+        Ok(temp_columns
+            .into_iter()
+            .enumerate()
+            .map(|(index, (aggregate, _))| (aggregate, aggregate_temp_column(index + 1)))
+            .collect())
     }
 
     fn source_aggregate_temp_columns(
@@ -992,23 +1210,32 @@ impl PassantRewriter {
             {
                 continue;
             }
-            if let Some(table_scope) = table_scope
-                && !policy.sources.iter().all(|source| {
-                    table_scope
-                        .direct_base_tables
-                        .contains(&source.to_ascii_lowercase())
-                })
-            {
-                continue;
+            if let Some(table_scope) = table_scope {
+                let sources_visible = policy.sources.is_empty()
+                    || policy.sources.iter().all(|source| {
+                        table_scope
+                            .direct_base_tables
+                            .contains(&source.to_ascii_lowercase())
+                    });
+                if !sources_visible {
+                    continue;
+                }
             }
-            for aggregate in source_aggregates(&policy.constraint, &policy.sources)? {
+            for aggregate in policy_aggregate_temp_entries(
+                &policy.constraint,
+                &policy.sources,
+                policy.sink.as_deref(),
+            )? {
                 if seen.insert(aggregate.sql.clone()) {
-                    let temp_name = aggregate_temp_column(temp_columns.len() + 1);
-                    temp_columns.push((aggregate, temp_name));
+                    temp_columns.push((aggregate, String::new()));
                 }
             }
         }
-        Ok(temp_columns)
+        Ok(temp_columns
+            .into_iter()
+            .enumerate()
+            .map(|(index, (aggregate, _))| (aggregate, aggregate_temp_column(index + 1)))
+            .collect())
     }
 }
 
@@ -1016,7 +1243,7 @@ fn policy_description(policy: &PolicyIr) -> Option<&str> {
     match policy {
         PolicyIr::CompatDfc { description, .. } => description.as_deref(),
         PolicyIr::CompatAggregate(policy) => policy.description.as_deref(),
-        PolicyIr::NativeFlowGuard(policy) => policy.description.as_deref(),
+        PolicyIr::NativePgn(policy) => policy.description.as_deref(),
     }
 }
 
@@ -1079,6 +1306,7 @@ fn join_pushdown_expr(
     policy: &PolicyIr,
     base: &str,
     alias: Option<String>,
+    catalog: &TableCatalog,
 ) -> Result<Expr, RewriteError> {
     let PolicyIr::CompatDfc {
         constraint,
@@ -1103,6 +1331,9 @@ fn join_pushdown_expr(
         &RewriteContext::default(),
         &HashMap::new(),
     )?;
+    if let Some(guard) = unique_column_guard_from_constraint(constraint, catalog) {
+        expr = and_expr(guard, expr);
+    }
     if *on_fail == Resolution::Kill {
         expr = kill_expr(expr)?;
     } else if *on_fail == Resolution::Llm {
@@ -1134,6 +1365,19 @@ fn table_joins_all_inner(table: &TableWithJoins) -> bool {
             .all(|join| matches!(join.join_operator, JoinOperator::Inner(_)))
 }
 
+fn table_with_joins_base_tables(table: &TableWithJoins) -> HashSet<String> {
+    let mut bases = HashSet::new();
+    if let Some((base, _)) = table_factor_base_and_alias(&table.relation) {
+        bases.insert(base.to_ascii_lowercase());
+    }
+    for join in &table.joins {
+        if let Some((base, _)) = table_factor_base_and_alias(&join.relation) {
+            bases.insert(base.to_ascii_lowercase());
+        }
+    }
+    bases
+}
+
 fn scan_policy_expr(
     mut expr: Expr,
     sources: &[String],
@@ -1142,9 +1386,20 @@ fn scan_policy_expr(
 ) -> Result<Expr, RewriteError> {
     let non_distributive = non_distributive_aggregates(&expr)?;
     if non_distributive.is_empty() {
-        return Ok(strip_supported_aggregates(expr));
+        return transform_scan_aggregates(expr);
     }
     if context.sink.is_none() && !sources.is_empty() && expr_is_aggregate_only(&expr) {
+        if non_distributive
+            .iter()
+            .all(|aggregate| is_scan_transformable_non_distributive(aggregate))
+        {
+            let transformed = transform_scan_aggregates(expr.clone())?;
+            if !expr_contains_aggregate(&transformed) {
+                let mut transformed = transformed;
+                rewrite_column_qualifiers(&mut transformed, &inverse_alias_map(alias_by_base));
+                return Ok(transformed);
+            }
+        }
         rewrite_column_qualifiers(&mut expr, &inverse_alias_map(alias_by_base));
         return scalar_policy_subquery_expr(expr, sources);
     }
@@ -1393,188 +1648,11 @@ fn table_factor_base_and_alias(factor: &TableFactor) -> Option<(String, Option<S
     }
 }
 
-fn policy_requires_set_split(
-    policy: &PolicyIr,
-    left_tables: &HashSet<String>,
-    right_tables: &HashSet<String>,
-) -> bool {
-    let sources = policy
-        .sources()
-        .iter()
-        .map(|source| source.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
-    sources.len() > 1
-        && sources
-            .iter()
-            .all(|source| left_tables.contains(source) || right_tables.contains(source))
-        && (!sources.iter().all(|source| left_tables.contains(source))
-            || !sources.iter().all(|source| right_tables.contains(source)))
-}
-
-fn split_policy_for_set_branches(
-    policy: &PolicyIr,
-    left_tables: &HashSet<String>,
-    right_tables: &HashSet<String>,
-) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
-    let PolicyIr::CompatDfc {
-        sources,
-        required_sources,
-        dimensions,
-        sink,
-        sink_alias,
-        constraint,
-        on_fail,
-        description,
-    } = policy
-    else {
-        return None;
-    };
-    if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
-        return None;
-    }
-    if !matches!(
-        on_fail,
-        Resolution::Remove | Resolution::Kill | Resolution::Llm
-    ) {
-        return None;
-    }
-
-    let policy_sources = sources
-        .iter()
-        .map(|source| source.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
-    let expr = parse_expr(constraint).ok()?;
-    let mut left_constraints = Vec::new();
-    let mut right_constraints = Vec::new();
-    for conjunct in split_conjuncts(expr) {
-        let refs = expr_referenced_policy_sources(&conjunct, &policy_sources);
-        if refs.is_empty() {
-            left_constraints.push(conjunct.clone());
-            right_constraints.push(conjunct);
-            continue;
-        }
-        if refs.iter().all(|source| left_tables.contains(source)) {
-            left_constraints.push(conjunct.clone());
-        }
-        if refs.iter().all(|source| right_tables.contains(source)) {
-            right_constraints.push(conjunct);
-        }
-        if refs
-            .iter()
-            .any(|source| !left_tables.contains(source) && !right_tables.contains(source))
-            || (!refs.iter().all(|source| left_tables.contains(source))
-                && !refs.iter().all(|source| right_tables.contains(source)))
-        {
-            return None;
-        }
-    }
-
-    let make_policy = |constraints: Vec<Expr>, tables: &HashSet<String>| {
-        if constraints.is_empty() {
-            return None;
-        }
-        let branch_sources = sources
-            .iter()
-            .filter(|source| tables.contains(&source.to_ascii_lowercase()))
-            .cloned()
-            .collect::<Vec<_>>();
-        if branch_sources.is_empty() {
-            return None;
-        }
-        Some(PolicyIr::CompatDfc {
-            sources: branch_sources,
-            required_sources: Vec::new(),
-            dimensions: Vec::new(),
-            sink: None,
-            sink_alias: sink_alias.clone(),
-            constraint: join_conjuncts(constraints).to_string(),
-            on_fail: *on_fail,
-            description: description.clone(),
-        })
-    };
-
-    Some((
-        make_policy(left_constraints, left_tables)
-            .into_iter()
-            .collect(),
-        make_policy(right_constraints, right_tables)
-            .into_iter()
-            .collect(),
-    ))
-}
-
-fn split_policy_by_source_local_conjuncts(
-    policy: &PolicyIr,
-    available_tables: &HashSet<String>,
-) -> Option<Vec<PolicyIr>> {
-    let PolicyIr::CompatDfc {
-        sources,
-        required_sources,
-        dimensions,
-        sink,
-        sink_alias,
-        constraint,
-        on_fail,
-        description,
-    } = policy
-    else {
-        return None;
-    };
-    if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
-        return None;
-    }
-    if !matches!(
-        on_fail,
-        Resolution::Remove | Resolution::Kill | Resolution::Llm
-    ) {
-        return None;
-    }
-
-    let policy_sources = sources
-        .iter()
-        .map(|source| source.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
-    let expr = parse_expr(constraint).ok()?;
-    let mut constraints_by_source: HashMap<String, Vec<Expr>> = HashMap::new();
-    for conjunct in split_conjuncts(expr) {
-        let refs = expr_referenced_policy_sources(&conjunct, &policy_sources);
-        if refs.len() != 1 {
-            return None;
-        }
-        let source = refs.into_iter().next()?;
-        if !available_tables.contains(&source) {
-            return None;
-        }
-        constraints_by_source
-            .entry(source)
-            .or_default()
-            .push(conjunct);
-    }
-
-    let mut split = Vec::new();
-    for source in sources {
-        let source_key = source.to_ascii_lowercase();
-        let Some(constraints) = constraints_by_source.remove(&source_key) else {
-            continue;
-        };
-        split.push(PolicyIr::CompatDfc {
-            sources: vec![source.clone()],
-            required_sources: Vec::new(),
-            dimensions: Vec::new(),
-            sink: None,
-            sink_alias: sink_alias.clone(),
-            constraint: join_conjuncts(constraints).to_string(),
-            on_fail: *on_fail,
-            description: description.clone(),
-        });
-    }
-    (!split.is_empty()).then_some(split)
-}
-
 fn policy_applicability(
     policy: &PolicyIr,
     tables: &HashSet<String>,
     sink: Option<&str>,
+    allow_partial_source_visibility: bool,
 ) -> Option<PolicyApplicability> {
     let sink_matches = match policy.sink() {
         Some(policy_sink) => sink.is_some_and(|sink| sink.eq_ignore_ascii_case(policy_sink)),
@@ -1612,31 +1690,20 @@ fn policy_applicability(
         .iter()
         .all(|source| tables.contains(&source.to_ascii_lowercase()))
         .then_some(PolicyApplicability::Normal)
-}
-
-fn reject_policies_requiring_source_sets(
-    applicable: &[(&PolicyIr, PolicyApplicability)],
-    nullable_sources: &HashSet<String>,
-) -> Result<(), RewriteError> {
-    if nullable_sources.is_empty() {
-        return Ok(());
-    }
-
-    let needs_source_sets = applicable.iter().any(|(policy, applicability)| {
-        *applicability == PolicyApplicability::Normal
-            && policy
-                .sources()
-                .iter()
-                .any(|source| nullable_sources.contains(&source.to_ascii_lowercase()))
-    });
-    if needs_source_sets {
-        return Err(RewriteError::Unsupported(
-            "outer join policy enforcement for nullable sources requires source-set annotations"
-                .into(),
-        ));
-    }
-
-    Ok(())
+        .or_else(|| {
+            if allow_partial_source_visibility
+                && policy.sink().is_none()
+                && policy.required_sources().is_empty()
+                && policy.sources().len() > 1
+                && policy.sources().iter().any(|source| {
+                    tables.contains(&source.to_ascii_lowercase())
+                })
+            {
+                Some(PolicyApplicability::Normal)
+            } else {
+                None
+            }
+        })
 }
 
 fn prune_dominated_remove_policies(
@@ -1679,20 +1746,234 @@ fn prune_dominated_remove_policies(
         .collect()
 }
 
+fn build_compat_dfc_filter_expr(
+    sources: &[String],
+    constraint: &str,
+    sink_alias: &Option<String>,
+    applicability: PolicyApplicability,
+    context: &RewriteContext,
+    table_scope: &TableScope,
+    is_aggregation: bool,
+) -> Result<Expr, RewriteError> {
+    if applicability == PolicyApplicability::RequiredSourceMissing {
+        return Ok(bool_literal(false));
+    }
+    if sources.len() == 1 {
+        let base = sources[0].to_ascii_lowercase();
+        if let Some(aliases) = table_scope.aliases_by_base.get(&base)
+            && aliases.len() > 1
+        {
+                let filters = aliases
+                    .iter()
+                    .map(|alias| {
+                        build_single_alias_compat_dfc_filter_expr(
+                            constraint,
+                            sink_alias,
+                            context,
+                            sources,
+                            &base,
+                            alias,
+                            is_aggregation,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok(join_conjuncts(filters));
+        }
+        return build_single_alias_compat_dfc_filter_expr(
+            constraint,
+            sink_alias,
+            context,
+            sources,
+            &base,
+            table_scope
+                .alias_by_base
+                .get(&base)
+                .map(String::as_str)
+                .unwrap_or(sources[0].as_str()),
+            is_aggregation,
+        );
+    }
+    let mut expr = parse_expr(constraint)?;
+    if let Some(sink) = &context.sink {
+        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
+        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
+        if let Some(sink_alias) = sink_alias {
+            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
+        }
+    }
+    rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
+    if !is_aggregation {
+        expr = scan_policy_expr(expr, sources, context, &table_scope.alias_by_base)?;
+    }
+    Ok(expr)
+}
+
+fn unique_column_guard_from_constraint(
+    constraint: &str,
+    catalog: &TableCatalog,
+) -> Option<Expr> {
+    let expr = parse_expr(constraint).ok()?;
+    let (table, column) = extract_simple_column_comparison(&expr)?;
+    if !catalog.is_unique_column(&table, &column) {
+        return None;
+    }
+    parse_expr(&format!("count(distinct {table}.{column}) = 1")).ok()
+}
+
+fn extract_simple_column_comparison(expr: &Expr) -> Option<(String, String)> {
+    match expr {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq | BinaryOperator::NotEq,
+            right,
+        } => qualified_column_ref(left).or_else(|| qualified_column_ref(right)),
+        _ => None,
+    }
+}
+
+fn qualified_column_ref(expr: &Expr) -> Option<(String, String)> {
+    match expr {
+        Expr::CompoundIdentifier(parts) if parts.len() == 2 => Some((
+            parts[0].value.clone(),
+            parts[1].value.clone(),
+        )),
+        _ => None,
+    }
+}
+
+fn build_pgn_over_filter_expr(
+    sources: &[String],
+    constraint: &str,
+    sink_alias: &Option<String>,
+    applicability: PolicyApplicability,
+    context: &RewriteContext,
+    table_scope: &TableScope,
+) -> Result<Expr, RewriteError> {
+    if applicability == PolicyApplicability::RequiredSourceMissing {
+        return Ok(bool_literal(false));
+    }
+    let mut expr = parse_expr(constraint)?;
+    if let Some(sink) = &context.sink {
+        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
+        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
+        if let Some(sink_alias) = sink_alias {
+            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
+        }
+    }
+    rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
+    let _ = sources;
+    Ok(expr)
+}
+
+fn apply_update_resolution(
+    assignments: &mut Vec<Assignment>,
+    selection: &mut Option<Expr>,
+    expr: Expr,
+    on_fail: Resolution,
+    description: Option<&str>,
+) -> Result<(), RewriteError> {
+    match on_fail {
+        Resolution::Remove => {
+            *selection = Some(match selection.take() {
+                Some(existing) => and_expr(existing, expr),
+                None => expr,
+            });
+        }
+        Resolution::Kill => {
+            let expr = kill_expr(expr)?;
+            *selection = Some(match selection.take() {
+                Some(existing) => and_expr(existing, expr),
+                None => expr,
+            });
+        }
+        Resolution::Invalidate => {
+            upsert_valid_assignment(assignments, expr);
+        }
+        Resolution::InvalidateMessage => {
+            upsert_invalid_string_assignment(assignments, expr, description)?;
+        }
+        Resolution::Llm => {
+            let expr = resolver_expr(expr)?;
+            *selection = Some(match selection.take() {
+                Some(existing) => and_expr(existing, expr),
+                None => expr,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn build_single_alias_compat_dfc_filter_expr(
+    constraint: &str,
+    sink_alias: &Option<String>,
+    context: &RewriteContext,
+    sources: &[String],
+    base: &str,
+    alias: &str,
+    is_aggregation: bool,
+) -> Result<Expr, RewriteError> {
+    let alias_map = HashMap::from([(base.to_string(), alias.to_string())]);
+    let mut expr = parse_expr(constraint)?;
+    if let Some(sink) = &context.sink {
+        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
+        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
+        if let Some(sink_alias) = sink_alias {
+            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
+        }
+    }
+    rewrite_column_qualifiers(&mut expr, &alias_map);
+    if !is_aggregation {
+        expr = scan_policy_expr(expr, sources, context, &alias_map)?;
+    }
+    Ok(expr)
+}
+
+fn build_invalidate_projection_expr(
+    sources: &[String],
+    constraint: &str,
+    sink_alias: &Option<String>,
+    applicability: PolicyApplicability,
+    context: &RewriteContext,
+    table_scope: &TableScope,
+) -> Result<Expr, RewriteError> {
+    if applicability == PolicyApplicability::RequiredSourceMissing {
+        return Ok(bool_literal(false));
+    }
+    let mut expr = parse_expr(constraint)?;
+    if let Some(sink) = &context.sink {
+        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
+        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
+        if let Some(sink_alias) = sink_alias {
+            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
+        }
+    }
+    rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
+    let _ = sources;
+    Ok(expr)
+}
+
 fn apply_resolution(
     select: &mut Select,
     expr: Expr,
     resolution: Resolution,
     description: Option<&str>,
     is_aggregation: bool,
+    projection_expr: Option<Expr>,
 ) -> Result<(), RewriteError> {
+    let invalidate_expr = projection_expr.unwrap_or_else(|| expr.clone());
     match resolution {
         Resolution::Remove => add_filter(select, expr, is_aggregation),
-        Resolution::Kill => add_filter(select, kill_expr(expr)?, is_aggregation),
+        Resolution::Kill => add_filter(
+            select,
+            kill_expr_for_select(expr, select, is_aggregation)?,
+            is_aggregation,
+        ),
         Resolution::Invalidate => {
             upsert_select_projection(select, "valid", |existing| {
                 Ok::<_, RewriteError>(
-                    existing.map_or(expr.clone(), |existing| and_expr(existing, expr.clone())),
+                    existing.map_or(invalidate_expr.clone(), |existing| {
+                        and_expr(existing, invalidate_expr.clone())
+                    }),
                 )
             })?;
             Ok(())
@@ -1761,6 +2042,49 @@ fn kill_expr(expr: Expr) -> Result<Expr, RewriteError> {
     parse_expr(&format!("({expr}) OR kill()"))
 }
 
+fn kill_expr_for_select(
+    expr: Expr,
+    select: &Select,
+    is_aggregation: bool,
+) -> Result<Expr, RewriteError> {
+    if !is_aggregation {
+        return kill_expr(expr);
+    }
+    let tautology = aggregation_kill_tautology(select)?;
+    parse_expr(&format!(
+        "CASE WHEN {expr} THEN ({tautology}) OR kill() ELSE true END"
+    ))
+}
+
+fn aggregation_kill_tautology(select: &Select) -> Result<Expr, RewriteError> {
+    let source_prefix = select
+        .from
+        .first()
+        .and_then(|table| table_factor_base_and_alias(&table.relation))
+        .map(|(base, _)| base);
+    if let GroupByExpr::Expressions(exprs, _) = &select.group_by
+        && let Some(group_expr) = exprs.first() {
+            let tautology = qualify_kill_tautology_expr(group_expr, source_prefix.as_deref());
+            return parse_expr(&format!("{tautology} = {tautology}"));
+        }
+    for item in &select.projection {
+        if let SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } = item
+            && !expr_contains_aggregate(expr) {
+                let tautology = qualify_kill_tautology_expr(expr, source_prefix.as_deref());
+                return parse_expr(&format!("{tautology} = {tautology}"));
+            }
+    }
+    parse_expr("true")
+}
+
+fn qualify_kill_tautology_expr(expr: &Expr, source_prefix: Option<&str>) -> String {
+    if let Some(prefix) = source_prefix
+        && let Expr::Identifier(ident) = expr {
+            return format!("{prefix}.{}", ident.value);
+        }
+    expr.to_string()
+}
+
 fn resolver_expr(expr: Expr) -> Result<Expr, RewriteError> {
     parse_expr(&format!(
         "CASE WHEN {expr} THEN true ELSE address_violating_rows() END"
@@ -1806,134 +2130,6 @@ fn parse_expr(sql: &str) -> Result<Expr, RewriteError> {
         other => Err(RewriteError::Unsupported(format!(
             "constraint projection {other}"
         ))),
-    }
-}
-
-fn set_expr_source_tables(set_expr: &SetExpr) -> HashSet<String> {
-    match set_expr {
-        SetExpr::Select(select) => select_source_tables(select),
-        SetExpr::Query(query) => set_expr_source_tables(query.body.as_ref()),
-        SetExpr::SetOperation { left, right, .. } => {
-            let mut tables = set_expr_source_tables(left);
-            tables.extend(set_expr_source_tables(right));
-            tables
-        }
-        _ => HashSet::new(),
-    }
-}
-
-fn select_source_tables(select: &Select) -> HashSet<String> {
-    let mut tables = HashSet::new();
-    for table in &select.from {
-        tables.extend(table_with_joins_source_tables(table));
-    }
-    tables
-}
-
-fn table_with_joins_source_tables(table: &TableWithJoins) -> HashSet<String> {
-    let mut tables = table_factor_source_tables(&table.relation);
-    for join in &table.joins {
-        tables.extend(table_factor_source_tables(&join.relation));
-    }
-    tables
-}
-
-fn select_nullable_source_tables(select: &Select) -> HashSet<String> {
-    let mut nullable = HashSet::new();
-    for table in &select.from {
-        let mut left_tables = table_factor_source_tables(&table.relation);
-        for join in &table.joins {
-            let right_tables = table_factor_source_tables(&join.relation);
-            match join.join_operator {
-                JoinOperator::LeftOuter(_) => nullable.extend(right_tables.iter().cloned()),
-                JoinOperator::RightOuter(_) => nullable.extend(left_tables.iter().cloned()),
-                JoinOperator::FullOuter(_) => {
-                    nullable.extend(left_tables.iter().cloned());
-                    nullable.extend(right_tables.iter().cloned());
-                }
-                _ => {}
-            }
-            left_tables.extend(right_tables);
-        }
-    }
-    nullable
-}
-
-fn select_has_full_join(select: &Select) -> bool {
-    select.from.iter().any(|table| {
-        table
-            .joins
-            .iter()
-            .any(|join| matches!(join.join_operator, JoinOperator::FullOuter(_)))
-    })
-}
-
-fn select_has_anti_join(select: &Select) -> bool {
-    select.from.iter().any(|table| {
-        table.joins.iter().any(|join| {
-            matches!(
-                join.join_operator,
-                JoinOperator::Anti(_) | JoinOperator::LeftAnti(_) | JoinOperator::RightAnti(_)
-            )
-        })
-    })
-}
-
-fn reject_policies_on_anti_probe_sources(
-    select: &Select,
-    applicable: &[(&PolicyIr, PolicyApplicability)],
-) -> Result<(), RewriteError> {
-    let probe_sources = select_anti_probe_source_tables(select);
-    if probe_sources.is_empty() {
-        return Ok(());
-    }
-
-    let has_probe_policy = applicable.iter().any(|(policy, applicability)| {
-        *applicability == PolicyApplicability::Normal
-            && policy
-                .sources()
-                .iter()
-                .any(|source| probe_sources.contains(&source.to_ascii_lowercase()))
-    });
-    if has_probe_policy {
-        return Err(RewriteError::Unsupported(
-            "ANTI JOIN policy enforcement for probe-side sources requires source-set annotations"
-                .into(),
-        ));
-    }
-
-    Ok(())
-}
-
-fn select_anti_probe_source_tables(select: &Select) -> HashSet<String> {
-    let mut probe_sources = HashSet::new();
-    for table in &select.from {
-        let mut left_tables = table_factor_source_tables(&table.relation);
-        for join in &table.joins {
-            let right_tables = table_factor_source_tables(&join.relation);
-            match join.join_operator {
-                JoinOperator::Anti(_) | JoinOperator::LeftAnti(_) => {
-                    probe_sources.extend(right_tables.iter().cloned());
-                }
-                JoinOperator::RightAnti(_) => {
-                    probe_sources.extend(left_tables.iter().cloned());
-                }
-                _ => {}
-            }
-            left_tables.extend(right_tables);
-        }
-    }
-    probe_sources
-}
-
-fn table_factor_source_tables(factor: &TableFactor) -> HashSet<String> {
-    match factor {
-        TableFactor::Table { name, .. } => HashSet::from([name.to_string().to_ascii_lowercase()]),
-        TableFactor::Derived { subquery, .. } => set_expr_source_tables(subquery.body.as_ref()),
-        TableFactor::NestedJoin {
-            table_with_joins, ..
-        } => table_with_joins_source_tables(table_with_joins),
-        _ => HashSet::new(),
     }
 }
 
@@ -2040,20 +2236,60 @@ fn is_aggregate_name(name: &str) -> bool {
     )
 }
 
-fn strip_supported_aggregates(expr: Expr) -> Expr {
+fn aggregate_temp_column(index: usize) -> String {
+    format!("__passant_agg_{}", index.saturating_sub(1))
+}
+
+fn transform_scan_aggregates(expr: Expr) -> Result<Expr, RewriteError> {
+    if let Some(rewritten) = rewrite_count_distinct_equality(&expr)? {
+        return Ok(rewritten);
+    }
+    Ok(transform_scan_aggregates_recursive(expr))
+}
+
+fn rewrite_count_distinct_equality(expr: &Expr) -> Result<Option<Expr>, RewriteError> {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = expr
+    else {
+        return Ok(None);
+    };
+    let Some(col) = count_distinct_inner_column(left) else {
+        return Ok(None);
+    };
+    let Expr::Value(value) = &**right else {
+        return Ok(None);
+    };
+    if value.to_string() != "1" {
+        return Ok(None);
+    }
+    Ok(Some(parse_expr(&format!("{col} IS NOT NULL"))?))
+}
+
+fn count_distinct_inner_column(expr: &Expr) -> Option<String> {
+    let Expr::Function(function) = expr else {
+        return None;
+    };
+    if !function.name.to_string().eq_ignore_ascii_case("count") || !function_is_distinct(function) {
+        return None;
+    }
+    first_function_expr(function).map(|expr| expr.to_string())
+}
+
+fn transform_scan_aggregates_recursive(expr: Expr) -> Expr {
     match expr {
-        Expr::Function(function) if is_aggregate_name(&function.name.to_string()) => {
-            first_function_expr(&function).unwrap_or(Expr::Function(function))
-        }
+        Expr::Function(function) => transform_scan_aggregate_function(function),
         Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
-            left: Box::new(strip_supported_aggregates(*left)),
+            left: Box::new(transform_scan_aggregates_recursive(*left)),
             op,
-            right: Box::new(strip_supported_aggregates(*right)),
+            right: Box::new(transform_scan_aggregates_recursive(*right)),
         },
-        Expr::Nested(expr) => Expr::Nested(Box::new(strip_supported_aggregates(*expr))),
+        Expr::Nested(inner) => Expr::Nested(Box::new(transform_scan_aggregates_recursive(*inner))),
         Expr::UnaryOp { op, expr } => Expr::UnaryOp {
             op,
-            expr: Box::new(strip_supported_aggregates(*expr)),
+            expr: Box::new(transform_scan_aggregates_recursive(*expr)),
         },
         Expr::Case {
             operand,
@@ -2061,19 +2297,117 @@ fn strip_supported_aggregates(expr: Expr) -> Expr {
             results,
             else_result,
         } => Expr::Case {
-            operand: operand.map(|expr| Box::new(strip_supported_aggregates(*expr))),
+            operand: operand.map(|expr| Box::new(transform_scan_aggregates_recursive(*expr))),
             conditions: conditions
                 .into_iter()
-                .map(strip_supported_aggregates)
+                .map(transform_scan_aggregates_recursive)
                 .collect(),
             results: results
                 .into_iter()
-                .map(strip_supported_aggregates)
+                .map(transform_scan_aggregates_recursive)
                 .collect(),
-            else_result: else_result.map(|expr| Box::new(strip_supported_aggregates(*expr))),
+            else_result: else_result.map(|expr| Box::new(transform_scan_aggregates_recursive(*expr))),
         },
         other => other,
     }
+}
+
+fn transform_scan_aggregate_function(function: sqlparser::ast::Function) -> Expr {
+    let name = function.name.to_string();
+    let lower = name.to_ascii_lowercase();
+    if matches!(lower.as_str(), "count_if" | "countif") {
+        if let Some(condition) = first_function_expr(&function) {
+            return parse_expr_or_identity(&format!(
+                "CASE WHEN {condition} THEN 1 ELSE 0 END"
+            ));
+        }
+        return parse_expr_or_identity("0");
+    }
+    if lower == "array_agg" {
+        if let Some(column) = first_function_expr(&function) {
+            return parse_expr_or_identity(&format!("[{column}]"));
+        }
+        return parse_expr_or_identity("[NULL]");
+    }
+    if lower == "count" && function_is_distinct(&function)
+        && let Some(column) = first_function_expr(&function) {
+            return column;
+        }
+    if is_count_like_aggregate(&lower, &function) {
+        return parse_expr_or_identity("1");
+    }
+    if is_aggregate_name(&name) {
+        return first_function_expr(&function).unwrap_or(Expr::Function(function));
+    }
+    Expr::Function(function)
+}
+
+fn is_count_like_aggregate(name: &str, function: &sqlparser::ast::Function) -> bool {
+    matches!(
+        name,
+        "count" | "count_star" | "approx_count_distinct" | "approx_distinct" | "regr_count"
+    ) || (name == "count" && function_is_distinct(function))
+}
+
+fn function_is_distinct(function: &sqlparser::ast::Function) -> bool {
+    match &function.args {
+        FunctionArguments::List(list) => {
+            list.duplicate_treatment == Some(DuplicateTreatment::Distinct)
+        }
+        _ => false,
+    }
+}
+
+fn is_scan_transformable_non_distributive(aggregate: &str) -> bool {
+    let lower = aggregate.to_ascii_lowercase();
+    lower.contains("array_agg") || lower.contains("count_if") || lower.contains("countif")
+}
+
+fn parse_expr_or_identity(sql: &str) -> Expr {
+    parse_expr(sql).unwrap_or_else(|_| parse_expr("true").expect("true should parse"))
+}
+
+fn restore_inner_join_keyword(original: &str, rewritten: String) -> String {
+    if !original.to_ascii_uppercase().contains(" INNER JOIN ") {
+        return rewritten;
+    }
+    let upper = rewritten.to_ascii_uppercase();
+    if upper.contains(" INNER JOIN ") {
+        return rewritten;
+    }
+    rewritten.replace(" JOIN ", " INNER JOIN ")
+}
+
+fn normalize_distinct_casing(mut sql: String) -> String {
+    while let Some(index) = sql.find("count(DISTINCT") {
+        sql.replace_range(index..index + "count(DISTINCT".len(), "count(distinct");
+    }
+    sql
+}
+
+fn restore_preserved_aggregate_sql(mut sql: String, policies: &[PolicyIr]) -> String {
+    for policy in policies {
+        let PolicyIr::CompatAggregate(policy) = policy else {
+            continue;
+        };
+        let Ok(aggregates) = constraint_aggregates(
+            &policy.constraint,
+            &policy.sources,
+            policy.sink.as_deref(),
+        ) else {
+            continue;
+        };
+        for aggregate in aggregates {
+            let Ok(normalized) = parse_expr(&aggregate.sql) else {
+                continue;
+            };
+            let normalized_sql = normalized.to_string();
+            if normalized_sql != aggregate.sql && sql.contains(&normalized_sql) {
+                sql = sql.replace(&normalized_sql, &aggregate.sql);
+            }
+        }
+    }
+    sql
 }
 
 fn first_function_expr(function: &sqlparser::ast::Function) -> Option<Expr> {
@@ -2121,51 +2455,114 @@ fn source_aggregates(
     constraint: &str,
     sources: &[String],
 ) -> Result<Vec<SourceAggregate>, RewriteError> {
+    constraint_aggregates(constraint, sources, None)
+}
+
+fn constraint_aggregates(
+    constraint: &str,
+    sources: &[String],
+    sink: Option<&str>,
+) -> Result<Vec<SourceAggregate>, RewriteError> {
     let expr = parse_expr(constraint)?;
     let mut aggregates = Vec::new();
-    collect_source_aggregates(&expr, sources, &mut aggregates);
+    collect_constraint_aggregates(&expr, constraint, sources, sink, &mut aggregates);
     Ok(aggregates)
 }
 
-fn collect_source_aggregates(
-    expr: &Expr,
+fn policy_aggregate_temp_entries(
+    constraint: &str,
     sources: &[String],
+    sink: Option<&str>,
+) -> Result<Vec<SourceAggregate>, RewriteError> {
+    let all = constraint_aggregates(constraint, sources, sink)?;
+    let mut ordered = Vec::new();
+  for source in sources {
+        for aggregate in &all {
+            if !aggregate.is_sink_aggregate
+                && expr_references_table(&aggregate.expr, source)
+                && ordered.iter().all(|existing: &SourceAggregate| existing.sql != aggregate.sql)
+            {
+                ordered.push(aggregate.clone());
+            }
+        }
+    }
+    for aggregate in &all {
+        if !aggregate.is_sink_aggregate
+            && ordered.iter().all(|existing: &SourceAggregate| existing.sql != aggregate.sql)
+        {
+            ordered.push(aggregate.clone());
+        }
+    }
+    for aggregate in &all {
+        if aggregate.is_sink_aggregate
+            && ordered.iter().all(|existing: &SourceAggregate| existing.sql != aggregate.sql)
+        {
+            ordered.push(aggregate.clone());
+        }
+    }
+    Ok(ordered)
+}
+
+fn aggregate_sql_from_constraint(constraint: &str, expr: &Expr) -> String {
+    let rendered = expr.to_string();
+    if constraint.contains(&rendered) {
+        return rendered;
+    }
+    let lower = constraint.to_ascii_lowercase();
+    let needle = rendered.to_ascii_lowercase();
+    if let Some(start) = lower.find(&needle) {
+        return constraint[start..start + rendered.len()].to_string();
+    }
+    rendered
+}
+
+fn collect_constraint_aggregates(
+    expr: &Expr,
+    constraint: &str,
+    sources: &[String],
+    sink: Option<&str>,
     aggregates: &mut Vec<SourceAggregate>,
 ) {
     match expr {
         Expr::Function(function) if is_aggregate_name(&function.name.to_string()) => {
-            if let Some(input) = first_function_expr(function)
-                && expr_references_any_source(&input, sources)
-            {
-                aggregates.push(SourceAggregate {
-                    sql: expr.to_string(),
-                    function_name: function.name.to_string(),
-                    expr: expr.clone(),
-                    input,
-                });
+            if let Some(input) = first_function_expr(function) {
+                let refs_source = expr_references_any_source(&input, sources)
+                    || expr_references_any_source(expr, sources);
+                let refs_sink = sink.is_some_and(|sink| expr_references_table(expr, sink));
+                if refs_source || refs_sink {
+                    aggregates.push(SourceAggregate {
+                        sql: aggregate_sql_from_constraint(constraint, expr),
+                        function_name: function.name.to_string(),
+                        expr: expr.clone(),
+                        is_sink_aggregate: refs_sink && !refs_source,
+                    });
+                }
             }
         }
         Expr::Function(function) => {
             if let FunctionArguments::List(args) = &function.args {
                 for arg in &args.args {
-                    match arg {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-                        | FunctionArg::Named {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        }
-                        | FunctionArg::ExprNamed {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        } => collect_source_aggregates(expr, sources, aggregates),
-                        _ => {}
+                    if let FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                    | FunctionArg::Named {
+                        arg: FunctionArgExpr::Expr(expr),
+                        ..
+                    }
+                    | FunctionArg::ExprNamed {
+                        arg: FunctionArgExpr::Expr(expr),
+                        ..
+                    } = arg
+                    {
+                        collect_constraint_aggregates(expr, constraint, sources, sink, aggregates);
                     }
                 }
             }
+            if let Some(filter) = function.filter.as_ref() {
+                collect_constraint_aggregates(filter, constraint, sources, sink, aggregates);
+            }
         }
         Expr::BinaryOp { left, right, .. } => {
-            collect_source_aggregates(left, sources, aggregates);
-            collect_source_aggregates(right, sources, aggregates);
+            collect_constraint_aggregates(left, constraint, sources, sink, aggregates);
+            collect_constraint_aggregates(right, constraint, sources, sink, aggregates);
         }
         Expr::Nested(expr)
         | Expr::UnaryOp { expr, .. }
@@ -2174,7 +2571,9 @@ fn collect_source_aggregates(
         | Expr::IsTrue(expr)
         | Expr::IsNotTrue(expr)
         | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr) => collect_source_aggregates(expr, sources, aggregates),
+        | Expr::IsNotNull(expr) => {
+            collect_constraint_aggregates(expr, constraint, sources, sink, aggregates)
+        }
         Expr::Case {
             operand,
             conditions,
@@ -2182,33 +2581,126 @@ fn collect_source_aggregates(
             else_result,
         } => {
             if let Some(operand) = operand {
-                collect_source_aggregates(operand, sources, aggregates);
+                collect_constraint_aggregates(operand, constraint, sources, sink, aggregates);
             }
             for expr in conditions.iter().chain(results.iter()) {
-                collect_source_aggregates(expr, sources, aggregates);
+                collect_constraint_aggregates(expr, constraint, sources, sink, aggregates);
             }
             if let Some(else_result) = else_result {
-                collect_source_aggregates(else_result, sources, aggregates);
+                collect_constraint_aggregates(else_result, constraint, sources, sink, aggregates);
             }
         }
         _ => {}
     }
 }
 
+fn expr_references_table(expr: &Expr, table: &str) -> bool {
+    match expr {
+        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+            parts[0].value.eq_ignore_ascii_case(table)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            expr_references_table(left, table) || expr_references_table(right, table)
+        }
+        Expr::Nested(expr)
+        | Expr::UnaryOp { expr, .. }
+        | Expr::IsFalse(expr)
+        | Expr::IsNotFalse(expr)
+        | Expr::IsTrue(expr)
+        | Expr::IsNotTrue(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => expr_references_table(expr, table),
+        Expr::Function(function) => {
+            if let FunctionArguments::List(args) = &function.args
+                && args.args.iter().any(|arg| match arg {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                    | FunctionArg::Named {
+                        arg: FunctionArgExpr::Expr(expr),
+                        ..
+                    }
+                    | FunctionArg::ExprNamed {
+                        arg: FunctionArgExpr::Expr(expr),
+                        ..
+                    } => expr_references_table(expr, table),
+                    _ => false,
+                }) {
+                    return true;
+                }
+            function
+                .filter
+                .as_deref()
+                .is_some_and(|filter| expr_references_table(filter, table))
+        }
+        _ => false,
+    }
+}
+
+fn aggregate_has_filter(expr: &Expr) -> bool {
+    matches!(expr, Expr::Function(function) if function.filter.is_some())
+}
+
+fn expr_is_aggregate(expr: &Expr) -> bool {
+    matches!(expr, Expr::Function(function) if is_aggregate_name(&function.name.to_string()))
+}
+
 fn aggregate_temp_projection_expr(
     aggregate: &SourceAggregate,
     is_query_aggregation: bool,
+    context: Option<&RewriteContext>,
+    sink: Option<&str>,
 ) -> Result<Expr, RewriteError> {
-    if is_query_aggregation {
-        return Ok(aggregate.expr.clone());
-    }
-    if aggregate.function_name.eq_ignore_ascii_case("count") {
-        return parse_expr(&format!(
-            "CASE WHEN {} IS NOT NULL THEN 1 ELSE 0 END",
-            aggregate.input
-        ));
-    }
-    Ok(aggregate.input.clone())
+    let preserve_full_aggregate =
+        is_query_aggregation || aggregate_has_filter(&aggregate.expr);
+
+    let expr = if aggregate_has_filter(&aggregate.expr) {
+        parse_expr(&aggregate.sql)?
+    } else if aggregate.is_sink_aggregate
+        && let (Some(context), Some(sink)) = (context, sink)
+    {
+        if let Expr::Function(function) = &aggregate.expr
+            && let Some(inner) = first_function_expr(function)
+        {
+            let mapped_inner = replace_sink_columns(inner, sink, &context.sink_expr_by_column);
+            let mapped_inner =
+                replace_sink_columns(mapped_inner, "_OUTPUT_", &context.sink_expr_by_column);
+            if preserve_full_aggregate && expr_is_aggregate(&mapped_inner) {
+                mapped_inner
+            } else if preserve_full_aggregate {
+                replace_sink_columns(
+                    replace_sink_columns(
+                        parse_expr(&aggregate.sql)?,
+                        sink,
+                        &context.sink_expr_by_column,
+                    ),
+                    "_OUTPUT_",
+                    &context.sink_expr_by_column,
+                )
+            } else {
+                mapped_inner
+            }
+        } else if preserve_full_aggregate {
+            replace_sink_columns(
+                replace_sink_columns(
+                    parse_expr(&aggregate.sql)?,
+                    sink,
+                    &context.sink_expr_by_column,
+                ),
+                "_OUTPUT_",
+                &context.sink_expr_by_column,
+            )
+        } else {
+            parse_expr(&aggregate.sql)?
+        }
+    } else if preserve_full_aggregate {
+        parse_expr(&aggregate.sql)?
+    } else if let Expr::Function(function) = &aggregate.expr
+        && let Some(inner) = first_function_expr(function)
+    {
+        inner.clone()
+    } else {
+        parse_expr(&aggregate.sql)?
+    };
+    Ok(expr)
 }
 
 fn aggregate_finalize_function_name(function_name: &str) -> &str {
@@ -2256,115 +2748,9 @@ fn expr_references_any_source(expr: &Expr, sources: &[String]) -> bool {
     }
 }
 
-fn expr_referenced_policy_sources(
-    expr: &Expr,
-    policy_sources: &HashSet<String>,
-) -> HashSet<String> {
-    let mut refs = HashSet::new();
-    collect_referenced_policy_sources(expr, policy_sources, &mut refs);
-    refs
-}
-
-fn collect_referenced_policy_sources(
-    expr: &Expr,
-    policy_sources: &HashSet<String>,
-    refs: &mut HashSet<String>,
-) {
-    match expr {
-        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
-            let table = parts[0].value.to_ascii_lowercase();
-            if policy_sources.contains(&table) {
-                refs.insert(table);
-            }
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            collect_referenced_policy_sources(left, policy_sources, refs);
-            collect_referenced_policy_sources(right, policy_sources, refs);
-        }
-        Expr::Nested(expr)
-        | Expr::UnaryOp { expr, .. }
-        | Expr::IsFalse(expr)
-        | Expr::IsNotFalse(expr)
-        | Expr::IsTrue(expr)
-        | Expr::IsNotTrue(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr) => {
-            collect_referenced_policy_sources(expr, policy_sources, refs);
-        }
-        Expr::Between {
-            expr, low, high, ..
-        } => {
-            collect_referenced_policy_sources(expr, policy_sources, refs);
-            collect_referenced_policy_sources(low, policy_sources, refs);
-            collect_referenced_policy_sources(high, policy_sources, refs);
-        }
-        Expr::InList { expr, list, .. } => {
-            collect_referenced_policy_sources(expr, policy_sources, refs);
-            for expr in list {
-                collect_referenced_policy_sources(expr, policy_sources, refs);
-            }
-        }
-        Expr::Function(function) => {
-            if let FunctionArguments::List(args) = &function.args {
-                for arg in &args.args {
-                    match arg {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-                        | FunctionArg::Named {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        }
-                        | FunctionArg::ExprNamed {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        } => collect_referenced_policy_sources(expr, policy_sources, refs),
-                        _ => {}
-                    }
-                }
-            }
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            results,
-            else_result,
-        } => {
-            if let Some(operand) = operand {
-                collect_referenced_policy_sources(operand, policy_sources, refs);
-            }
-            for expr in conditions.iter().chain(results.iter()) {
-                collect_referenced_policy_sources(expr, policy_sources, refs);
-            }
-            if let Some(else_result) = else_result {
-                collect_referenced_policy_sources(else_result, policy_sources, refs);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn split_conjuncts(expr: Expr) -> Vec<Expr> {
-    match expr {
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::And,
-            right,
-        } => {
-            let mut conjuncts = split_conjuncts(*left);
-            conjuncts.extend(split_conjuncts(*right));
-            conjuncts
-        }
-        Expr::Nested(expr) => split_conjuncts(*expr),
-        expr => vec![expr],
-    }
-}
-
 fn join_conjuncts(mut conjuncts: Vec<Expr>) -> Expr {
     let first = conjuncts.remove(0);
     conjuncts.into_iter().fold(first, and_expr)
-}
-
-fn aggregate_temp_column(index: usize) -> String {
-    format!("_passant_agg_{index}")
 }
 
 fn insert_select_mapping(insert: &sqlparser::ast::Insert) -> HashMap<String, Expr> {
@@ -2690,6 +3076,7 @@ struct TableScope {
     base_tables: HashSet<String>,
     direct_base_tables: HashSet<String>,
     alias_by_base: HashMap<String, String>,
+    aliases_by_base: HashMap<String, Vec<String>>,
 }
 
 impl TableScope {
@@ -2718,7 +3105,12 @@ impl TableScope {
                     self.direct_base_tables.insert(key.clone());
                 }
                 if let Some(alias) = alias {
-                    self.alias_by_base.insert(key, alias.name.value.clone());
+                    self.alias_by_base
+                        .insert(key.clone(), alias.name.value.clone());
+                    self.aliases_by_base
+                        .entry(key)
+                        .or_default()
+                        .push(alias.name.value.clone());
                 }
             }
             TableFactor::Derived {
