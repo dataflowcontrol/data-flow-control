@@ -153,7 +153,7 @@ fn validate_dfc_policy(
     sink: Option<&str>,
     sink_alias: Option<&str>,
     constraint: &str,
-    on_fail: Resolution,
+    _on_fail: Resolution,
 ) -> Result<(), RewriteError> {
     let mut source_columns = HashMap::new();
     for source in sources {
@@ -199,40 +199,6 @@ fn validate_dfc_policy(
     } else {
         None
     };
-
-    if let Some(sink) = sink {
-        if on_fail == Resolution::Invalidate {
-            let valid_type = catalog.column_type(sink, "valid");
-            if valid_type != Some("BOOLEAN") {
-                return Err(RewriteError::catalog(
-                    ErrorKind::InvalidSinkColumn,
-                    format!(
-                        "Sink table '{sink}' must have a boolean column named 'valid' \
-                         for INVALIDATE resolution policies"
-                    ),
-                    Some(sink.to_string()),
-                    Some("valid".to_string()),
-                ));
-            }
-        }
-        if on_fail == Resolution::InvalidateMessage {
-            let invalid_type = catalog.column_type(sink, "invalid_string").unwrap_or("");
-            let is_string = ["CHAR", "VARCHAR", "STRING", "TEXT"]
-                .iter()
-                .any(|token| invalid_type.contains(token));
-            if !is_string {
-                return Err(RewriteError::catalog(
-                    ErrorKind::InvalidSinkColumn,
-                    format!(
-                        "Sink table '{sink}' must have a string column named 'invalid_string' \
-                         for INVALIDATE_MESSAGE resolution policies"
-                    ),
-                    Some(sink.to_string()),
-                    Some("invalid_string".to_string()),
-                ));
-            }
-        }
-    }
 
     validate_qualified_columns(constraint, "constraint")?;
     for dimension in dimensions {

@@ -28,4 +28,4 @@ Queries with `EXCEPT`, outer joins, or other non-monotonic shapes use **Full-Pus
 - `scope.policy_aggregates_distributive` — semiring analysis result
 - `candidates[].reasons` — why each candidate was ranked
 
-Tests in `tests/explain_strategy.rs` and Python `test_compat.py` assert strategy names for representative queries.
+Tests in `tests/explain_strategy.rs` and Python `test_rewrite.py` assert strategy names for representative queries.

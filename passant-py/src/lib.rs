@@ -614,9 +614,6 @@ fn parse_resolution(value: &str) -> PyResult<Resolution> {
     match value.to_ascii_uppercase().as_str() {
         "REMOVE" => Ok(Resolution::Remove),
         "KILL" => Ok(Resolution::Kill),
-        "INVALIDATE" => Ok(Resolution::Invalidate),
-        "INVALIDATE_MESSAGE" => Ok(Resolution::InvalidateMessage),
-        "LLM" | "UDF" => Ok(Resolution::Llm),
         _ => Err(PyValueError::new_err(format!("unknown resolution {value}"))),
     }
 }

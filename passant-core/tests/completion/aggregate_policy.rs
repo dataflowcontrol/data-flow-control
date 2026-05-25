@@ -116,16 +116,14 @@ fn aggregate_policy_invalidate_update_per_dimension() {
 }
 
 #[test]
-fn aggregate_scan_policy_rejects_remove_resolution_at_parse() {
+fn aggregate_scan_policy_rejects_invalidate_resolution_at_parse() {
     use passant_core::parse_policy_text;
 
-    let err =
-        parse_policy_text("AGGREGATE SOURCE foo CONSTRAINT sum(foo.amount) > 100 ON FAIL REMOVE")
-            .expect_err("aggregate policies must use INVALIDATE");
-    assert!(
-        err.to_string()
-            .contains("aggregate policies currently only support INVALIDATE resolution")
-    );
+    let err = parse_policy_text(
+        "AGGREGATE SOURCE foo CONSTRAINT sum(foo.amount) > 100 ON FAIL INVALIDATE",
+    )
+    .expect_err("INVALIDATE resolution is not supported");
+    assert!(err.to_string().contains("invalid resolution: INVALIDATE"));
 }
 
 #[test]

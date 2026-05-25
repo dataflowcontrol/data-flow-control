@@ -10,9 +10,6 @@ use crate::identifiers::{Alias, SourceName, TableName, normalize_key};
 pub enum Resolution {
     Remove,
     Kill,
-    Invalidate,
-    InvalidateMessage,
-    Llm,
 }
 
 impl Resolution {
@@ -20,9 +17,6 @@ impl Resolution {
         match value.trim().to_ascii_uppercase().as_str() {
             "REMOVE" => Ok(Self::Remove),
             "KILL" => Ok(Self::Kill),
-            "INVALIDATE" => Ok(Self::Invalidate),
-            "INVALIDATE_MESSAGE" => Ok(Self::InvalidateMessage),
-            "LLM" | "UDF" => Ok(Self::Llm),
             other => Err(PolicyParseError::InvalidResolution(other.to_string())),
         }
     }
@@ -138,7 +132,7 @@ impl PolicyIr {
     pub fn resolution(&self) -> Resolution {
         match self {
             PolicyIr::CompatDfc { on_fail, .. } => *on_fail,
-            PolicyIr::CompatAggregate(_) => Resolution::Invalidate,
+            PolicyIr::CompatAggregate(_) => Resolution::Remove,
             PolicyIr::NativePgn(policy) => policy.on_fail,
         }
     }
@@ -241,9 +235,9 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
     }
     if is_aggregate {
         let on_fail = Resolution::parse(&resolution)?;
-        if on_fail != Resolution::Invalidate {
+        if on_fail != Resolution::Remove {
             return Err(PolicyParseError::InvalidSyntax(
-                "aggregate policies currently only support INVALIDATE resolution".into(),
+                "aggregate policies require ON FAIL REMOVE".into(),
             ));
         }
         return Ok(PolicyIr::CompatAggregate(AggregateDfcPolicy {
@@ -575,14 +569,17 @@ mod tests {
     fn resolution_parsing_covers_all_supported_values() {
         assert_eq!(Resolution::parse("REMOVE").unwrap(), Resolution::Remove);
         assert_eq!(Resolution::parse("KILL").unwrap(), Resolution::Kill);
-        assert_eq!(Resolution::parse("UDF").unwrap(), Resolution::Llm);
+        assert!(Resolution::parse("LLM").is_err());
+        assert!(Resolution::parse("UDF").is_err());
+        assert!(Resolution::parse("INVALIDATE").is_err());
+        assert!(Resolution::parse("INVALIDATE_MESSAGE").is_err());
         assert!(Resolution::parse("NOPE").is_err());
     }
 
     #[test]
     fn aggregate_keyword_parses_into_compat_aggregate_policy() {
         let policy = parse_policy_text(
-            "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL INVALIDATE",
+            "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
         )
         .expect("aggregate policy should parse");
         assert!(matches!(policy, PolicyIr::CompatAggregate(_)));

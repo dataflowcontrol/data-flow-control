@@ -110,7 +110,3 @@ pub fn assert_explain_strategy(sql: &str, policies: &[PolicyIr], strategy: Rewri
 pub fn dfc_policy_kill(sources: &[&str], constraint: &str) -> PolicyIr {
     dfc_policy_with(sources, constraint, Resolution::Kill)
 }
-
-pub fn dfc_policy_invalidate(sources: &[&str], constraint: &str) -> PolicyIr {
-    dfc_policy_with(sources, constraint, Resolution::Invalidate)
-}

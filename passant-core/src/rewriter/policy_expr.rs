@@ -6,8 +6,7 @@ use std::collections::HashSet;
 
 use smallvec::SmallVec;
 use sqlparser::ast::{
-    Assignment, AssignmentTarget, BinaryOperator, Expr, FunctionArg, FunctionArgExpr,
-    FunctionArguments, Ident, ObjectName,
+    Assignment, BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments,
 };
 
 use crate::catalog::TableCatalog;
@@ -22,9 +21,8 @@ use crate::sql::{count_distinct_eq_one, scalar_subquery};
 use super::aggregates::{is_scan_transformable_non_distributive, transform_scan_aggregates};
 use super::columns::{replace_sink_columns, rewrite_column_qualifiers};
 use super::expr::{
-    and_expr, append_invalid_message_expr, bool_literal, expr_contains_aggregate,
-    invalidate_message_expr, is_aggregate_name, join_conjuncts, kill_expr, parse_expr,
-    resolver_expr,
+    and_expr, bool_literal, expr_contains_aggregate, is_aggregate_name, join_conjuncts, kill_expr,
+    parse_expr,
 };
 use super::scope::TableScope;
 use super::types::{PolicyApplicability, RewriteContext};
@@ -283,8 +281,6 @@ pub(crate) fn join_pushdown_expr(
     }
     if *on_fail == Resolution::Kill {
         expr = kill_expr(expr)?;
-    } else if *on_fail == Resolution::Llm {
-        expr = resolver_expr(expr)?;
     }
     Ok(expr)
 }
@@ -562,60 +558,12 @@ pub(crate) fn build_pgn_over_filter_expr(
     Ok(expr)
 }
 
-fn upsert_valid_assignment(assignments: &mut Vec<Assignment>, value: Expr) {
-    for assignment in assignments.iter_mut() {
-        let AssignmentTarget::ColumnName(name) = &assignment.target else {
-            continue;
-        };
-        if name
-            .0
-            .last()
-            .is_some_and(|ident| ident.value.eq_ignore_ascii_case("valid"))
-        {
-            assignment.value = and_expr(assignment.value.clone(), value);
-            return;
-        }
-    }
-
-    assignments.push(Assignment {
-        target: AssignmentTarget::ColumnName(ObjectName(vec![Ident::new("valid")])),
-        value,
-    });
-}
-
-fn upsert_invalid_string_assignment(
-    assignments: &mut Vec<Assignment>,
-    value: Expr,
-    description: Option<&str>,
-) -> Result<(), RewriteError> {
-    for assignment in assignments.iter_mut() {
-        let AssignmentTarget::ColumnName(name) = &assignment.target else {
-            continue;
-        };
-        if name
-            .0
-            .last()
-            .is_some_and(|ident| ident.value.eq_ignore_ascii_case("invalid_string"))
-        {
-            assignment.value =
-                append_invalid_message_expr(assignment.value.clone(), value, description)?;
-            return Ok(());
-        }
-    }
-
-    assignments.push(Assignment {
-        target: AssignmentTarget::ColumnName(ObjectName(vec![Ident::new("invalid_string")])),
-        value: invalidate_message_expr(value, description)?,
-    });
-    Ok(())
-}
-
 pub(crate) fn apply_update_resolution(
-    assignments: &mut Vec<Assignment>,
+    _assignments: &mut [Assignment],
     selection: &mut Option<Expr>,
     expr: Expr,
     on_fail: Resolution,
-    description: Option<&str>,
+    _description: Option<&str>,
 ) -> Result<(), RewriteError> {
     match on_fail {
         Resolution::Remove => {
@@ -626,19 +574,6 @@ pub(crate) fn apply_update_resolution(
         }
         Resolution::Kill => {
             let expr = kill_expr(expr)?;
-            *selection = Some(match selection.take() {
-                Some(existing) => and_expr(existing, expr),
-                None => expr,
-            });
-        }
-        Resolution::Invalidate => {
-            upsert_valid_assignment(assignments, expr);
-        }
-        Resolution::InvalidateMessage => {
-            upsert_invalid_string_assignment(assignments, expr, description)?;
-        }
-        Resolution::Llm => {
-            let expr = resolver_expr(expr)?;
             *selection = Some(match selection.take() {
                 Some(existing) => and_expr(existing, expr),
                 None => expr,
@@ -677,30 +612,5 @@ pub(crate) fn build_single_alias_compat_dfc_filter_expr(
     if !is_aggregation {
         expr = scan_policy_expr(expr, sources, context, &alias_map, scan_ready)?;
     }
-    Ok(expr)
-}
-
-pub(crate) fn build_invalidate_projection_expr(
-    sources: &[String],
-    constraint: &str,
-    sink_alias: &Option<String>,
-    applicability: PolicyApplicability,
-    context: &RewriteContext,
-    table_scope: &TableScope,
-    constraint_ctx: &ConstraintExprCtx<'_>,
-) -> Result<Expr, RewriteError> {
-    if applicability == PolicyApplicability::RequiredSourceMissing {
-        return Ok(bool_literal(false));
-    }
-    let mut expr = constraint_ctx.expr(constraint)?;
-    if let Some(sink) = &context.sink {
-        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
-        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
-        if let Some(sink_alias) = sink_alias {
-            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
-        }
-    }
-    rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
-    let _ = sources;
     Ok(expr)
 }

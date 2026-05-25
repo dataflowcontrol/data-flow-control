@@ -1,18 +1,19 @@
 """Structured rewrite error exposure from Rust."""
 
+import duckdb
 import pytest
 
-from passant.compat import DFCPolicy, PassantRewriteError, Resolution, SQLRewriter
+from passant import Policy, PassantRewriteError, Resolution, wrap
 
 
 def test_rewrite_error_exposes_kind_for_unsupported_statement():
     if PassantRewriteError is None:
         pytest.skip("Passant extension not built")
 
-    rewriter = SQLRewriter()
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,

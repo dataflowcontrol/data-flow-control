@@ -28,7 +28,7 @@ fn sink_only_policy(sink: &str) -> PolicyIr {
         sink: Some(sink.to_string()),
         sink_alias: None,
         constraint: format!("max({sink}.amount) <= 0"),
-        on_fail: Resolution::Invalidate,
+        on_fail: Resolution::Remove,
         description: None,
     }
 }

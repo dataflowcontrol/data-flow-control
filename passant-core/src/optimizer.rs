@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::planner::ScopeInfo;
-use crate::policy::{PolicyIr, Resolution};
+use crate::policy::PolicyIr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RewriteStrategy {
@@ -114,7 +114,7 @@ impl RewriteOptimizer {
 
         if policies
             .iter()
-            .any(|policy| matches!(policy.resolution(), Resolution::Invalidate))
+            .any(|policy| matches!(policy, PolicyIr::CompatAggregate(_)))
             && scope.has_finalize_capable_sink
         {
             candidates.push(CandidatePlan {

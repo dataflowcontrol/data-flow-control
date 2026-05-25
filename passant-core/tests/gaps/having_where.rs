@@ -1,4 +1,4 @@
-use crate::common::{assert_rewrite, dfc_policy, dfc_policy_invalidate, dfc_policy_kill, rewrite};
+use crate::common::{assert_rewrite, dfc_policy, dfc_policy_kill, rewrite};
 
 #[test]
 fn existing_where_or_clause_combines_with_policy_using_and() {
@@ -31,14 +31,14 @@ fn multiple_remove_policies_on_same_source_combine_with_and() {
 }
 
 #[test]
-fn kill_and_invalidate_policies_combine_on_scan() {
+fn kill_and_remove_policies_combine_on_scan() {
     let sql = rewrite(
         "SELECT id FROM foo",
         &[
             dfc_policy_kill(&["foo"], "max(foo.id) > 10"),
-            dfc_policy_invalidate(&["foo"], "max(foo.amount) > 0"),
+            dfc_policy(&["foo"], "max(foo.amount) > 0"),
         ],
     );
-    assert!(sql.contains("valid"));
     assert!(sql.contains("kill()"));
+    assert!(sql.contains("foo.amount > 0"));
 }

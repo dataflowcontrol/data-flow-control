@@ -369,10 +369,7 @@ pub fn split_policy_for_set_branches(
     if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
         return None;
     }
-    if !matches!(
-        on_fail,
-        Resolution::Remove | Resolution::Kill | Resolution::Llm
-    ) {
+    if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
         return None;
     }
 
@@ -516,10 +513,7 @@ fn split_policy_from_cached_conjuncts(
     if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
         return None;
     }
-    if !matches!(
-        on_fail,
-        Resolution::Remove | Resolution::Kill | Resolution::Llm
-    ) {
+    if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
         return None;
     }
 
@@ -567,10 +561,7 @@ fn split_policy_by_source_local_conjuncts_from_ast(
     if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
         return None;
     }
-    if !matches!(
-        on_fail,
-        Resolution::Remove | Resolution::Kill | Resolution::Llm
-    ) {
+    if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
         return None;
     }
 

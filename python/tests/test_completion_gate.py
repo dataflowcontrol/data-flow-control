@@ -4,19 +4,20 @@ Run with: uv run pytest -m completion
 Default CI excludes these via: uv run pytest -m "not completion"
 """
 
+import duckdb
 import pytest
 
 pytestmark = pytest.mark.completion
 
 
 def test_count_if_scan_rewrites_to_case_when():
-    """Port of sql_rewriter/test_rewriter.py::test_policy_scan_with_count_if."""
-    from passant.compat import DFCPolicy, Resolution, SQLRewriter
+    """COUNT_IF scan rewrite (completion gate)."""
+    from passant import Policy, Resolution, wrap
 
-    rewriter = SQLRewriter()
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="COUNT_IF(foo.id > 2) > 0",
             on_fail=Resolution.REMOVE,
@@ -27,11 +28,11 @@ def test_count_if_scan_rewrites_to_case_when():
 
 
 def test_delete_policy_removes_registered_policy():
-    from passant.compat import DFCPolicy, Resolution, SQLRewriter
+    from passant import Policy, Resolution, wrap
 
-    rewriter = SQLRewriter()
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    policy = DFCPolicy(
+    policy = Policy(
         sources=["foo"],
         constraint="max(foo.id) > 1",
         on_fail=Resolution.REMOVE,
@@ -43,11 +44,11 @@ def test_delete_policy_removes_registered_policy():
         on_fail=Resolution.REMOVE,
     )
     assert removed is True
-    assert rewriter.get_dfc_policies() == []
+    assert rewriter.policies() == []
 
 
 def test_pgn_policy_text_parses():
-    from passant.compat import PgnPolicy
+    from passant import PgnPolicy
 
     policy = PgnPolicy.from_text(
         "PGN OVER SOURCE foo SINK reports "

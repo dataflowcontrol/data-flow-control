@@ -1,23 +1,24 @@
 """Shared fixtures for Passant Python tests."""
 
+import duckdb
 import pytest
 
-from passant.compat import SQLRewriter
+from passant import wrap
 
 
 @pytest.fixture
 def rewriter():
-    """Create a Passant SQLRewriter with standard test tables."""
-    rewriter = SQLRewriter()
+    """Create a Passant connection with standard test tables."""
+    db = wrap(duckdb.connect())
 
-    rewriter.execute("CREATE TABLE foo (id INTEGER, name VARCHAR)")
-    rewriter.execute("INSERT INTO foo VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
-    rewriter.execute("ALTER TABLE foo ADD COLUMN bar VARCHAR")
-    rewriter.execute("UPDATE foo SET bar = 'value' || id::VARCHAR")
+    db.execute("CREATE TABLE foo (id INTEGER, name VARCHAR)")
+    db.execute("INSERT INTO foo VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
+    db.execute("ALTER TABLE foo ADD COLUMN bar VARCHAR")
+    db.execute("UPDATE foo SET bar = 'value' || id::VARCHAR")
 
-    rewriter.execute("CREATE TABLE baz (x INTEGER, y VARCHAR)")
-    rewriter.execute("INSERT INTO baz VALUES (10, 'test')")
+    db.execute("CREATE TABLE baz (x INTEGER, y VARCHAR)")
+    db.execute("INSERT INTO baz VALUES (10, 'test')")
 
-    yield rewriter
+    yield db
 
-    rewriter.close()
+    db.close()

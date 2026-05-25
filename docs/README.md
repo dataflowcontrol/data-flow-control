@@ -1,6 +1,6 @@
 # Passant Architecture Docs
 
-Passant is a Rust-first SQL policy rewriter with a thin Python compatibility layer for DuckDB execution.
+Passant is a Rust-first SQL policy rewriter with a thin Python API for DuckDB execution.
 
 ## Documents
 
@@ -9,7 +9,7 @@ Passant is a Rust-first SQL policy rewriter with a thin Python compatibility lay
 | [rewrite-pipeline.md](rewrite-pipeline.md) | Parse → validate → analyze → strategy → rewrite → format |
 | [policy-validation.md](policy-validation.md) | Syntax vs catalog validation, normalization, errors |
 | [strategy-selection.md](strategy-selection.md) | Full-Push, Partial-Push, source-sets, explain fields |
-| [python-compatibility.md](python-compatibility.md) | Rust/Python boundary, what each layer owns |
+| [python-api.md](python-api.md) | Python `wrap` / `Connection` / `Planner` / adapters |
 
 ## Quality plan status
 

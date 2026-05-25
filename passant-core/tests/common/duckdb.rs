@@ -36,40 +36,8 @@ impl VScalar for KillScalar {
     }
 }
 
-struct AddressViolatingRowsScalar;
-
-impl VScalar for AddressViolatingRowsScalar {
-    type State = ();
-
-    unsafe fn invoke(
-        _: &Self::State,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let len = input.len();
-        let mut output_vec = output.flat_vector();
-        let data = unsafe { output_vec.as_mut_slice::<bool>() };
-        for item in data.iter_mut().take(len) {
-            *item = false;
-        }
-        Ok(())
-    }
-
-    fn signatures() -> Vec<ScalarFunctionSignature> {
-        vec![ScalarFunctionSignature::exact(
-            vec![],
-            LogicalTypeHandle::from(LogicalTypeId::Boolean),
-        )]
-    }
-
-    fn volatile() -> bool {
-        true
-    }
-}
-
 fn register_passant_udfs(conn: &Connection) -> duckdb::Result<()> {
     conn.register_scalar_function::<KillScalar>("kill")?;
-    conn.register_scalar_function::<AddressViolatingRowsScalar>("address_violating_rows")?;
     Ok(())
 }
 

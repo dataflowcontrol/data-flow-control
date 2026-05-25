@@ -15,9 +15,7 @@ Rust owns semantic validation in `catalog.rs` (table/column lookups use normaliz
 
 - source and sink tables exist
 - referenced columns exist in the registered catalog snapshot
-- source columns in `DFCPolicy` constraints are aggregated
-- `INVALIDATE` requires sink column `valid` with boolean type
-- `INVALIDATE_MESSAGE` requires sink column `invalid_string` with string type
+- source columns in `Policy` constraints are aggregated
 
 Python collects catalog facts from DuckDB (`DESCRIBE`, `SHOW TABLES`) and sends a JSON snapshot to Rust via `PyPlanner.sync_catalog`. Policy dataclass constructors call Rust for constraint/dimension syntax (`validate_constraint_expression`) and list normalization (`normalize_policy_sources_py`, `normalize_policy_dimensions_py`).
 

@@ -92,7 +92,7 @@ fn pgn_update_policy_kind() {
         },
         aggregations: vec!["sum(foo.amount)".to_string()],
         constraint: "sum(foo.amount) <= 1000".to_string(),
-        on_fail: Resolution::Invalidate,
+        on_fail: Resolution::Remove,
         description: None,
         source_text: None,
     });
@@ -100,7 +100,7 @@ fn pgn_update_policy_kind() {
     let sql = rewriter
         .rewrite("UPDATE reports SET amount = 100 FROM foo WHERE reports.id = foo.id")
         .expect("pgn update rewrite should succeed");
-    assert!(sql.contains("valid"));
+    assert!(sql.contains("sum(foo.amount) <= 1000"));
 }
 
 #[test]

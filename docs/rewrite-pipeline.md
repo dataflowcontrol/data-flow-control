@@ -16,7 +16,7 @@ Passant rewrites SQL in a fixed pipeline:
 | `mod.rs` | Orchestration: public API, policy registration, pipeline dispatch |
 | `types.rs` | `PassantRewriter`, `RewriteOptions`, `RewriteContext`, `FinalizeQuery` |
 | `scope.rs` | `TableScope` (visible tables and alias map) |
-| `expr.rs` | Expression parsing, resolution, kill/resolver helpers |
+| `expr.rs` | Expression parsing, resolution, and kill helpers |
 | `columns.rs` | Column/sink replacement and qualification |
 | `aggregates.rs` | Constraint aggregates, temp columns, scan transforms, finalize SQL |
 | `policy_expr.rs` | Policy applicability, filter building, join pushdown |
@@ -37,4 +37,4 @@ Explain output (`explain.rs`) records scope metadata, the chosen strategy, and r
 
 - New **policy resolution**: add to `policy.rs`, filter builders in `rewriter/`, tests in `tests/rewrite/`.
 - New **rewrite strategy**: implement `RewriteEngine`, register in `RewritePipeline`, document in `strategy-selection.md`.
-- New **catalog rule**: add to `catalog.rs::validate_policy`, mirror with Rust unit tests and Python compat tests.
+- New **catalog rule**: add to `catalog.rs::validate_policy`, mirror with Rust unit tests and Python API tests.

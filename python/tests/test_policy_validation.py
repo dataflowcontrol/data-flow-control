@@ -1,12 +1,13 @@
-"""Policy object validation tests ported from sql_rewriter/test_policy.py."""
+"""Policy dataclass validation tests."""
 
+import duckdb
 import pytest
 
-from passant.compat import DFCPolicy, Resolution, SQLRewriter
+from passant import Policy, Resolution, wrap
 
 
 def test_policy_with_source_only_accepts_aggregated():
-    policy = DFCPolicy(
+    policy = Policy(
         sources=["users"],
         constraint="max(users.age) >= 18",
         on_fail=Resolution.REMOVE,
@@ -17,7 +18,7 @@ def test_policy_with_source_only_accepts_aggregated():
 
 
 def test_policy_with_sink_only():
-    policy = DFCPolicy(
+    policy = Policy(
         sources=[],
         sink="reports",
         constraint="reports.status = 'approved'",
@@ -28,7 +29,7 @@ def test_policy_with_sink_only():
 
 
 def test_policy_with_both_source_and_sink():
-    policy = DFCPolicy(
+    policy = Policy(
         sources=["users"],
         sink="analytics",
         constraint="max(users.id) = analytics.user_id",
@@ -40,7 +41,7 @@ def test_policy_with_both_source_and_sink():
 
 def test_policy_requires_source_or_sink():
     with pytest.raises(ValueError, match="Either sources or sink"):
-        DFCPolicy(
+        Policy(
             sources=[],
             constraint="1 = 1",
             on_fail=Resolution.REMOVE,
@@ -49,7 +50,7 @@ def test_policy_requires_source_or_sink():
 
 def test_policy_requires_sources_list():
     with pytest.raises(ValueError, match="Sources must be provided"):
-        DFCPolicy(  # type: ignore[arg-type]
+        Policy(  # type: ignore[arg-type]
             sources=None,
             constraint="1 = 1",
             on_fail=Resolution.REMOVE,
@@ -58,7 +59,7 @@ def test_policy_requires_sources_list():
 
 def test_policy_rejects_unqualified_column():
     with pytest.raises(ValueError, match="qualified"):
-        DFCPolicy(
+        Policy(
             sources=["users"],
             constraint="max(age) >= 18",
             on_fail=Resolution.REMOVE,
@@ -66,12 +67,12 @@ def test_policy_rejects_unqualified_column():
 
 
 def test_policy_equality():
-    left = DFCPolicy(
+    left = Policy(
         sources=["foo"],
         constraint="max(foo.id) > 1",
         on_fail=Resolution.REMOVE,
     )
-    right = DFCPolicy(
+    right = Policy(
         sources=["foo"],
         constraint="max(foo.id) > 1",
         on_fail=Resolution.REMOVE,
@@ -81,7 +82,7 @@ def test_policy_equality():
 
 def test_policy_required_sources_must_be_subset():
     with pytest.raises(ValueError, match="Required sources"):
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             required_sources=["bar"],
             constraint="max(foo.id) > 1",
@@ -90,11 +91,11 @@ def test_policy_required_sources_must_be_subset():
 
 
 def test_register_policy_rejects_unaggregated_source_column():
-    rewriter = SQLRewriter()
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE users (age INTEGER)")
     with pytest.raises(ValueError, match="aggregated"):
         rewriter.register_policy(
-            DFCPolicy(
+            Policy(
                 sources=["users"],
                 constraint="users.age >= 18",
                 on_fail=Resolution.REMOVE,

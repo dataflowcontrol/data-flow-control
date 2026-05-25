@@ -69,7 +69,7 @@ pub struct PolicyStore {
     /// Policies with no sources and no sink (true globals).
     global_no_source: PolicyIndex,
     enforcement_global_no_source: PolicyIndex,
-    /// Multi-source enforcement policies (REMOVE/KILL/LLM) indexed by source set.
+    /// Multi-source enforcement policies (REMOVE/KILL) indexed by source set.
     enforcement_multi_source: SourceSetPolicyIndex,
     /// Multi-source policies indexed by canonical source set.
     multi_source: SourceSetPolicyIndex,
@@ -388,7 +388,7 @@ impl PolicyStore {
             .unwrap_or_default()
     }
 
-    /// Candidate enforcement policies (REMOVE/KILL/LLM) reachable from visible tables.
+    /// Candidate enforcement policies (REMOVE/KILL) reachable from visible tables.
     pub fn enforcement_candidate_ids_for_tables(&self, tables: &HashSet<TableKey>) -> Vec<usize> {
         self.enforcement_candidate_lookup(tables).collect_ids()
     }
@@ -559,17 +559,26 @@ impl PolicyStore {
             (Some(source_list), Some(sink_key)) => {
                 let mut source_ids = HashSet::new();
                 for source in source_list {
-                    if let Some(indexes) = self.by_source.get(&TableKey::new(source)) {
+                    let key = TableKey::new(source);
+                    if let Some(indexes) = self.by_source.get(&key) {
                         source_ids.extend(indexes.collect_active_sorted(self));
                     }
+                    if let Some(index) = self.aggregate_by_source.get(&key) {
+                        source_ids.extend(index.collect_active_sorted(self));
+                    }
                 }
-                let sink_ids: HashSet<usize> = self
+                let mut sink_ids: HashSet<usize> = self
                     .by_sink
                     .get(sink_key)
                     .map(|indexes| indexes.collect_active_sorted(self))
                     .unwrap_or_default()
                     .into_iter()
                     .collect();
+                if let Some(aggregate_ids) = self.aggregate_by_sink.get(sink_key) {
+                    for index in aggregate_ids.collect_active_sorted(self) {
+                        sink_ids.insert(index);
+                    }
+                }
                 source_ids
                     .into_iter()
                     .filter(|index| sink_ids.contains(index))
@@ -866,10 +875,7 @@ impl PolicyStoreMemoryUsage {
 }
 
 fn is_enforcement_resolution(resolution: Resolution) -> bool {
-    matches!(
-        resolution,
-        Resolution::Remove | Resolution::Kill | Resolution::Llm
-    )
+    matches!(resolution, Resolution::Remove | Resolution::Kill)
 }
 
 impl PolicyStore {
@@ -900,7 +906,7 @@ impl PolicyStore {
                 sources,
                 required_sources,
                 sink: None,
-                on_fail: Resolution::Remove | Resolution::Kill | Resolution::Llm,
+                on_fail: Resolution::Remove | Resolution::Kill,
                 ..
             } if required_sources.is_empty() && sources.len() == 1
         );
@@ -915,18 +921,17 @@ impl PolicyStore {
                     }
                 }
                 let columns = dedup_referenced_column_keys(columns);
-                let conjuncts = if matches!(
-                    policy.resolution(),
-                    Resolution::Remove | Resolution::Kill | Resolution::Llm
-                ) && policy.sink().is_none()
-                    && policy.required_sources().is_empty()
-                    && policy.dimensions().is_empty()
-                    && source_keys.len() > 1
-                {
-                    compile_source_local_conjuncts(&compiled.ast, &source_keys)
-                } else {
-                    None
-                };
+                let conjuncts =
+                    if matches!(policy.resolution(), Resolution::Remove | Resolution::Kill)
+                        && policy.sink().is_none()
+                        && policy.required_sources().is_empty()
+                        && policy.dimensions().is_empty()
+                        && source_keys.len() > 1
+                    {
+                        compile_source_local_conjuncts(&compiled.ast, &source_keys)
+                    } else {
+                        None
+                    };
                 (conjuncts, referenced, columns)
             } else {
                 (None, SmallVec::new(), SmallVec::new())
@@ -1254,7 +1259,7 @@ mod tests {
             sink: Some("reports".to_string()),
             sink_alias: None,
             constraint: "max(reports.amount) <= 0".to_string(),
-            on_fail: Resolution::Invalidate,
+            on_fail: Resolution::Remove,
             description: None,
         });
         let mut tables = HashSet::new();
@@ -1427,17 +1432,17 @@ mod tests {
     }
 
     #[test]
-    fn enforcement_index_only_tracks_remove_kill_and_llm_policies() {
+    fn enforcement_index_only_tracks_remove_and_kill_policies() {
         let mut store = PolicyStore::default();
         store.register(dfc_policy("foo", "max(foo.id) > 1"));
         store.register(PolicyIr::CompatDfc {
-            sources: vec!["foo".to_string()],
+            sources: vec![],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
-            sink: None,
+            sink: Some("reports".to_string()),
             sink_alias: None,
-            constraint: "max(foo.id) > 0".to_string(),
-            on_fail: Resolution::Invalidate,
+            constraint: "max(reports.amount) <= 0".to_string(),
+            on_fail: Resolution::Remove,
             description: None,
         });
         store.register(PolicyIr::CompatDfc {

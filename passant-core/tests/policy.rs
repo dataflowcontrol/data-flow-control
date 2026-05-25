@@ -54,11 +54,11 @@ fn parse_pgn_required_source_policy_text() {
 }
 
 #[test]
-fn parse_pgn_udf_resolution_as_resolver_hook() {
-    let policy = parse_policy_text("SOURCE foo CONSTRAINT max(foo.id) > 1 ON FAIL UDF")
-        .expect("policy should parse");
+fn parse_pgn_rejects_udf_resolution() {
+    let err = parse_policy_text("SOURCE foo CONSTRAINT max(foo.id) > 1 ON FAIL UDF")
+        .expect_err("UDF resolution should be rejected");
 
-    assert_eq!(policy.resolution(), Resolution::Llm);
+    assert!(err.to_string().contains("invalid resolution: UDF"));
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn parse_pgn_dimension_policy_text() {
 #[test]
 fn parse_pgn_aggregate_dimension_policy_text() {
     let policy = parse_policy_text(
-        "AGGREGATE SOURCE foo SINK reports DIMENSION reports.region CONSTRAINT sum(reports.total) > 100 ON FAIL INVALIDATE",
+        "AGGREGATE SOURCE foo SINK reports DIMENSION reports.region CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
     )
     .expect("policy should parse");
 

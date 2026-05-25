@@ -1,13 +1,13 @@
-"""Coverage for sql_rewriter gap topics not already in test_compat.py."""
+"""Additional query-shape coverage beyond `test_rewrite.py`."""
 
 from __future__ import annotations
 
-from passant.compat import AggregateDFCPolicy, DFCPolicy, Resolution
+from passant import AggregatePolicy, Policy, Resolution
 
 
 class TestJoinTypes:
     def test_cross_join(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -16,10 +16,10 @@ class TestJoinTypes:
         transformed = rewriter.transform_query("SELECT foo.id FROM foo CROSS JOIN baz")
         assert "CROSS JOIN" in transformed.upper()
         assert "foo.id > 1" in transformed
-        assert rewriter.conn.execute(transformed).fetchall() is not None
+        assert rewriter.connection.execute(transformed).fetchall() is not None
 
     def test_select_distinct_with_policy(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -28,12 +28,12 @@ class TestJoinTypes:
         transformed = rewriter.transform_query("SELECT DISTINCT id FROM foo")
         assert "DISTINCT" in transformed.upper()
         assert "foo.id > 1" in transformed
-        assert len(rewriter.conn.execute(transformed).fetchall()) == 2
+        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
 
 
 class TestWindowFunctions:
     def test_window_function_scan_with_policy(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -44,12 +44,12 @@ class TestWindowFunctions:
         assert "ROW_NUMBER() OVER" in transformed
         assert "foo.id > 1" in transformed
         assert "HAVING" not in transformed.upper()
-        assert len(rewriter.conn.execute(transformed).fetchall()) == 2
+        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
 
 
 class TestInSubqueries:
     def test_in_with_list(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -58,12 +58,12 @@ class TestInSubqueries:
         transformed = rewriter.transform_query("SELECT id FROM foo WHERE id IN (1, 2, 3)")
         assert "IN (1, 2, 3)" in transformed
         assert "foo.id > 1" in transformed
-        assert len(rewriter.conn.execute(transformed).fetchall()) == 2
+        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
 
 
 class TestCorrelatedSubqueries:
     def test_correlated_subquery_in_select(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -73,10 +73,10 @@ class TestCorrelatedSubqueries:
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
         assert "HAVING" not in transformed.upper()
-        assert len(rewriter.conn.execute(transformed).fetchall()) == 2
+        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
 
     def test_correlated_subquery_in_where(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -85,7 +85,7 @@ class TestCorrelatedSubqueries:
         query = "SELECT id FROM foo WHERE id = (SELECT x FROM baz WHERE baz.x = foo.id)"
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
-        assert rewriter.conn.execute(transformed).fetchall() is not None
+        assert rewriter.connection.execute(transformed).fetchall() is not None
 
 
 class TestExistsSubqueries:
@@ -95,7 +95,7 @@ class TestExistsSubqueries:
         rewriter.execute("CREATE TABLE lineitem (l_orderkey INTEGER, l_quantity INTEGER)")
         rewriter.execute("INSERT INTO lineitem VALUES (1, 10), (2, 5)")
 
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["orders"],
             constraint="max(orders.o_orderkey) >= 1",
             on_fail=Resolution.REMOVE,
@@ -108,7 +108,7 @@ class TestExistsSubqueries:
         transformed = rewriter.transform_query(query)
         assert "EXISTS" in transformed.upper()
         assert "o_orderkey" in transformed
-        assert rewriter.conn.execute(transformed).fetchall() is not None
+        assert rewriter.connection.execute(transformed).fetchall() is not None
 
     def test_exists_subquery_with_policy_on_inner_table_rewrites_to_join(self, rewriter):
         rewriter.execute(
@@ -124,7 +124,7 @@ class TestExistsSubqueries:
             "INSERT INTO lineitem VALUES (1, '1993-07-10', '1993-07-20', 10), (2, '1993-08-10', '1993-08-05', 5)"
         )
 
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["lineitem"],
             constraint="max(lineitem.l_quantity) >= 1",
             on_fail=Resolution.REMOVE,
@@ -144,12 +144,12 @@ ORDER BY o_orderpriority"""
         assert "base_query" not in transformed.lower()
         assert "exists_subquery" in transformed.lower()
         assert "having" in transformed.lower()
-        assert rewriter.conn.execute(transformed).fetchall() is not None
+        assert rewriter.connection.execute(transformed).fetchall() is not None
 
 
 class TestSubqueryWithMissingColumns:
     def test_subquery_missing_policy_column(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -158,12 +158,12 @@ class TestSubqueryWithMissingColumns:
         query = "SELECT sub.name FROM (SELECT foo.name FROM foo) AS sub"
         transformed = rewriter.transform_query(query)
         assert "foo.id" in transformed or "sub.id" in transformed
-        assert len(rewriter.conn.execute(transformed).fetchall()) == 2
+        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
 
 
 class TestMultipleCTEs:
     def test_nested_ctes_recurses_into_source(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -176,10 +176,10 @@ class TestMultipleCTEs:
         """
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
-        assert rewriter.conn.execute(transformed).fetchall() is not None
+        assert rewriter.connection.execute(transformed).fetchall() is not None
 
     def test_multiple_ctes_with_joins(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -192,13 +192,13 @@ class TestMultipleCTEs:
         """
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
-        assert rewriter.conn.execute(transformed).fetchall() is not None
+        assert rewriter.connection.execute(transformed).fetchall() is not None
 
 
 class TestInsertStatements:
     def test_insert_values_passes_through(self, rewriter):
         rewriter.execute("CREATE TABLE dest (id INTEGER)")
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -209,7 +209,7 @@ class TestInsertStatements:
 
     def test_insert_with_sink_only_policy_remove(self, rewriter):
         rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
-        policy = DFCPolicy(
+        policy = Policy(
             sources=[],
             sink="reports",
             constraint="reports.status = 'approved'",
@@ -222,7 +222,7 @@ class TestInsertStatements:
 
     def test_insert_with_sink_only_policy_kill(self, rewriter):
         rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
-        policy = DFCPolicy(
+        policy = Policy(
             sources=[],
             sink="reports",
             constraint="reports.status = 'approved'",
@@ -236,29 +236,29 @@ class TestInsertStatements:
 
 class TestPolicyRowDropping:
     def test_policy_drops_rows_with_ne_constraint(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) != 2",
             on_fail=Resolution.REMOVE,
         )
         rewriter.register_policy(policy)
         transformed = rewriter.transform_query("SELECT id, name FROM foo ORDER BY id")
-        result = rewriter.conn.execute(transformed).fetchall()
+        result = rewriter.connection.execute(transformed).fetchall()
         assert result == [(1, "Alice"), (3, "Charlie")]
 
     def test_policy_drops_rows_with_or_constraint(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="max(foo.id) = 1 OR max(foo.id) = 3",
             on_fail=Resolution.REMOVE,
         )
         rewriter.register_policy(policy)
         transformed = rewriter.transform_query("SELECT id, name FROM foo ORDER BY id")
-        result = rewriter.conn.execute(transformed).fetchall()
+        result = rewriter.connection.execute(transformed).fetchall()
         assert result == [(1, "Alice"), (3, "Charlie")]
 
     def test_policy_scan_with_approx_count_distinct(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo"],
             constraint="approx_count_distinct(foo.id) = 1",
             on_fail=Resolution.REMOVE,
@@ -266,12 +266,12 @@ class TestPolicyRowDropping:
         rewriter.register_policy(policy)
         transformed = rewriter.transform_query("SELECT id FROM foo")
         assert "1 = 1" in transformed
-        assert len(rewriter.conn.execute(transformed).fetchall()) == 3
+        assert len(rewriter.connection.execute(transformed).fetchall()) == 3
 
 
 class TestMultiSourceRewrites:
     def test_multi_source_scan_with_left_join(self, rewriter):
-        policy = DFCPolicy(
+        policy = Policy(
             sources=["foo", "baz"],
             constraint="max(foo.id) >= 2 AND max(baz.x) <= 20",
             on_fail=Resolution.REMOVE,
@@ -281,7 +281,7 @@ class TestMultiSourceRewrites:
         transformed = rewriter.transform_query(query)
         assert "foo.id >= 2" in transformed
         assert "baz.x <= 20" in transformed
-        assert rewriter.conn.execute(transformed).fetchall() is not None
+        assert rewriter.connection.execute(transformed).fetchall() is not None
 
 
 class TestAggregatePolicyFilter:
@@ -289,11 +289,11 @@ class TestAggregatePolicyFilter:
         rewriter.execute("CREATE TABLE bank_txn (amount INTEGER, kind VARCHAR)")
         rewriter.execute("INSERT INTO bank_txn VALUES (100, 'Income'), (50, 'Expense')")
         rewriter.execute("CREATE TABLE irs_form (amount INTEGER, kind VARCHAR)")
-        policy = AggregateDFCPolicy(
+        policy = AggregatePolicy(
             sources=["bank_txn"],
             sink="irs_form",
             constraint="sum(bank_txn.amount) filter (where bank_txn.kind = 'Income') > 0",
-            on_fail=Resolution.INVALIDATE,
+            on_fail=Resolution.REMOVE,
         )
         rewriter.register_policy(policy)
         query = "INSERT INTO irs_form SELECT amount, kind FROM bank_txn"

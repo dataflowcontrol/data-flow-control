@@ -15,9 +15,9 @@ use super::helpers::{
     prune_dominated_applicable_with_store, table_joins_all_inner, table_with_joins_base_tables,
 };
 use super::policy_expr::{
-    ConstraintExprCtx, build_compat_dfc_filter_expr, build_invalidate_projection_expr,
-    build_pgn_over_filter_expr, compiled_policy_applicability, join_pushdown_expr,
-    non_distributive_aggregates, scan_policy_expr, unique_column_guard_from_constraint,
+    ConstraintExprCtx, build_compat_dfc_filter_expr, build_pgn_over_filter_expr,
+    compiled_policy_applicability, join_pushdown_expr, non_distributive_aggregates,
+    scan_policy_expr, unique_column_guard_from_constraint,
 };
 use super::scope::TableScope;
 use super::types::{PolicyApplicability, RewriteContext};
@@ -158,7 +158,6 @@ pub struct MultiSourceJoinPushAction {
 pub(crate) enum PolicyResolutionAction {
     CompatDfc {
         filter: Expr,
-        projection: Option<Expr>,
         on_fail: Resolution,
         description: Option<String>,
     },
@@ -311,25 +310,8 @@ fn build_policy_resolution_actions(
                 {
                     expr = and_expr(guard, expr);
                 }
-                let projection = if matches!(on_fail, Resolution::Invalidate)
-                    && context.sink.is_some()
-                    && sources.len() > 1
-                {
-                    Some(build_invalidate_projection_expr(
-                        sources,
-                        constraint,
-                        sink_alias,
-                        applicability,
-                        context,
-                        table_scope,
-                        &constraint_ctx,
-                    )?)
-                } else {
-                    Some(expr.clone())
-                };
                 actions.push(PolicyResolutionAction::CompatDfc {
                     filter: expr,
-                    projection,
                     on_fail: *on_fail,
                     description: description.clone(),
                 });
@@ -403,7 +385,6 @@ pub(crate) fn apply_policy_resolution_actions(
         match action {
             PolicyResolutionAction::CompatDfc {
                 filter,
-                projection,
                 on_fail,
                 description,
             } => {
@@ -413,7 +394,6 @@ pub(crate) fn apply_policy_resolution_actions(
                     *on_fail,
                     description.as_deref(),
                     is_aggregation,
-                    projection.clone(),
                 )?;
             }
             PolicyResolutionAction::PgnOver {
@@ -427,7 +407,6 @@ pub(crate) fn apply_policy_resolution_actions(
                     *on_fail,
                     description.as_deref(),
                     is_aggregation,
-                    None,
                 )?;
             }
         }
@@ -551,7 +530,7 @@ pub(crate) fn plan_update_scope(
 
 pub(crate) fn apply_update_scope_plan(
     plan: &UpdateScopePlan,
-    assignments: &mut Vec<sqlparser::ast::Assignment>,
+    assignments: &mut [sqlparser::ast::Assignment],
     selection: &mut Option<Expr>,
 ) -> Result<(), RewriteError> {
     use super::policy_expr::apply_update_resolution;
@@ -584,49 +563,6 @@ pub(crate) fn apply_update_scope_plan(
 pub struct MergeSourcePlan {
     pub diagnostics: ScopePlanDiagnostics,
     pub filters: Vec<Expr>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct InsertSinkInvalidationPlan {
-    pub diagnostics: ScopePlanDiagnostics,
-    pub append_valid: bool,
-    pub append_invalid_string: bool,
-}
-
-pub(crate) fn plan_insert_sink_invalidation(
-    store: &PolicyStore,
-    sink: &str,
-) -> InsertSinkInvalidationPlan {
-    let sink_key = TableKey::new(sink);
-    let candidate_ids = store.candidate_ids_for_sink(&sink_key);
-    let mut plan = InsertSinkInvalidationPlan {
-        diagnostics: ScopePlanDiagnostics {
-            candidate_policies: candidate_ids.len(),
-            ..ScopePlanDiagnostics::default()
-        },
-        ..InsertSinkInvalidationPlan::default()
-    };
-    for index in candidate_ids {
-        let Some(policy) = store.policy(index) else {
-            continue;
-        };
-        if !policy
-            .sink()
-            .is_some_and(|policy_sink| policy_sink.eq_ignore_ascii_case(sink))
-        {
-            continue;
-        }
-        plan.diagnostics.applicable_policies += 1;
-        match policy.resolution() {
-            Resolution::Invalidate => plan.append_valid = true,
-            Resolution::InvalidateMessage => plan.append_invalid_string = true,
-            _ => {}
-        }
-        if plan.append_valid && plan.append_invalid_string {
-            break;
-        }
-    }
-    plan
 }
 
 #[derive(Debug, Clone, Default)]

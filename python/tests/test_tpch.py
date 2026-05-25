@@ -1,6 +1,6 @@
 """Execution-focused TPC-H regression tests for Passant.
 
-These mirror `sql_rewriter/test_tpch.py` coverage but assert that each query
+These mirror the legacy TPC-H rewrite test set but assert that each query
 rewrites successfully, applies the lineitem policy, and executes against DuckDB.
 Exact SQL text is not compared because Passant uses different rewrite strategies
 for LIMIT wrappers, join pushdown, and EXISTS handling.
@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import pathlib
 
+import duckdb
 import pytest
 
-from passant.compat import DFCPolicy, Resolution, SQLRewriter
+from passant import Connection, Policy, Resolution, wrap
 
-lineitem_policy = DFCPolicy(
+lineitem_policy = Policy(
     sources=["lineitem"],
     constraint="max(lineitem.l_quantity) >= 1",
     on_fail=Resolution.REMOVE,
@@ -27,7 +28,7 @@ TPCH_QUERIES = (1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 19)
 
 @pytest.fixture
 def tpch_rewriter():
-    rewriter = SQLRewriter()
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("INSTALL tpch")
     rewriter.execute("LOAD tpch")
     rewriter.execute("CALL dbgen(sf=0.1)")
@@ -44,7 +45,7 @@ def load_tpch_query(query_num: int) -> str:
 
 
 def assert_tpch_rewrite_executes(
-    tpch_rewriter: SQLRewriter,
+    tpch_rewriter: Connection,
     query_num: int,
     *,
     require_policy_marker: str = "l_quantity",
@@ -53,7 +54,7 @@ def assert_tpch_rewrite_executes(
     tpch_rewriter.register_policy(lineitem_policy)
     transformed = tpch_rewriter.transform_query(query)
     assert require_policy_marker.lower() in transformed.lower(), transformed
-    result = tpch_rewriter.conn.execute(transformed).fetchall()
+    result = tpch_rewriter.connection.execute(transformed).fetchall()
     assert result is not None
     return transformed
 

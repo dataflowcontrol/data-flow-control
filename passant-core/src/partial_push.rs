@@ -15,8 +15,7 @@ use crate::rewriter::{
     apply_policy_having, collect_compound_columns_by_name, ensure_projection_aliases,
     extract_policy_comparison_for_policy, group_by_join_specs, kill_expr,
     outer_limited_projection_items, parse_expr, plan_policy_filter_actions, projected_column_name,
-    replace_identifiers, resolver_expr, scope_has_enforcement_policies, select_is_aggregation,
-    unqualify_columns,
+    replace_identifiers, scope_has_enforcement_policies, select_is_aggregation, unqualify_columns,
 };
 use crate::sql::{
     alias_column, and_exprs, column_comparison, cte, empty_select, function_call,
@@ -375,10 +374,7 @@ fn partial_push_limit_scan(
         else {
             continue;
         };
-        if !matches!(
-            on_fail,
-            Resolution::Remove | Resolution::Kill | Resolution::Llm
-        ) {
+        if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
             continue;
         }
         let mut source_columns = HashMap::new();
@@ -394,8 +390,6 @@ fn partial_push_limit_scan(
         }
         if on_fail == Resolution::Kill {
             expr = kill_expr(expr)?;
-        } else if on_fail == Resolution::Llm {
-            expr = resolver_expr(expr)?;
         }
         let replacements = propagated_filter_columns
             .iter()

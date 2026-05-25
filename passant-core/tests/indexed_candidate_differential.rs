@@ -45,7 +45,7 @@ fn register_diverse_registry(store: &mut PolicyStore) {
         sink: Some("reports".to_string()),
         sink_alias: None,
         constraint: "max(reports.amount) <= 0".to_string(),
-        on_fail: Resolution::Invalidate,
+        on_fail: Resolution::Remove,
         description: None,
     });
     for index in 0..500_usize {

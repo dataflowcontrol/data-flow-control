@@ -1,26 +1,31 @@
-from passant.compat import AggregateDFCPolicy, DFCPolicy, Resolution, SQLRewriter
+"""End-to-end Python API tests: policy registration, rewrite, and DuckDB execution."""
+
+from passant import AggregatePolicy, Policy, Resolution, wrap
 import json
+import duckdb
 import pytest
 
 
-def test_python_compat_rewriter_preserves_policy_registration():
-    rewriter = SQLRewriter()
+def test_rewriter_preserves_policy_registration():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    policy = DFCPolicy(
+    policy = Policy(
         sources=["foo"],
         constraint="max(foo.id) > 1",
         on_fail=Resolution.REMOVE,
     )
     rewriter.register_policy(policy)
-    assert rewriter.get_dfc_policies() == [policy]
-    assert json.loads(rewriter._planner.dfc_policies_json())[0]["CompatDfc"]["sources"] == ["foo"]
+    assert rewriter.policies() == [policy]
+    assert json.loads(rewriter.planner.inner.dfc_policies_json())[0]["CompatDfc"]["sources"] == [
+        "foo"
+    ]
 
 
-def test_python_compat_delete_policy_updates_rust_storage():
-    rewriter = SQLRewriter()
+def test_delete_policy_updates_rust_storage():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
-    policy = DFCPolicy(
+    policy = Policy(
         sources=["foo"],
         constraint="max(foo.id) > 1",
         on_fail=Resolution.REMOVE,
@@ -32,29 +37,29 @@ def test_python_compat_delete_policy_updates_rust_storage():
         constraint="max(foo.id) > 1",
         on_fail=Resolution.REMOVE,
     )
-    assert rewriter.get_dfc_policies() == []
+    assert rewriter.policies() == []
     assert rewriter.fetchall("SELECT id FROM foo") == [(1,)]
 
 
-def test_python_compat_get_pgn_policies_roundtrip():
-    from passant.compat import PgnPolicy
+def test_get_pgn_policies_roundtrip():
+    from passant import PgnPolicy
 
-    rewriter = SQLRewriter()
+    rewriter = wrap(duckdb.connect())
     text = (
         "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) "
         "CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE"
     )
     rewriter.register_policy(PgnPolicy.from_text(text))
-    assert rewriter.get_pgn_policies() == [PgnPolicy(text=text)]
-    assert rewriter._planner.has_registered_policies()
-    assert rewriter.get_dfc_policies() == []
+    assert rewriter.pgn_policies() == [PgnPolicy(text=text)]
+    assert rewriter.planner.inner.has_registered_policies()
+    assert rewriter.policies() == []
 
 
-def test_python_compat_dfc_policy_from_policy_str_uses_rust_parser():
-    policy = DFCPolicy.from_policy_str(
+def test_dfc_policy_from_policy_str_uses_rust_parser():
+    policy = Policy.from_policy_str(
         "SOURCE foo SINK reports CONSTRAINT max(foo.id) > 1 ON FAIL KILL DESCRIPTION stop bad rows"
     )
-    assert policy == DFCPolicy(
+    assert policy == Policy(
         sources=["foo"],
         sink="reports",
         constraint="max(foo.id) > 1",
@@ -63,11 +68,11 @@ def test_python_compat_dfc_policy_from_policy_str_uses_rust_parser():
     )
 
 
-def test_python_compat_dfc_policy_from_policy_str_preserves_required_sources():
-    policy = DFCPolicy.from_policy_str(
+def test_dfc_policy_from_policy_str_preserves_required_sources():
+    policy = Policy.from_policy_str(
         "SOURCE REQUIRED receipts SINK reports CONSTRAINT reports.id > 0 ON FAIL REMOVE"
     )
-    assert policy == DFCPolicy(
+    assert policy == Policy(
         sources=["receipts"],
         required_sources=["receipts"],
         sink="reports",
@@ -76,11 +81,11 @@ def test_python_compat_dfc_policy_from_policy_str_preserves_required_sources():
     )
 
 
-def test_python_compat_dfc_policy_from_policy_str_preserves_sink_alias():
-    policy = DFCPolicy.from_policy_str(
+def test_dfc_policy_from_policy_str_preserves_sink_alias():
+    policy = Policy.from_policy_str(
         "SOURCE foo SINK reports AS r CONSTRAINT r.status = 'approved' ON FAIL REMOVE"
     )
-    assert policy == DFCPolicy(
+    assert policy == Policy(
         sources=["foo"],
         sink="reports",
         sink_alias="r",
@@ -89,11 +94,11 @@ def test_python_compat_dfc_policy_from_policy_str_preserves_sink_alias():
     )
 
 
-def test_python_compat_dfc_policy_from_policy_str_normalizes_source_alias():
-    policy = DFCPolicy.from_policy_str(
+def test_dfc_policy_from_policy_str_normalizes_source_alias():
+    policy = Policy.from_policy_str(
         "SOURCE foo AS f SINK reports CONSTRAINT max(f.id) > 1 ON FAIL REMOVE"
     )
-    assert policy == DFCPolicy(
+    assert policy == Policy(
         sources=["foo"],
         sink="reports",
         constraint="max(foo.id) > 1",
@@ -101,12 +106,12 @@ def test_python_compat_dfc_policy_from_policy_str_normalizes_source_alias():
     )
 
 
-def test_python_compat_dfc_policy_from_policy_str_preserves_dimensions():
-    policy = DFCPolicy.from_policy_str(
+def test_dfc_policy_from_policy_str_preserves_dimensions():
+    policy = Policy.from_policy_str(
         "SOURCE foo AS f SINK reports DIMENSION f.region, reports.department "
         "CONSTRAINT max(f.id) > 1 ON FAIL REMOVE"
     )
-    assert policy == DFCPolicy(
+    assert policy == Policy(
         sources=["foo"],
         sink="reports",
         dimensions=["foo.region", "reports.department"],
@@ -115,87 +120,51 @@ def test_python_compat_dfc_policy_from_policy_str_preserves_dimensions():
     )
 
 
-def test_python_compat_aggregate_policy_from_policy_str_uses_rust_parser():
-    policy = AggregateDFCPolicy.from_policy_str(
+def test_aggregate_policy_from_policy_str_uses_rust_parser():
+    policy = AggregatePolicy.from_policy_str(
         "AGGREGATE SOURCES foo SINK reports DIMENSION reports.region "
-        "CONSTRAINT sum(reports.id) > 1 ON FAIL INVALIDATE"
+        "CONSTRAINT sum(reports.id) > 1 ON FAIL REMOVE"
     )
-    assert policy == AggregateDFCPolicy(
+    assert policy == AggregatePolicy(
         sources=["foo"],
         sink="reports",
         dimensions=["reports.region"],
         constraint="sum(reports.id) > 1",
-        on_fail=Resolution.INVALIDATE,
+        on_fail=Resolution.REMOVE,
     )
 
 
-def test_python_compat_policy_requires_sources_list():
+def test_policy_requires_sources_list():
     with pytest.raises(ValueError, match="Sources must be provided"):
-        DFCPolicy(
+        Policy(
             sources=None,
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
         )
 
 
-def test_python_compat_policy_validates_constraint_syntax_at_construction():
+def test_policy_validates_constraint_syntax_at_construction():
     with pytest.raises(ValueError, match="Invalid constraint SQL expression"):
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) >",
             on_fail=Resolution.REMOVE,
         )
 
 
-def test_python_compat_policy_requires_qualified_constraint_columns_at_construction():
+def test_policy_requires_qualified_constraint_columns_at_construction():
     with pytest.raises(ValueError, match="Unqualified columns found: id"):
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(id) > 1",
             on_fail=Resolution.REMOVE,
         )
 
 
-def test_python_compat_aggregate_policy_only_supports_invalidate():
-    with pytest.raises(ValueError, match="only supports INVALIDATE"):
-        AggregateDFCPolicy(
-            sources=["foo"],
-            constraint="sum(foo.id) > 1",
-            on_fail=Resolution.REMOVE,
-        )
-
-
-def test_passant_compat_exposes_same_public_api_as_original_sql_rewriter():
-    from sql_rewriter import DFCPolicy as LegacyDFCPolicy
-    from sql_rewriter import Resolution as LegacyResolution
-    from sql_rewriter import SQLRewriter as LegacySQLRewriter
-
-    assert LegacyResolution.REMOVE.value == Resolution.REMOVE.value
-    assert LegacyResolution.KILL.value == Resolution.KILL.value
-    assert LegacyResolution.INVALIDATE.value == Resolution.INVALIDATE.value
-    assert LegacyDFCPolicy.__name__ == DFCPolicy.__name__
-    assert LegacySQLRewriter.__name__ == SQLRewriter.__name__
-
-
-def test_python_compat_stream_path_defaults_and_resets():
-    rewriter = SQLRewriter()
-    original = rewriter.get_stream_file_path()
-    assert isinstance(original, str)
-    rewriter.reset_stream_file_path()
-    assert isinstance(rewriter.get_stream_file_path(), str)
-    assert rewriter.get_stream_file_path() != original
-
-
-def test_python_compat_transform_query_falls_back_without_extension():
-    rewriter = SQLRewriter()
-    query = "SELECT id FROM foo"
-    assert isinstance(rewriter.transform_query(query), str)
-
-
-def test_python_compat_transform_query_enforces_registered_policy():
-    rewriter = SQLRewriter()
+def test_transform_query_enforces_registered_policy():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    policy = DFCPolicy(
+    policy = Policy(
         sources=["foo"],
         constraint="max(foo.id) > 1",
         on_fail=Resolution.REMOVE,
@@ -204,18 +173,18 @@ def test_python_compat_transform_query_enforces_registered_policy():
     assert rewriter.transform_query("SELECT id FROM foo") == "SELECT id FROM foo WHERE foo.id > 1"
 
 
-def test_python_compat_transform_query_collapses_dominated_thresholds():
-    rewriter = SQLRewriter()
+def test_transform_query_collapses_dominated_thresholds():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
         )
     )
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 10",
             on_fail=Resolution.REMOVE,
@@ -225,11 +194,11 @@ def test_python_compat_transform_query_collapses_dominated_thresholds():
     assert rewriter.transform_query("SELECT id FROM foo") == "SELECT id FROM foo WHERE foo.id > 10"
 
 
-def test_python_compat_explain_rewrite_uses_registered_policies():
-    rewriter = SQLRewriter()
+def test_explain_rewrite_uses_registered_policies():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -241,12 +210,12 @@ def test_python_compat_explain_rewrite_uses_registered_policies():
     assert explanation["applicable_policies"][0]["CompatDfc"]["sources"] == ["foo"]
 
 
-def test_python_compat_explain_rewrite_reports_full_push_strategy_for_join():
-    rewriter = SQLRewriter()
+def test_explain_rewrite_reports_full_push_strategy_for_join():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -260,12 +229,12 @@ def test_python_compat_explain_rewrite_reports_full_push_strategy_for_join():
     assert explanation["scope"]["visible_tables"] == ["foo", "bar"]
 
 
-def test_python_compat_explain_rewrite_reports_non_distributive_policy_aggregate():
-    rewriter = SQLRewriter()
+def test_explain_rewrite_reports_non_distributive_policy_aggregate():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="avg(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -281,12 +250,12 @@ def test_python_compat_explain_rewrite_reports_non_distributive_policy_aggregate
     assert explanation["scope"]["non_distributive_policy_aggregates"] == ["avg(foo.id)"]
 
 
-def test_python_compat_non_distributive_scan_policy_uses_partial_push():
-    rewriter = SQLRewriter()
+def test_non_distributive_scan_policy_uses_partial_push():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="avg(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -300,12 +269,12 @@ def test_python_compat_non_distributive_scan_policy_uses_partial_push():
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (3,)]
 
 
-def test_python_compat_non_distributive_partial_push_handles_aliases():
-    rewriter = SQLRewriter()
+def test_non_distributive_partial_push_handles_aliases():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="avg(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -319,14 +288,14 @@ def test_python_compat_non_distributive_partial_push_handles_aliases():
     assert rewriter.fetchall("SELECT f.id FROM foo AS f ORDER BY f.id") == [(1,), (3,)]
 
 
-def test_python_compat_non_distributive_scalar_fallback_splits_source_local_predicates():
-    rewriter = SQLRewriter()
+def test_non_distributive_scalar_fallback_splits_source_local_predicates():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
     rewriter.execute("INSERT INTO bar VALUES (20), (30)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo", "bar"],
             constraint="avg(foo.id) > 1 AND avg(bar.id) > 10",
             on_fail=Resolution.REMOVE,
@@ -338,14 +307,14 @@ def test_python_compat_non_distributive_scalar_fallback_splits_source_local_pred
     ) == [(1,), (1,), (3,), (3,)]
 
 
-def test_python_compat_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
-    rewriter = SQLRewriter()
+def test_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
     rewriter.execute("INSERT INTO bar VALUES (2), (4)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo", "bar"],
             constraint="avg(foo.id) > avg(bar.id)",
             on_fail=Resolution.REMOVE,
@@ -358,12 +327,12 @@ def test_python_compat_cross_source_non_distributive_aggregate_comparison_uses_p
     assert rewriter.fetchall("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id") == []
 
 
-def test_python_compat_rejects_mixed_row_and_non_distributive_aggregate_policy():
-    rewriter = SQLRewriter()
+def test_rejects_mixed_row_and_non_distributive_aggregate_policy():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     with pytest.raises(ValueError, match="must be aggregated"):
         rewriter.register_policy(
-            DFCPolicy(
+            Policy(
                 sources=["foo"],
                 constraint="foo.id > 0 AND avg(foo.id) > 1",
                 on_fail=Resolution.REMOVE,
@@ -371,12 +340,12 @@ def test_python_compat_rejects_mixed_row_and_non_distributive_aggregate_policy()
         )
 
 
-def test_python_compat_explain_rewrite_reports_unsupported_rewrite_error():
-    rewriter = SQLRewriter()
+def test_explain_rewrite_reports_unsupported_rewrite_error():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -393,12 +362,12 @@ def test_python_compat_explain_rewrite_reports_unsupported_rewrite_error():
     )
 
 
-def test_python_compat_explain_rewrite_reports_source_set_error():
-    rewriter = SQLRewriter()
+def test_explain_rewrite_reports_source_set_error():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["bar", "foo"],
             constraint="max(bar.id) > max(foo.id)",
             on_fail=Resolution.REMOVE,
@@ -415,19 +384,19 @@ def test_python_compat_explain_rewrite_reports_source_set_error():
     assert "bar.id > foo.id" in rewritten
 
 
-def test_python_compat_execute_round_trips_through_duckdb():
-    rewriter = SQLRewriter()
+def test_execute_round_trips_through_duckdb():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (2,)]
 
 
-def test_python_compat_kill_resolution_aborts_query():
-    rewriter = SQLRewriter()
+def test_kill_resolution_aborts_query():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 10",
             on_fail=Resolution.KILL,
@@ -438,60 +407,13 @@ def test_python_compat_kill_resolution_aborts_query():
         rewriter.fetchall("SELECT id FROM foo")
 
 
-def test_python_compat_llm_resolution_uses_default_resolver_hook():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            constraint="max(foo.id) > 1",
-            on_fail=Resolution.LLM,
-        )
-    )
-
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(2,)]
-
-
-def test_python_compat_llm_resolution_allows_registered_resolver_hook():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
-    rewriter.register_resolver(lambda: True)
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            constraint="max(foo.id) > 1",
-            on_fail=Resolution.LLM,
-        )
-    )
-
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (2,)]
-
-
-def test_python_compat_udf_resolution_uses_registered_resolver_hook():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
-    rewriter.register_resolver(lambda: True)
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            constraint="max(foo.id) > 1",
-            on_fail=Resolution.UDF,
-        )
-    )
-
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (2,)]
-
-
-def test_python_compat_insert_sink_policy_maps_output_columns():
-    rewriter = SQLRewriter()
+def test_insert_sink_policy_maps_output_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             sink="reports",
             constraint="reports.status = 'approved' AND max(foo.id) > 1",
@@ -503,13 +425,13 @@ def test_python_compat_insert_sink_policy_maps_output_columns():
     assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [(2, "approved")]
 
 
-def test_python_compat_insert_without_column_list_maps_sink_columns_from_catalog():
-    rewriter = SQLRewriter()
+def test_insert_without_column_list_maps_sink_columns_from_catalog():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             sink="reports",
             constraint="reports.status = 'approved' AND max(foo.id) > 1",
@@ -521,13 +443,13 @@ def test_python_compat_insert_without_column_list_maps_sink_columns_from_catalog
     assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [(2, "approved")]
 
 
-def test_python_compat_insert_sink_alias_policy_maps_output_columns():
-    rewriter = SQLRewriter()
+def test_insert_sink_alias_policy_maps_output_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             sink="reports",
             sink_alias="r",
@@ -540,13 +462,13 @@ def test_python_compat_insert_sink_alias_policy_maps_output_columns():
     assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [(2, "approved")]
 
 
-def test_python_compat_insert_output_marker_policy_maps_output_columns():
-    rewriter = SQLRewriter()
+def test_insert_output_marker_policy_maps_output_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             sink="reports",
             constraint="_OUTPUT_.status = 'approved' AND max(foo.id) > 1",
@@ -558,14 +480,14 @@ def test_python_compat_insert_output_marker_policy_maps_output_columns():
     assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [(2, "approved")]
 
 
-def test_python_compat_required_source_missing_fails_closed_on_insert():
-    rewriter = SQLRewriter()
+def test_required_source_missing_fails_closed_on_insert():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE other (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER)")
     rewriter.execute("INSERT INTO other VALUES (1)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["receipts"],
             required_sources=["receipts"],
             sink="reports",
@@ -578,13 +500,13 @@ def test_python_compat_required_source_missing_fails_closed_on_insert():
     assert rewriter.fetchall("SELECT * FROM reports") == []
 
 
-def test_python_compat_required_source_present_enforces_constraint_on_insert():
-    rewriter = SQLRewriter()
+def test_required_source_present_enforces_constraint_on_insert():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER)")
     rewriter.execute("INSERT INTO receipts VALUES (5), (20)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["receipts"],
             required_sources=["receipts"],
             sink="reports",
@@ -597,56 +519,13 @@ def test_python_compat_required_source_present_enforces_constraint_on_insert():
     assert rewriter.fetchall("SELECT * FROM reports") == [(20,)]
 
 
-def test_python_compat_insert_invalidate_adds_valid_output():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR, valid BOOLEAN)")
-    rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="reports.status = 'approved' AND max(foo.id) > 1",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-
-    rewriter.execute("INSERT INTO reports (id, status) SELECT foo.id, foo.status FROM foo")
-    assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [
-        (1, "draft", False),
-        (2, "approved", True),
-    ]
-
-
-def test_python_compat_insert_invalidate_message_adds_message_output():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR, invalid_string VARCHAR)")
-    rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="reports.status = 'approved' AND max(foo.id) > 1",
-            on_fail=Resolution.INVALIDATE_MESSAGE,
-            description="bad row",
-        )
-    )
-
-    rewriter.execute("INSERT INTO reports (id, status) SELECT foo.id, foo.status FROM foo")
-    assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [
-        (1, "draft", "bad row"),
-        (2, "approved", None),
-    ]
-
-
-def test_python_compat_update_sink_policy_filters_assignments():
-    rewriter = SQLRewriter()
+def test_update_sink_policy_filters_assignments():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=[],
             sink="reports",
             constraint="reports.status = 'approved'",
@@ -660,12 +539,12 @@ def test_python_compat_update_sink_policy_filters_assignments():
     assert rewriter.fetchall("SELECT * FROM reports") == [(1, "approved")]
 
 
-def test_python_compat_update_sink_alias_policy_filters_assignments():
-    rewriter = SQLRewriter()
+def test_update_sink_alias_policy_filters_assignments():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=[],
             sink="reports",
             sink_alias="r",
@@ -680,12 +559,12 @@ def test_python_compat_update_sink_alias_policy_filters_assignments():
     assert rewriter.fetchall("SELECT * FROM reports") == [(1, "approved")]
 
 
-def test_python_compat_update_kill_policy_aborts_invalid_assignment():
-    rewriter = SQLRewriter()
+def test_update_kill_policy_aborts_invalid_assignment():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=[],
             sink="reports",
             constraint="reports.status = 'approved'",
@@ -698,31 +577,13 @@ def test_python_compat_update_kill_policy_aborts_invalid_assignment():
     assert rewriter.fetchall("SELECT * FROM reports") == [(1, "draft")]
 
 
-def test_python_compat_update_udf_policy_allows_registered_resolver():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
-    rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
-    rewriter.register_resolver(lambda: True)
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=[],
-            sink="reports",
-            constraint="reports.status = 'approved'",
-            on_fail=Resolution.UDF,
-        )
-    )
-
-    rewriter.execute("UPDATE reports SET status = 'draft'")
-    assert rewriter.fetchall("SELECT * FROM reports") == [(1, "draft")]
-
-
-def test_python_compat_required_source_missing_fails_closed_on_update():
-    rewriter = SQLRewriter()
+def test_required_source_missing_fails_closed_on_update():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'old')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["receipts"],
             required_sources=["receipts"],
             sink="reports",
@@ -735,14 +596,14 @@ def test_python_compat_required_source_missing_fails_closed_on_update():
     assert rewriter.fetchall("SELECT * FROM reports") == [(1, "old")]
 
 
-def test_python_compat_update_from_source_policy_filters_assignments():
-    rewriter = SQLRewriter()
+def test_update_from_source_policy_filters_assignments():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
     rewriter.execute("INSERT INTO reports VALUES (1, 'old'), (2, 'old')")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             sink="reports",
             constraint="reports.status = 'approved' AND max(foo.id) > 1",
@@ -757,151 +618,13 @@ def test_python_compat_update_from_source_policy_filters_assignments():
     ]
 
 
-def test_python_compat_update_invalidate_maintains_existing_valid_assignment():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR, valid BOOLEAN)")
-    rewriter.execute("INSERT INTO reports VALUES (1, 'draft', TRUE)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=[],
-            sink="reports",
-            constraint="reports.status = 'approved'",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-
-    rewriter.execute("UPDATE reports SET valid = FALSE, status = 'approved'")
-    assert rewriter.fetchall("SELECT id, status, valid FROM reports") == [(1, "approved", False)]
-
-
-def test_python_compat_update_from_source_invalidate_policy_sets_valid():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR, valid BOOLEAN)")
-    rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
-    rewriter.execute("INSERT INTO reports VALUES (1, 'old', TRUE), (2, 'old', TRUE)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="reports.status = 'approved' AND max(foo.id) > 1",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-
-    rewriter.execute("UPDATE reports SET status = foo.status FROM foo WHERE reports.id = foo.id")
-    assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [
-        (1, "draft", False),
-        (2, "approved", True),
-    ]
-
-
-def test_python_compat_update_from_source_invalidate_message_policy_sets_message():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR, invalid_string VARCHAR)")
-    rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
-    rewriter.execute("INSERT INTO reports VALUES (1, 'old', NULL), (2, 'old', NULL)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="reports.status = 'approved' AND max(foo.id) > 1",
-            on_fail=Resolution.INVALIDATE_MESSAGE,
-            description="bad update",
-        )
-    )
-
-    rewriter.execute("UPDATE reports SET status = foo.status FROM foo WHERE reports.id = foo.id")
-    assert rewriter.fetchall("SELECT * FROM reports ORDER BY id") == [
-        (1, "draft", "bad update"),
-        (2, "approved", None),
-    ]
-
-
-def test_python_compat_update_invalidate_message_maintains_existing_assignment():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR, invalid_string VARCHAR)")
-    rewriter.execute("INSERT INTO reports VALUES (1, 'approved', NULL)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=[],
-            sink="reports",
-            constraint="reports.status = 'approved'",
-            on_fail=Resolution.INVALIDATE_MESSAGE,
-            description="bad status",
-        )
-    )
-
-    rewriter.execute("UPDATE reports SET invalid_string = 'prior', status = 'draft'")
-    assert rewriter.fetchall("SELECT id, status, invalid_string FROM reports") == [
-        (1, "draft", "prior; bad status")
-    ]
-
-
-def test_python_compat_invalidate_message_adds_message_column():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            constraint="max(foo.id) > 1",
-            on_fail=Resolution.INVALIDATE_MESSAGE,
-            description="id too small",
-        )
-    )
-
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [
-        (1, "id too small"),
-        (2, None),
-    ]
-
-
-def test_python_compat_invalidate_maintains_existing_valid_column():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER, valid BOOLEAN)")
-    rewriter.execute("INSERT INTO foo VALUES (1, TRUE), (2, FALSE)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            constraint="max(foo.id) > 1",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-
-    assert rewriter.fetchall("SELECT id, valid FROM foo ORDER BY id") == [
-        (1, False),
-        (2, False),
-    ]
-
-
-def test_python_compat_invalidate_message_maintains_existing_message_column():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER, invalid_string VARCHAR)")
-    rewriter.execute("INSERT INTO foo VALUES (1, 'prior'), (2, NULL)")
-    rewriter.register_policy(
-        DFCPolicy(
-            sources=["foo"],
-            constraint="max(foo.id) > 1",
-            on_fail=Resolution.INVALIDATE_MESSAGE,
-            description="id too small",
-        )
-    )
-
-    assert rewriter.fetchall("SELECT id, invalid_string FROM foo ORDER BY id") == [
-        (1, "prior; id too small"),
-        (2, None),
-    ]
-
-
-def test_python_compat_remove_policy_filters_before_limit_for_full_push():
+def test_remove_policy_filters_before_limit_for_full_push():
     """Distributive policies use Full-Push: inline WHERE is applied before LIMIT."""
-    rewriter = SQLRewriter()
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -911,12 +634,12 @@ def test_python_compat_remove_policy_filters_before_limit_for_full_push():
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == [(2,)]
 
 
-def test_python_compat_remove_policy_filters_before_offset_for_full_push():
-    rewriter = SQLRewriter()
+def test_remove_policy_filters_before_offset_for_full_push():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 2",
             on_fail=Resolution.REMOVE,
@@ -926,12 +649,12 @@ def test_python_compat_remove_policy_filters_before_offset_for_full_push():
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id OFFSET 1") == []
 
 
-def test_python_compat_remove_policy_filters_before_limit_offset_for_full_push():
-    rewriter = SQLRewriter()
+def test_remove_policy_filters_before_limit_offset_for_full_push():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3), (4)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 2",
             on_fail=Resolution.REMOVE,
@@ -941,12 +664,12 @@ def test_python_compat_remove_policy_filters_before_limit_offset_for_full_push()
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 2 OFFSET 1") == [(4,)]
 
 
-def test_python_compat_full_push_limit_filter_uses_inline_where():
-    rewriter = SQLRewriter()
+def test_full_push_limit_filter_uses_inline_where():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, secret INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1, 0), (2, 10)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.secret) > 1",
             on_fail=Resolution.REMOVE,
@@ -956,12 +679,12 @@ def test_python_compat_full_push_limit_filter_uses_inline_where():
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == [(2,)]
 
 
-def test_python_compat_policy_applies_inside_derived_subquery():
-    rewriter = SQLRewriter()
+def test_policy_applies_inside_derived_subquery():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -971,12 +694,12 @@ def test_python_compat_policy_applies_inside_derived_subquery():
     assert rewriter.fetchall("SELECT id FROM (SELECT id FROM foo) AS q ORDER BY id") == [(2,)]
 
 
-def test_python_compat_policy_applies_inside_cte():
-    rewriter = SQLRewriter()
+def test_policy_applies_inside_cte():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -988,14 +711,14 @@ def test_python_compat_policy_applies_inside_cte():
     ]
 
 
-def test_python_compat_policy_applies_to_matching_union_branch():
-    rewriter = SQLRewriter()
+def test_policy_applies_to_matching_union_branch():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (10)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1008,14 +731,14 @@ def test_python_compat_policy_applies_to_matching_union_branch():
     ]
 
 
-def test_python_compat_policy_applies_to_matching_intersect_branch():
-    rewriter = SQLRewriter()
+def test_policy_applies_to_matching_intersect_branch():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1027,14 +750,14 @@ def test_python_compat_policy_applies_to_matching_intersect_branch():
     ]
 
 
-def test_python_compat_policy_applies_to_joined_source_table():
-    rewriter = SQLRewriter()
+def test_policy_applies_to_joined_source_table():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1044,12 +767,12 @@ def test_python_compat_policy_applies_to_joined_source_table():
     assert rewriter.fetchall("SELECT bar.id FROM bar JOIN foo ON bar.id = foo.id") == [(2,)]
 
 
-def test_python_compat_policy_applies_to_each_inner_self_join_alias():
-    rewriter = SQLRewriter()
+def test_policy_applies_to_each_inner_self_join_alias():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1061,14 +784,14 @@ def test_python_compat_policy_applies_to_each_inner_self_join_alias():
     ) == [(2, 2)]
 
 
-def test_python_compat_left_join_policy_preserves_unmatched_left_rows():
-    rewriter = SQLRewriter()
+def test_left_join_policy_preserves_unmatched_left_rows():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1080,14 +803,14 @@ def test_python_compat_left_join_policy_preserves_unmatched_left_rows():
     ) == [(1, None), (2, 2), (3, None)]
 
 
-def test_python_compat_right_join_policy_preserves_unmatched_right_rows():
-    rewriter = SQLRewriter()
+def test_right_join_policy_preserves_unmatched_right_rows():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1099,12 +822,12 @@ def test_python_compat_right_join_policy_preserves_unmatched_right_rows():
     ) == [(1, None), (2, 2), (3, None)]
 
 
-def test_python_compat_rewrites_outer_join_policy_with_source_sets():
-    rewriter = SQLRewriter()
+def test_rewrites_outer_join_policy_with_source_sets():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["bar", "foo"],
             constraint="max(bar.id) > max(foo.id)",
             on_fail=Resolution.REMOVE,
@@ -1116,14 +839,14 @@ def test_python_compat_rewrites_outer_join_policy_with_source_sets():
     )
 
 
-def test_python_compat_splits_source_local_outer_join_policy_that_would_need_source_sets():
-    rewriter = SQLRewriter()
+def test_splits_source_local_outer_join_policy_that_would_need_source_sets():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["bar", "foo"],
             constraint="max(bar.id) > 1 AND max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1135,12 +858,12 @@ def test_python_compat_splits_source_local_outer_join_policy_that_would_need_sou
     ) == [(2, 2), (3, None)]
 
 
-def test_python_compat_cross_source_outer_join_policy_rewrites_with_source_sets():
-    rewriter = SQLRewriter()
+def test_cross_source_outer_join_policy_rewrites_with_source_sets():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["bar", "foo"],
             constraint="max(bar.id) > max(foo.id)",
             on_fail=Resolution.REMOVE,
@@ -1158,14 +881,14 @@ def test_python_compat_cross_source_outer_join_policy_rewrites_with_source_sets(
     )
 
 
-def test_python_compat_splits_source_local_union_policy_that_would_need_source_sets():
-    rewriter = SQLRewriter()
+def test_splits_source_local_union_policy_that_would_need_source_sets():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo", "bar"],
             constraint="max(foo.id) > 1 AND max(bar.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1178,14 +901,14 @@ def test_python_compat_splits_source_local_union_policy_that_would_need_source_s
     ]
 
 
-def test_python_compat_splits_source_local_intersect_policy_that_would_need_source_sets():
-    rewriter = SQLRewriter()
+def test_splits_source_local_intersect_policy_that_would_need_source_sets():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo", "bar"],
             constraint="max(foo.id) > 1 AND max(bar.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1198,12 +921,12 @@ def test_python_compat_splits_source_local_intersect_policy_that_would_need_sour
     ]
 
 
-def test_python_compat_cross_source_union_all_passes_through_when_branch_split_unavailable():
-    rewriter = SQLRewriter()
+def test_cross_source_union_all_passes_through_when_branch_split_unavailable():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo", "bar"],
             constraint="max(foo.id) > max(bar.id)",
             on_fail=Resolution.REMOVE,
@@ -1213,14 +936,14 @@ def test_python_compat_cross_source_union_all_passes_through_when_branch_split_u
     assert sorted(rewriter.fetchall("SELECT id FROM foo UNION ALL SELECT id FROM bar")) == []
 
 
-def test_python_compat_policy_filters_full_join_source_before_join():
-    rewriter = SQLRewriter()
+def test_policy_filters_full_join_source_before_join():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1233,12 +956,12 @@ def test_python_compat_policy_filters_full_join_source_before_join():
     ) == [(1, None), (None, 2), (3, None)]
 
 
-def test_python_compat_cross_source_full_join_policy_rewrites_with_source_sets():
-    rewriter = SQLRewriter()
+def test_cross_source_full_join_policy_rewrites_with_source_sets():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo", "bar"],
             constraint="max(foo.id) > max(bar.id)",
             on_fail=Resolution.REMOVE,
@@ -1252,14 +975,14 @@ def test_python_compat_cross_source_full_join_policy_rewrites_with_source_sets()
     )
 
 
-def test_python_compat_policy_applies_to_semi_join_source():
-    rewriter = SQLRewriter()
+def test_policy_applies_to_semi_join_source():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1271,12 +994,12 @@ def test_python_compat_policy_applies_to_semi_join_source():
     ) == [(2,)]
 
 
-def test_python_compat_policy_applies_to_right_semi_join_source():
-    rewriter = SQLRewriter()
+def test_policy_applies_to_right_semi_join_source():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["bar"],
             constraint="max(bar.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1289,15 +1012,15 @@ def test_python_compat_policy_applies_to_right_semi_join_source():
     )
 
 
-def test_python_compat_transform_query_collect_stats():
-    rewriter = SQLRewriter()
+def test_transform_query_collect_stats():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     for index in range(50):
         table = f"other_{index}"
-        rewriter.conn.execute(f"CREATE TABLE {table} (id INTEGER)")
+        rewriter.connection.execute(f"CREATE TABLE {table} (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1306,7 +1029,7 @@ def test_python_compat_transform_query_collect_stats():
     for index in range(50):
         table = f"other_{index}"
         rewriter.register_policy(
-            DFCPolicy(
+            Policy(
                 sources=[table],
                 constraint=f"max({table}.id) > 1",
                 on_fail=Resolution.REMOVE,
@@ -1320,14 +1043,14 @@ def test_python_compat_transform_query_collect_stats():
     assert stats.candidate_policies == 1
 
 
-def test_python_compat_allows_anti_join_policy_on_preserved_source():
-    rewriter = SQLRewriter()
+def test_allows_anti_join_policy_on_preserved_source():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["bar"],
             constraint="max(bar.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1339,14 +1062,14 @@ def test_python_compat_allows_anti_join_policy_on_preserved_source():
     ) == [(3,)]
 
 
-def test_python_compat_policy_filters_anti_join_probe_source_before_join():
-    rewriter = SQLRewriter()
+def test_policy_filters_anti_join_probe_source_before_join():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1358,14 +1081,14 @@ def test_python_compat_policy_filters_anti_join_probe_source_before_join():
     ) == [(1,), (3,)]
 
 
-def test_python_compat_policy_applies_inside_exists_subquery():
-    rewriter = SQLRewriter()
+def test_policy_applies_inside_exists_subquery():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
     rewriter.execute("INSERT INTO bar VALUES (10)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1375,14 +1098,14 @@ def test_python_compat_policy_applies_inside_exists_subquery():
     assert rewriter.fetchall("SELECT id FROM bar WHERE EXISTS (SELECT id FROM foo)") == []
 
 
-def test_python_compat_policy_applies_inside_not_exists_subquery():
-    rewriter = SQLRewriter()
+def test_policy_applies_inside_not_exists_subquery():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
     rewriter.execute("INSERT INTO bar VALUES (10)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1392,14 +1115,14 @@ def test_python_compat_policy_applies_inside_not_exists_subquery():
     assert rewriter.fetchall("SELECT id FROM bar WHERE NOT EXISTS (SELECT id FROM foo)") == [(10,)]
 
 
-def test_python_compat_policy_applies_inside_not_in_subquery():
-    rewriter = SQLRewriter()
+def test_policy_applies_inside_not_in_subquery():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1412,36 +1135,21 @@ def test_python_compat_policy_applies_inside_not_in_subquery():
     ]
 
 
-def test_python_compat_finalize_aggregate_policies_returns_mapping():
-    rewriter = SQLRewriter()
+def test_delete_aggregate_policy_updates_rust_storage():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER)")
-    rewriter.register_policy(
-        AggregateDFCPolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="sum(reports.id) > 1",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::sum(reports.id) > 1": None
-    }
-
-
-def test_python_compat_delete_aggregate_policy_updates_rust_storage():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.execute("CREATE TABLE reports (id INTEGER)")
-    policy = AggregateDFCPolicy(
+    policy = AggregatePolicy(
         sources=["foo"],
         sink="reports",
         constraint="sum(reports.id) > 1",
-        on_fail=Resolution.INVALIDATE,
+        on_fail=Resolution.REMOVE,
     )
     rewriter.register_policy(policy)
     assert (
-        json.loads(rewriter._planner.aggregate_policies_json())[0]["CompatAggregate"]["dimensions"]
+        json.loads(rewriter.planner.inner.aggregate_policies_json())[0]["CompatAggregate"][
+            "dimensions"
+        ]
         == []
     )
 
@@ -1449,122 +1157,24 @@ def test_python_compat_delete_aggregate_policy_updates_rust_storage():
         sources=["foo"],
         sink="reports",
         constraint="sum(reports.id) > 1",
-        on_fail=Resolution.INVALIDATE,
+        on_fail=Resolution.REMOVE,
     )
-    assert rewriter.get_aggregate_policies() == []
-    assert rewriter.finalize_aggregate_policies("reports") == {}
+    assert rewriter.aggregate_policies() == []
 
 
-def test_python_compat_finalize_aggregate_policies_reports_violation():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE reports (id INTEGER)")
-    rewriter.execute("INSERT INTO reports VALUES (1)")
-    rewriter.register_policy(
-        AggregateDFCPolicy(
-            sources=[],
-            sink="reports",
-            constraint="sum(reports.id) > 10",
-            on_fail=Resolution.INVALIDATE,
-            description="too small",
-        )
-    )
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::sum(reports.id) > 10": (
-            "too small: Aggregate policy constraint violated: sum(reports.id) > 10"
-        )
-    }
-
-
-def test_python_compat_finalize_aggregate_policies_invalidates_sink_rows():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE reports (id INTEGER, valid BOOLEAN)")
-    rewriter.execute("INSERT INTO reports VALUES (1, TRUE), (2, TRUE)")
-    rewriter.register_policy(
-        AggregateDFCPolicy(
-            sources=[],
-            sink="reports",
-            constraint="sum(reports.id) > 10",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::sum(reports.id) > 10": (
-            "Aggregate policy constraint violated: sum(reports.id) > 10"
-        )
-    }
-    assert rewriter.fetchall("SELECT valid FROM reports ORDER BY id") == [(False,), (False,)]
-
-
-def test_python_compat_finalize_aggregate_policies_preserves_prior_invalidations():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE reports (id INTEGER, valid BOOLEAN)")
-    rewriter.execute("INSERT INTO reports VALUES (1, TRUE), (2, TRUE)")
-    rewriter.register_policy(
-        AggregateDFCPolicy(
-            sources=[],
-            sink="reports",
-            constraint="sum(reports.id) > 10",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-    rewriter.register_policy(
-        AggregateDFCPolicy(
-            sources=[],
-            sink="reports",
-            constraint="sum(reports.id) > 1",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-
-    rewriter.finalize_aggregate_policies("reports")
-    assert rewriter.fetchall("SELECT valid FROM reports ORDER BY id") == [(False,), (False,)]
-
-
-def test_python_compat_finalize_dimensioned_aggregate_policies_invalidates_matching_groups():
-    rewriter = SQLRewriter()
-    rewriter.execute("CREATE TABLE reports (region VARCHAR, total INTEGER, valid BOOLEAN)")
-    rewriter.execute(
-        "INSERT INTO reports VALUES "
-        "('east', 40, TRUE), ('east', 70, TRUE), "
-        "('west', 20, TRUE), ('west', 30, TRUE)"
-    )
-    rewriter.register_policy(
-        AggregateDFCPolicy(
-            sources=[],
-            sink="reports",
-            dimensions=["reports.region"],
-            constraint="sum(reports.total) > 100",
-            on_fail=Resolution.INVALIDATE,
-        )
-    )
-
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::sum(reports.total) > 100": (
-            "Aggregate policy constraint violated: sum(reports.total) > 100"
-        )
-    }
-    assert rewriter.fetchall("SELECT region, valid FROM reports ORDER BY region, total") == [
-        ("east", True),
-        ("east", True),
-        ("west", False),
-        ("west", False),
-    ]
-
-
-def test_python_compat_aggregate_policy_temp_columns_and_finalize():
-    rewriter = SQLRewriter()
+def test_aggregate_policy_temp_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (amount INTEGER)")
     rewriter.execute(
         "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
     )
     rewriter.execute("INSERT INTO foo VALUES (5), (10)")
     rewriter.register_policy(
-        AggregateDFCPolicy(
+        AggregatePolicy(
             sources=["foo"],
             sink="reports",
             constraint="sum(foo.amount) >= sum(reports.total)",
-            on_fail=Resolution.INVALIDATE,
+            on_fail=Resolution.REMOVE,
         )
     )
 
@@ -1575,26 +1185,23 @@ def test_python_compat_aggregate_policy_temp_columns_and_finalize():
         (5, 5, 5),
         (10, 10, 10),
     ]
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::sum(foo.amount) >= sum(reports.total)": None
-    }
 
 
-def test_python_compat_grouped_aggregate_policy_temp_columns_and_finalize():
-    rewriter = SQLRewriter()
+def test_grouped_aggregate_policy_temp_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (region VARCHAR, amount INTEGER)")
     rewriter.execute(
         "CREATE TABLE reports ("
-        "region VARCHAR, total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER, valid BOOLEAN)"
+        "region VARCHAR, total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
     )
     rewriter.execute("INSERT INTO foo VALUES ('east', 5), ('east', 10), ('west', 3)")
     rewriter.register_policy(
-        AggregateDFCPolicy(
+        AggregatePolicy(
             sources=["foo"],
             sink="reports",
             dimensions=["reports.region"],
             constraint="sum(foo.amount) >= sum(reports.total)",
-            on_fail=Resolution.INVALIDATE,
+            on_fail=Resolution.REMOVE,
         )
     )
 
@@ -1608,28 +1215,21 @@ def test_python_compat_grouped_aggregate_policy_temp_columns_and_finalize():
         ("east", 15, 15, 15),
         ("west", 3, 3, 3),
     ]
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::sum(foo.amount) >= sum(reports.total)": None
-    }
-    assert rewriter.fetchall("SELECT region, valid FROM reports ORDER BY region") == [
-        ("east", True),
-        ("west", True),
-    ]
 
 
-def test_python_compat_count_aggregate_policy_temp_columns_and_finalize():
-    rewriter = SQLRewriter()
+def test_count_aggregate_policy_temp_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, total INTEGER)")
     rewriter.execute(
         "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
     )
     rewriter.execute("INSERT INTO foo VALUES (1, 1), (2, 1), (NULL, 1)")
     rewriter.register_policy(
-        AggregateDFCPolicy(
+        AggregatePolicy(
             sources=["foo"],
             sink="reports",
             constraint="count(foo.id) >= sum(reports.total)",
-            on_fail=Resolution.INVALIDATE,
+            on_fail=Resolution.REMOVE,
         )
     )
 
@@ -1639,32 +1239,29 @@ def test_python_compat_count_aggregate_policy_temp_columns_and_finalize():
         (1, 2, 1),
         (1, None, 1),
     ]
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::count(foo.id) >= sum(reports.total)": None
-    }
 
 
-def test_python_compat_multiple_aggregate_policy_temp_columns_and_finalize():
-    rewriter = SQLRewriter()
+def test_multiple_aggregate_policy_temp_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (amount INTEGER, tax INTEGER)")
     rewriter.execute(
         "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER, __passant_agg_2 INTEGER)"
     )
     rewriter.execute("INSERT INTO foo VALUES (5, 1), (10, 2)")
     rewriter.register_policy(
-        AggregateDFCPolicy(
+        AggregatePolicy(
             sources=["foo"],
             sink="reports",
             constraint="sum(foo.amount) >= sum(reports.total)",
-            on_fail=Resolution.INVALIDATE,
+            on_fail=Resolution.REMOVE,
         )
     )
     rewriter.register_policy(
-        AggregateDFCPolicy(
+        AggregatePolicy(
             sources=["foo"],
             sink="reports",
             constraint="sum(foo.tax) >= 3",
-            on_fail=Resolution.INVALIDATE,
+            on_fail=Resolution.REMOVE,
         )
     )
 
@@ -1675,17 +1272,13 @@ def test_python_compat_multiple_aggregate_policy_temp_columns_and_finalize():
         (5, 5, 5, 1),
         (10, 10, 10, 2),
     ]
-    assert rewriter.finalize_aggregate_policies("reports") == {
-        "aggregate::sum(foo.amount) >= sum(reports.total)": None,
-        "aggregate::sum(foo.tax) >= 3": None,
-    }
 
 
-def test_python_compat_register_policy_rejects_missing_source_table():
-    rewriter = SQLRewriter()
+def test_register_policy_rejects_missing_source_table():
+    rewriter = wrap(duckdb.connect())
     with pytest.raises(ValueError, match="Source table 'foo' does not exist"):
         rewriter.register_policy(
-            DFCPolicy(
+            Policy(
                 sources=["foo"],
                 constraint="max(foo.id) > 1",
                 on_fail=Resolution.REMOVE,
@@ -1693,12 +1286,12 @@ def test_python_compat_register_policy_rejects_missing_source_table():
         )
 
 
-def test_python_compat_register_policy_rejects_missing_source_column():
-    rewriter = SQLRewriter()
+def test_register_policy_rejects_missing_source_column():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     with pytest.raises(ValueError, match="foo.missing"):
         rewriter.register_policy(
-            DFCPolicy(
+            Policy(
                 sources=["foo"],
                 constraint="max(foo.missing) > 1",
                 on_fail=Resolution.REMOVE,
@@ -1706,12 +1299,12 @@ def test_python_compat_register_policy_rejects_missing_source_column():
         )
 
 
-def test_python_compat_register_policy_validates_dimension_columns():
-    rewriter = SQLRewriter()
+def test_register_policy_validates_dimension_columns():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     with pytest.raises(ValueError, match="foo.region"):
         rewriter.register_policy(
-            DFCPolicy(
+            Policy(
                 sources=["foo"],
                 dimensions=["foo.region"],
                 constraint="max(foo.id) > 1",
@@ -1720,11 +1313,11 @@ def test_python_compat_register_policy_validates_dimension_columns():
         )
 
 
-def test_python_compat_rejects_delete_when_policy_registered():
-    rewriter = SQLRewriter()
+def test_rejects_delete_when_policy_registered():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
@@ -1734,12 +1327,12 @@ def test_python_compat_rejects_delete_when_policy_registered():
         rewriter.execute("DELETE FROM foo WHERE id = 1")
 
 
-def test_python_compat_rewrites_except_branch_when_policy_registered():
-    rewriter = SQLRewriter()
+def test_rewrites_except_branch_when_policy_registered():
+    rewriter = wrap(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
-        DFCPolicy(
+        Policy(
             sources=["foo"],
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,

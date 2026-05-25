@@ -13,7 +13,7 @@ fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
     }
 }
 
-fn invalidate_sink_policy(sink: &str) -> PolicyIr {
+fn sink_only_remove_policy(sink: &str) -> PolicyIr {
     PolicyIr::CompatDfc {
         sources: vec![],
         required_sources: Vec::new(),
@@ -21,7 +21,7 @@ fn invalidate_sink_policy(sink: &str) -> PolicyIr {
         sink: Some(sink.to_string()),
         sink_alias: None,
         constraint: format!("max({sink}.amount) <= 0"),
-        on_fail: Resolution::Invalidate,
+        on_fail: Resolution::Remove,
         description: None,
     }
 }
@@ -51,17 +51,17 @@ fn rewrite_scales_with_indexed_candidates_not_total_registry() {
 }
 
 #[test]
-fn insert_invalidation_uses_sink_index() {
+fn insert_sink_policy_lookup_uses_sink_index() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(invalidate_sink_policy("results"));
+    rewriter.register_policy(sink_only_remove_policy("results"));
     for index in 0..2_000_usize {
-        rewriter.register_policy(invalidate_sink_policy(&format!("other_sink_{index:04}")));
+        rewriter.register_policy(sink_only_remove_policy(&format!("other_sink_{index:04}")));
     }
 
     let rewritten = rewriter
         .rewrite("INSERT INTO results (id, amount) SELECT id, amount FROM orders")
         .expect("insert rewrite should succeed");
-    assert!(rewritten.contains("valid"));
+    assert!(rewritten.contains("WHERE"));
 }
 
 /// Manual perf smoke test:

@@ -141,52 +141,6 @@ fn rewriter_enforces_required_source_normally_when_present_on_insert() {
 }
 
 #[test]
-fn rewriter_maps_insert_invalidate_policy_to_valid_output() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimensions: Vec::new(),
-        sink: Some("reports".to_string()),
-        sink_alias: None,
-        constraint: "reports.status = 'approved' AND max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Invalidate,
-        description: None,
-    });
-
-    let sql = rewriter
-        .rewrite("INSERT INTO reports (id, status) SELECT foo.id, foo.status FROM foo")
-        .expect("query should rewrite");
-    assert_eq!(
-        sql,
-        "INSERT INTO reports (id, status, valid) SELECT foo.id, foo.status, foo.status = 'approved' AND foo.id > 1 AS valid FROM foo"
-    );
-}
-
-#[test]
-fn rewriter_maps_insert_invalidate_message_policy_to_message_output() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimensions: Vec::new(),
-        sink: Some("reports".to_string()),
-        sink_alias: None,
-        constraint: "reports.status = 'approved' AND max(foo.id) > 1".to_string(),
-        on_fail: Resolution::InvalidateMessage,
-        description: Some("bad row".to_string()),
-    });
-
-    let sql = rewriter
-        .rewrite("INSERT INTO reports (id, status) SELECT foo.id, foo.status FROM foo")
-        .expect("query should rewrite");
-    assert_eq!(
-        sql,
-        "INSERT INTO reports (id, status, invalid_string) SELECT foo.id, foo.status, CASE WHEN foo.status = 'approved' AND foo.id > 1 THEN NULL ELSE 'bad row' END AS invalid_string FROM foo"
-    );
-}
-
-#[test]
 fn rewriter_generates_aggregate_finalization_queries() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::CompatAggregate(AggregateDfcPolicy {

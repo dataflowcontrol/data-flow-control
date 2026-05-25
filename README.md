@@ -1,18 +1,18 @@
 # Passant
 
-Passant is a Rust-backed Data Flow Control rewrite engine intended to replace
-`sql_rewriter` while preserving the existing Python integration surface.
+Passant is a Rust-backed Data Flow Control (DFC) SQL rewrite engine with a small
+Python API for DuckDB (`wrap`, `Connection`, `Policy`).
 
 ## Workspace
 
 - `passant-core`: parser, IR, planner, optimizer, SQL rewriter, and explain output.
 - `passant-cli`: CLI for rewrite, explain, plan, and policy parsing.
 - `passant-py`: PyO3 extension module used by the Python package.
-- `python/passant`: thin Python compatibility layer.
+- `python/passant`: Python API (`wrap`, `Connection`, `Policy`, adapters).
 
 ## Current Status
 
-The Rust core performs compatibility rewrites for the common DFC API surface.
+The Rust core implements DFC policy rewrites for the supported query surface.
 Implemented behavior includes:
 
 - `sqlparser-rs` as the parser frontend
@@ -21,33 +21,26 @@ Implemented behavior includes:
   `PartialPush` strategy candidates (Full-Push for semiring-distributive policies,
   Partial-Push only when required by non-distributive aggregates)
 - a Rust `PassantRewriter`
-- PGN/compat policy parsing for `SOURCE`/`SOURCES`, `REQUIRED`, `SINK`,
+- PGN policy parsing for `SOURCE`/`SOURCES`, `REQUIRED`, `SINK`,
   aliases, `DIMENSION`, `_OUTPUT_`, `CONSTRAINT`, `ON FAIL`, `DESCRIPTION`,
   `AGGREGATE`, and `PGN OVER`/`PGN UPDATE`
 - `SELECT`, `INSERT ... SELECT`, `UPDATE`, and `MERGE` rewrites
-- `UPDATE ... FROM` source policy rewrites, including source-dependent filters,
-  sink aliases, `KILL`/`UDF`, and invalidation assignments/messages
-- `REMOVE`, `KILL`, `INVALIDATE`, `INVALIDATE_MESSAGE`, and SQL UDF resolver
-  hooks for `LLM`/`UDF`-parsed policies, including Python `Resolution.UDF`
-- sink-write invalidation for `INSERT ... SELECT`, including generated
-  `valid` and `invalid_string` outputs
+- `UPDATE ... FROM` source policy rewrites, including source-dependent filters
+- `REMOVE` and `KILL` resolutions
 - recursive rewriting for CTEs, derived subqueries, expression subqueries, and
   set-operation branches
 - recursive rewriting for anti-semi subqueries (`NOT EXISTS` and `NOT IN`) by
   filtering the subquery input before anti evaluation
-- in-place maintenance of existing `valid` and `invalid_string` projections or
-  update assignments for invalidation policies
 - aggregate-policy temp columns for `INSERT ... SELECT` and Rust-generated
-  validation/invalidation finalization SQL
+  aggregate validation SQL
 - deterministic aggregate-policy temp column assignment across multiple
   source-aggregate policies so insert and finalization rewrites agree
 - aggregate-policy temp columns for grouped `INSERT ... SELECT`, including
   inner aggregate contributions for source aggregates and count contributions
-- aggregate policy dimensions, including grouped finalization and per-dimension
-  invalidation updates
+- aggregate policy dimensions, including grouped finalization
 - Rust catalog validation in `passant-core/src/catalog.rs` (Python syncs DuckDB metadata at registration)
-- Python policy registration/deletion routes through stateful Rust
-  `PassantRewriter` storage while preserving Python API mirror methods
+- Python `wrap()` + `Connection` route policy registration through Rust
+  `PassantRewriter` with DuckDB catalog sync at registration time
 - Rust-backed policy list accessors exposed through PyO3 for DFC, aggregate,
   and PGN policy storage checks
 - catalog expansion for `INSERT INTO sink SELECT ...` statements that omit
@@ -88,8 +81,8 @@ Implemented behavior includes:
 Passant uses a layered test story aligned with the DFC paper's correctness
 claims. Rust tests focus on rewrite correctness and DuckDB execution semantics;
 Python also includes TPC-H correctness regressions for the supported query set.
-TPC-H performance experiments stay in `sql_rewriter/` and
-`vldb_2026_big_paper_experiments/`.
+TPC-H performance experiments live in the sibling `sql_rewriter/` and
+`vldb_2026_big_paper_experiments/` trees (not part of this workspace's CI).
 
 ### Running tests
 
@@ -110,7 +103,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Python compatibility tests (PyO3 + Rust catalog validation) run in CI and locally:
+Python API tests (PyO3 + DuckDB execution) run in CI and locally:
 
 ```bash
 uv sync --extra dev
@@ -128,7 +121,7 @@ uv run pytest
 | Execution integration | `passant-core/tests/execution/` | Rewritten SQL executed on in-memory DuckDB |
 | Paper examples | `passant-core/tests/paper_examples.rs` | TaxAgent policies, k-anonymity dominance, state-machine UPDATE |
 | CLI smoke tests | `passant-cli/tests/cli.rs` | `rewrite`, `explain`, `plan`, `parse-policy` |
-| Python compat | `python/tests/test_compat.py` | PyO3 bindings, catalog validation, end-to-end `SQLRewriter` |
+| Python API | `python/tests/test_rewrite.py` | PyO3 bindings, catalog validation, end-to-end `wrap()` / `Connection` |
 | Python TPC-H correctness | `python/tests/test_tpch.py` | Supported TPC-H query rewrites executed against DuckDB fixtures |
 | Completion gate | `passant-core/tests/completion/` | Feature-complete behavior tests (included in default `cargo test`) |
 
@@ -145,7 +138,7 @@ Python completion gate tests live in `python/tests/test_completion_gate.py`
 | TaxAgent examples (Section 3.5) | `tests/paper_examples.rs` |
 | Full-Push / Partial-Push / fallback (Section 4) | `tests/planner.rs`, `tests/rewrite/`, `tests/completion/semiring.rs` |
 | Threshold dominance (Section 4.6) | `src/threshold.rs`, `tests/completion/threshold.rs` |
-| Resolutions REMOVE/KILL/INVALIDATE (Section 4.5) | `tests/execution/` |
+| Resolutions REMOVE/KILL (Section 4.5) | `tests/execution/` |
 | Aggregate finalization (Section 4.5.2) | `tests/rewrite/insert.rs`, `tests/completion/aggregate_policy.rs`, `tests/execution/aggregate_finalize.rs` |
 | Symmetric self-join (Section 4.7) | `tests/completion/symmetric_self_join.rs` |
 | Source-set annotations | `src/source_sets.rs`, `tests/completion/source_sets.rs` |
@@ -154,5 +147,5 @@ Python completion gate tests live in `python/tests/test_completion_gate.py`
 ### Explicitly Out Of Scope
 
 - TPC-H performance benchmarking in Passant CI. Passant keeps correctness
-  regressions in Python; performance experiments stay in `sql_rewriter/` and
-  `vldb_2026_big_paper_experiments/`.
+  regressions in Python; performance experiments use the sibling `sql_rewriter/`
+  and `vldb_2026_big_paper_experiments/` trees.

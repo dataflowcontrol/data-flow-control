@@ -94,9 +94,9 @@ fn insert_sink_write_applies_per_tuple_source_sets() {
             sink: Some("reports".to_string()),
             sink_alias: None,
             constraint: "max(bar.id) > max(foo.amount)".to_string(),
-            on_fail: Resolution::Invalidate,
+            on_fail: Resolution::Remove,
             description: None,
         }],
-        "INSERT INTO reports SELECT bar.id, foo.amount, max(bar.id) > max(foo.amount) AS valid FROM bar LEFT JOIN foo ON bar.id = foo.id",
+        "INSERT INTO reports SELECT bar.id, foo.amount FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.amount",
     );
 }

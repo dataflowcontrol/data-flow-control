@@ -79,15 +79,21 @@ fn copy_select_fails_closed_with_registered_policies() {
 }
 
 #[test]
-fn aggregate_policy_rejects_non_invalidate_resolution_at_parse() {
+fn aggregate_policy_rejects_invalidate_resolution_at_parse() {
     let err = parse_policy_text(
-        "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
+        "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL INVALIDATE",
     )
-    .expect_err("aggregate policies should only support INVALIDATE");
-    assert!(
-        err.to_string()
-            .contains("aggregate policies currently only support INVALIDATE resolution")
-    );
+    .expect_err("INVALIDATE resolution is not supported");
+    assert!(err.to_string().contains("invalid resolution: INVALIDATE"));
+}
+
+#[test]
+fn aggregate_policy_requires_remove_resolution_at_parse() {
+    let err = parse_policy_text(
+        "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL KILL",
+    )
+    .expect_err("aggregate policies require ON FAIL REMOVE");
+    assert!(err.to_string().contains("require ON FAIL REMOVE"));
 }
 
 #[test]

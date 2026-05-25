@@ -1,10 +1,10 @@
 use crate::sql::{
-    binary_comparison, case_when, function_call, null_literal, or_kill, parse_projection_expr,
-    qualified_column, string_concat, string_literal, wrap_table_with_filter,
+    binary_comparison, case_when, or_kill, parse_projection_expr, qualified_column,
+    wrap_table_with_filter,
 };
 use sqlparser::ast::{
-    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident,
-    Select, SelectItem, TableFactor,
+    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Select,
+    SelectItem, TableFactor,
 };
 
 use crate::diagnostics::RewriteError;
@@ -108,11 +108,9 @@ pub(crate) fn apply_resolution(
     select: &mut Select,
     expr: Expr,
     resolution: Resolution,
-    description: Option<&str>,
+    _description: Option<&str>,
     is_aggregation: bool,
-    projection_expr: Option<Expr>,
 ) -> Result<(), RewriteError> {
-    let invalidate_expr = projection_expr.unwrap_or_else(|| expr.clone());
     match resolution {
         Resolution::Remove => add_filter(select, expr, is_aggregation),
         Resolution::Kill => add_filter(
@@ -120,51 +118,7 @@ pub(crate) fn apply_resolution(
             kill_expr_for_select(expr, select, is_aggregation)?,
             is_aggregation,
         ),
-        Resolution::Invalidate => {
-            upsert_select_projection(select, "valid", |existing| {
-                Ok::<_, RewriteError>(existing.map_or(invalidate_expr.clone(), |existing| {
-                    and_expr(existing, invalidate_expr.clone())
-                }))
-            })?;
-            Ok(())
-        }
-        Resolution::InvalidateMessage => {
-            upsert_select_projection(select, "invalid_string", |existing| {
-                if let Some(existing) = existing {
-                    append_invalid_message_expr(existing, expr.clone(), description)
-                } else {
-                    invalidate_message_expr(expr.clone(), description)
-                }
-            })?;
-            Ok(())
-        }
-        Resolution::Llm => add_filter(select, resolver_expr(expr)?, is_aggregation),
     }
-}
-
-fn upsert_select_projection<F, E>(select: &mut Select, name: &str, build_expr: F) -> Result<(), E>
-where
-    F: FnOnce(Option<Expr>) -> Result<Expr, E>,
-{
-    if let Some(position) = select.projection.iter().position(|item| {
-        projection_expr_and_name(item)
-            .and_then(|(_, alias)| alias)
-            .is_some_and(|alias| alias.eq_ignore_ascii_case(name))
-    }) {
-        let existing =
-            projection_expr_and_name(&select.projection[position]).map(|(expr, _)| expr.clone());
-        select.projection[position] = SelectItem::ExprWithAlias {
-            expr: build_expr(existing)?,
-            alias: Ident::new(name),
-        };
-        return Ok(());
-    }
-
-    select.projection.push(SelectItem::ExprWithAlias {
-        expr: build_expr(None)?,
-        alias: Ident::new(name),
-    });
-    Ok(())
 }
 
 pub(crate) fn add_filter(
@@ -244,41 +198,6 @@ fn qualify_kill_tautology_expr(expr: &Expr, source_prefix: Option<&str>) -> Expr
         return qualified_column(prefix, &ident.value);
     }
     expr.clone()
-}
-
-pub(crate) fn resolver_expr(expr: Expr) -> Result<Expr, RewriteError> {
-    Ok(case_when(
-        expr,
-        bool_literal(true),
-        function_call("address_violating_rows", Vec::new()),
-    ))
-}
-
-pub(crate) fn invalidate_message_expr(
-    expr: Expr,
-    description: Option<&str>,
-) -> Result<Expr, RewriteError> {
-    let message = description.unwrap_or("DFC policy violation");
-    Ok(case_when(expr, null_literal(), string_literal(message)))
-}
-
-pub(crate) fn append_invalid_message_expr(
-    existing: Expr,
-    expr: Expr,
-    description: Option<&str>,
-) -> Result<Expr, RewriteError> {
-    let message = description.unwrap_or("DFC policy violation");
-    let else_branch = string_concat(
-        function_call(
-            "COALESCE",
-            vec![
-                string_concat(existing.clone(), string_literal("; ")),
-                string_literal(""),
-            ],
-        ),
-        string_literal(message),
-    );
-    Ok(case_when(expr, existing, else_branch))
 }
 
 pub(crate) fn parse_expr(sql: &str) -> Result<Expr, RewriteError> {

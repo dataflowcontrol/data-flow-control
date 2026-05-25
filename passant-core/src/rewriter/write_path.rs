@@ -16,8 +16,8 @@ use super::aggregates::{
 use super::expr::{filter_table_factor, join_conjuncts, parse_expr};
 use super::helpers::{insert_select_mapping, update_assignment_mapping, update_target_name};
 use super::plan::{
-    apply_update_scope_plan, plan_insert_aggregate_temp_columns, plan_insert_sink_invalidation,
-    plan_merge_source_filters, plan_update_scope,
+    apply_update_scope_plan, plan_insert_aggregate_temp_columns, plan_merge_source_filters,
+    plan_update_scope,
 };
 use super::projection::select_is_aggregation;
 use super::scope::TableScope;
@@ -123,14 +123,10 @@ impl PassantRewriter {
                     allow_partial_source_visibility: false,
                     collect_stats,
                 };
-                let before_columns = insert.columns.len();
                 if let Some(source) = insert.source.as_mut() {
                     self.rewrite_query_with_context(source, &context)?;
                 }
                 self.apply_aggregate_insert_columns(insert, &sink, &context)?;
-                if insert.columns.len() == before_columns {
-                    self.append_invalidation_output_columns(insert, &sink, collect_stats);
-                }
                 Ok(())
             }
             Statement::Update {
@@ -173,49 +169,6 @@ impl PassantRewriter {
             .collect();
     }
 
-    fn append_invalidation_output_columns(
-        &self,
-        insert: &mut sqlparser::ast::Insert,
-        sink: &str,
-        collect_stats: bool,
-    ) {
-        let invalidation_plan = plan_insert_sink_invalidation(&self.store, sink);
-        self.statement_summary
-            .record_scope(invalidation_plan.diagnostics.clone());
-        if collect_stats {
-            self.stats.accumulate_scope_diagnostics(
-                invalidation_plan.diagnostics.candidate_policies,
-                invalidation_plan.diagnostics.applicable_policies,
-                0,
-            );
-        }
-        if !invalidation_plan.append_valid && !invalidation_plan.append_invalid_string {
-            return;
-        }
-
-        if insert.columns.is_empty() {
-            return;
-        }
-
-        if invalidation_plan.append_valid
-            && !insert
-                .columns
-                .iter()
-                .any(|column| column.value.eq_ignore_ascii_case("valid"))
-        {
-            insert.columns.push(Ident::new("valid"));
-        }
-
-        if invalidation_plan.append_invalid_string
-            && !insert
-                .columns
-                .iter()
-                .any(|column| column.value.eq_ignore_ascii_case("invalid_string"))
-        {
-            insert.columns.push(Ident::new("invalid_string"));
-        }
-    }
-
     pub(crate) fn apply_aggregate_scan_columns(
         &self,
         select: &mut Select,
@@ -233,7 +186,7 @@ impl PassantRewriter {
     fn rewrite_update(
         &self,
         table: &TableWithJoins,
-        assignments: &mut Vec<Assignment>,
+        assignments: &mut [Assignment],
         from: Option<&TableWithJoins>,
         selection: &mut Option<Expr>,
         collect_stats: bool,

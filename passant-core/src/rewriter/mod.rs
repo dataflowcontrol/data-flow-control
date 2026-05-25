@@ -50,7 +50,7 @@ use plan::StatementRewriteSummaryCell;
 pub(crate) use columns::{
     collect_compound_columns_by_name, replace_identifiers, unqualify_columns,
 };
-pub(crate) use expr::{kill_expr, parse_expr, projected_column_name, resolver_expr};
+pub(crate) use expr::{kill_expr, parse_expr, projected_column_name};
 pub(crate) use helpers::direct_source_occurrence_counts;
 
 impl PassantRewriter {

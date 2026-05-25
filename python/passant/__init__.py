@@ -1,17 +1,19 @@
-from .compat import (
-    AggregateDFCPolicy,
-    DFCPolicy,
-    PassantRewriteError,
-    PgnPolicy,
-    Resolution,
-    SQLRewriter,
-)
+try:
+    from ._passant import PassantRewriteError
+except ImportError:  # pragma: no cover
+    PassantRewriteError = None  # type: ignore[misc, assignment]
+
+from .connection import Connection, wrap
+from .planner import Planner
+from .policy import AggregatePolicy, PgnPolicy, Policy, Resolution
 
 __all__ = [
-    "AggregateDFCPolicy",
-    "DFCPolicy",
+    "AggregatePolicy",
+    "Connection",
     "PassantRewriteError",
+    "Planner",
     "PgnPolicy",
+    "Policy",
     "Resolution",
-    "SQLRewriter",
+    "wrap",
 ]

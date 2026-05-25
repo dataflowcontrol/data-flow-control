@@ -2,10 +2,7 @@
 
 use passant_core::{PolicyIr, Resolution, TableCatalog};
 
-use crate::common::{
-    assert_rewrite, dfc_policy, dfc_policy_invalidate, dfc_policy_kill, rewrite,
-    rewrite_with_catalog,
-};
+use crate::common::{assert_rewrite, dfc_policy, dfc_policy_kill, rewrite, rewrite_with_catalog};
 
 #[test]
 fn scan_count_if_transforms_to_case_when() {
@@ -51,15 +48,6 @@ fn aggregation_kill_wraps_having_clause() {
         "SELECT category, sum(amount) FROM foo GROUP BY category",
         &[dfc_policy_kill(&["foo"], "sum(foo.amount) > 100")],
         "SELECT category, sum(amount) FROM foo GROUP BY category HAVING CASE WHEN sum(foo.amount) > 100 THEN (foo.category = foo.category) OR kill() ELSE true END",
-    );
-}
-
-#[test]
-fn aggregation_invalidate_adds_valid_to_grouped_select() {
-    assert_rewrite(
-        "SELECT category, sum(amount) FROM foo GROUP BY category",
-        &[dfc_policy_invalidate(&["foo"], "sum(foo.amount) > 100")],
-        "SELECT category, sum(amount), sum(foo.amount) > 100 AS valid FROM foo GROUP BY category",
     );
 }
 
@@ -120,18 +108,6 @@ fn scan_min_max_preserve_full_expression() {
 }
 
 #[test]
-fn multi_policy_invalidate_combines_valid_columns() {
-    assert_rewrite(
-        "SELECT id FROM foo",
-        &[
-            dfc_policy_invalidate(&["foo"], "max(foo.id) > 1"),
-            dfc_policy_invalidate(&["foo"], "max(foo.amount) > 10"),
-        ],
-        "SELECT id, foo.id > 1 AND foo.amount > 10 AS valid FROM foo",
-    );
-}
-
-#[test]
 fn dimension_table_constraint_references_external_context() {
     assert_rewrite(
         "SELECT foo.id FROM foo JOIN regions ON foo.region_id = regions.id",
@@ -160,7 +136,7 @@ fn insert_without_column_list_expands_from_catalog() {
         sink: Some("reports".to_string()),
         sink_alias: None,
         constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Invalidate,
+        on_fail: Resolution::Remove,
         description: None,
     };
     let actual = rewrite_with_catalog(
@@ -170,7 +146,7 @@ fn insert_without_column_list_expands_from_catalog() {
     );
     pretty_assertions::assert_eq!(
         actual,
-        "INSERT INTO reports (id, amount, valid) SELECT id, amount, foo.id > 1 AS valid FROM foo"
+        "INSERT INTO reports (id, amount) SELECT id, amount FROM foo WHERE foo.id > 1"
     );
 }
 

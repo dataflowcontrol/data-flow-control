@@ -1,5 +1,5 @@
 use crate::duckdb::TestDb;
-use passant_core::{PolicyIr, Resolution, parse_policy_text};
+use passant_core::{PolicyIr, parse_policy_text};
 
 fn state_transition_policy() -> PolicyIr {
     parse_policy_text(
@@ -20,24 +20,4 @@ fn update_from_source_policy_filters_invalid_state_transition() {
         db.fetchall_strings("SELECT state FROM t WHERE id = 1"),
         vec!["A".to_string()]
     );
-}
-
-#[test]
-fn update_invalidate_sets_valid_assignment() {
-    let mut db = TestDb::new();
-    db.exec("CREATE TABLE reports (id INTEGER, status VARCHAR, valid BOOLEAN)");
-    db.exec("INSERT INTO reports VALUES (1, 'draft', TRUE)");
-    db.register_policy(PolicyIr::CompatDfc {
-        sources: Vec::new(),
-        required_sources: Vec::new(),
-        dimensions: Vec::new(),
-        sink: Some("reports".to_string()),
-        sink_alias: None,
-        constraint: "reports.status = 'approved'".to_string(),
-        on_fail: Resolution::Invalidate,
-        description: None,
-    });
-
-    db.rewrite_exec("UPDATE reports SET status = 'draft', valid = valid");
-    assert_eq!(db.fetchall_bool("SELECT valid FROM reports"), vec![false]);
 }

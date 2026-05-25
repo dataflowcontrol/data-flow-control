@@ -8,8 +8,6 @@ mod duckdb;
 mod aggregate_finalize;
 #[path = "insert.rs"]
 mod insert;
-#[path = "invalidate.rs"]
-mod invalidate;
 #[path = "kill.rs"]
 mod kill;
 #[path = "oracle.rs"]
