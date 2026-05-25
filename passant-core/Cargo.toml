@@ -11,7 +11,18 @@ serde.workspace = true
 serde_json.workspace = true
 sqlparser.workspace = true
 thiserror.workspace = true
+roaring.workspace = true
+smallvec = { workspace = true }
+
+[features]
+default = []
+validate-indexed-candidates = []
 
 [dev-dependencies]
 duckdb.workspace = true
 pretty_assertions.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "rewrite_perf"
+harness = false

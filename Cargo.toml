@@ -20,7 +20,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlparser = { version = "0.53", features = ["serde"] }
 thiserror = "2.0"
+smallvec = "1.14"
 assert_cmd = "2.0"
 duckdb = { version = "1.4", features = ["bundled", "vscalar", "vtab"] }
 predicates = "3.1"
 pretty_assertions = "1.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+roaring = "0.10"

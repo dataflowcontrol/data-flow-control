@@ -204,12 +204,24 @@ class SQLRewriter:
             description,
         )
 
-    def transform_query(self, query: str, use_partial_push: bool = False) -> str:
+    def transform_query(
+        self, query: str, use_partial_push: bool = False, collect_stats: bool = False
+    ) -> str:
         if self._planner is None:
             return query
         if not self._planner.has_registered_policies():
             return self._planner.transform_query(query)
-        return self._planner.transform_registered(query, use_partial_push)
+        return self._planner.transform_registered(query, use_partial_push, collect_stats)
+
+    def last_rewrite_stats(self):
+        if self._planner is None:
+            return None
+        return self._planner.last_rewrite_stats()
+
+    def last_statement_rewrite_summary(self):
+        if self._planner is None:
+            return None
+        return self._planner.last_statement_rewrite_summary()
 
     def explain_rewrite(self, query: str) -> str:
         if self._planner is None:

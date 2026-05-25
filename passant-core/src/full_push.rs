@@ -1,6 +1,8 @@
 //! Full-Push rewrite: inline policy enforcement (WHERE/HAVING/join pushdown) on the
 //! original query shape.
 
+use std::time::Instant;
+
 use crate::optimizer::RewriteStrategy;
 use crate::rewrite_strategy::{RewriteAttempt, RewriteEngine, RewriteRequest, StatementKind};
 use crate::rewriter::{PassantRewriter, RewriteError};
@@ -18,7 +20,7 @@ impl RewriteEngine for FullPushEngine {
     }
 
     fn matches(&self, rewriter: &PassantRewriter, request: &RewriteRequest<'_>) -> bool {
-        if rewriter.policies().is_empty() {
+        if !rewriter.has_registered_policies() {
             return false;
         }
         if matches!(request.kind, StatementKind::Passthrough) {
@@ -33,7 +35,12 @@ impl RewriteEngine for FullPushEngine {
         request: &RewriteRequest<'_>,
     ) -> Result<RewriteAttempt, RewriteError> {
         let mut statement = request.statement.clone();
-        rewriter.rewrite_statement_full_push(&mut statement)?;
-        Ok(RewriteAttempt::Applied(statement.to_string()))
+        rewriter.rewrite_statement_full_push(&mut statement, request.options.collect_stats)?;
+        let format_start = Instant::now();
+        let rewritten = statement.to_string();
+        if request.options.collect_stats {
+            rewriter.stats.add_elapsed_format(format_start.elapsed());
+        }
+        Ok(RewriteAttempt::Applied(rewritten))
     }
 }

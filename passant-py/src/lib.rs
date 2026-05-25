@@ -1,6 +1,7 @@
 use passant_core::{
     CatalogSnapshot, PassantPlanner, PassantRewriter, PolicyIr, Resolution, RewriteError,
-    normalize_policy_dimensions, normalize_policy_sources, parse_policy_text, parse_query_to_ir,
+    RewriteStats, RewriteStatsTimings, StatementRewriteSummary, normalize_policy_dimensions,
+    normalize_policy_sources, parse_policy_text, parse_query, parse_query_to_ir,
     validate_constraint_expression,
 };
 use pyo3::create_exception;
@@ -52,6 +53,107 @@ impl PyDfcPolicy {
             on_fail,
             description,
         })
+    }
+}
+
+#[pyclass(module = "passant._passant")]
+#[derive(Clone, Copy)]
+struct PyRewriteStatsTimings {
+    #[pyo3(get)]
+    elapsed_parse_ms: f64,
+    #[pyo3(get)]
+    elapsed_analysis_ms: f64,
+    #[pyo3(get)]
+    elapsed_candidate_lookup_ms: f64,
+    #[pyo3(get)]
+    elapsed_planning_ms: f64,
+    #[pyo3(get)]
+    elapsed_rewrite_ms: f64,
+    #[pyo3(get)]
+    elapsed_format_ms: f64,
+    #[pyo3(get)]
+    elapsed_total_ms: f64,
+}
+
+impl From<RewriteStatsTimings> for PyRewriteStatsTimings {
+    fn from(timings: RewriteStatsTimings) -> Self {
+        Self {
+            elapsed_parse_ms: timings.elapsed_parse_ms,
+            elapsed_analysis_ms: timings.elapsed_analysis_ms,
+            elapsed_candidate_lookup_ms: timings.elapsed_candidate_lookup_ms,
+            elapsed_planning_ms: timings.elapsed_planning_ms,
+            elapsed_rewrite_ms: timings.elapsed_rewrite_ms,
+            elapsed_format_ms: timings.elapsed_format_ms,
+            elapsed_total_ms: timings.elapsed_total_ms,
+        }
+    }
+}
+
+#[pyclass(module = "passant._passant")]
+#[derive(Clone)]
+struct PyRewriteStats {
+    #[pyo3(get)]
+    total_policies: usize,
+    #[pyo3(get)]
+    candidate_policies: usize,
+    #[pyo3(get)]
+    applicable_policies: usize,
+    #[pyo3(get)]
+    dominated_policies: usize,
+    #[pyo3(get)]
+    query_nodes: usize,
+    #[pyo3(get)]
+    select_scopes_analyzed: usize,
+    #[pyo3(get)]
+    ast_nodes_visited_analysis: usize,
+    #[pyo3(get)]
+    ast_nodes_visited_rewrite: usize,
+    #[pyo3(get)]
+    policy_constraints_parsed_during_rewrite: usize,
+    #[pyo3(get)]
+    timings: PyRewriteStatsTimings,
+}
+
+impl From<RewriteStats> for PyRewriteStats {
+    fn from(stats: RewriteStats) -> Self {
+        Self {
+            total_policies: stats.total_policies,
+            candidate_policies: stats.candidate_policies,
+            applicable_policies: stats.applicable_policies,
+            dominated_policies: stats.dominated_policies,
+            query_nodes: stats.query_nodes,
+            select_scopes_analyzed: stats.select_scopes_analyzed,
+            ast_nodes_visited_analysis: stats.ast_nodes_visited_analysis,
+            ast_nodes_visited_rewrite: stats.ast_nodes_visited_rewrite,
+            policy_constraints_parsed_during_rewrite: stats
+                .policy_constraints_parsed_during_rewrite,
+            timings: stats.timings().into(),
+        }
+    }
+}
+
+#[pyclass(module = "passant._passant")]
+#[derive(Clone)]
+struct PyStatementRewriteSummary {
+    #[pyo3(get)]
+    scope_count: usize,
+    #[pyo3(get)]
+    candidate_policies: usize,
+    #[pyo3(get)]
+    applicable_policies: usize,
+    #[pyo3(get)]
+    dominated_policies: usize,
+}
+
+impl From<StatementRewriteSummary> for PyStatementRewriteSummary {
+    fn from(summary: StatementRewriteSummary) -> Self {
+        let aggregate = summary.aggregate();
+        Self {
+            scope_count: summary.scope_diagnostics.len(),
+            candidate_policies: aggregate.candidate_policies,
+            applicable_policies: aggregate.applicable_policies,
+            dominated_policies: aggregate.dominated_policies,
+        }
     }
 }
 
@@ -247,17 +349,58 @@ impl PyPlanner {
         ))
     }
 
-    #[pyo3(signature = (query, use_partial_push=false))]
-    fn transform_registered(&self, query: String, use_partial_push: bool) -> PyResult<String> {
-        let options = passant_core::RewriteOptions { use_partial_push };
+    #[pyo3(signature = (query, use_partial_push=false, collect_stats=false))]
+    fn transform_registered(
+        &self,
+        query: String,
+        use_partial_push: bool,
+        collect_stats: bool,
+    ) -> PyResult<String> {
+        let options = passant_core::RewriteOptions {
+            use_partial_push,
+            collect_stats,
+        };
         self.rewriter
             .rewrite_with_options(&query, options)
             .map_err(map_rewrite_error)
     }
 
+    fn last_rewrite_stats(&self) -> PyRewriteStats {
+        self.rewriter.last_rewrite_stats().into()
+    }
+
+    fn last_statement_rewrite_summary(&self) -> PyStatementRewriteSummary {
+        self.rewriter.last_statement_rewrite_summary().into()
+    }
+
     fn explain_rewrite_registered(&self, query: String) -> PyResult<String> {
+        self.explain_rewrite_registered_with_options(query, false)
+    }
+
+    #[pyo3(signature = (query, include_stats=false))]
+    fn explain_rewrite_registered_with_options(
+        &self,
+        query: String,
+        include_stats: bool,
+    ) -> PyResult<String> {
         let ir = parse_query_to_ir(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let explanation = PassantPlanner::new().explain_rewrite(&ir, self.rewriter.policies());
+        let policies = self.rewriter.policies();
+        let mut explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
+        let statement =
+            parse_query(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let statement_plan = self.rewriter.plan_statement_summary(&statement);
+        explanation.policy_plan = Some(statement_plan.aggregate());
+        explanation.statement_plan = Some(statement_plan);
+        if include_stats {
+            let options = passant_core::RewriteOptions {
+                collect_stats: true,
+                ..passant_core::RewriteOptions::default()
+            };
+            self.rewriter
+                .rewrite_with_options(&query, options)
+                .map_err(map_rewrite_error)?;
+            explanation.rewrite_stats = Some(self.rewriter.last_rewrite_stats().into());
+        }
         serde_json::to_string_pretty(&explanation)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
@@ -455,6 +598,9 @@ fn map_policy_parse_error(err: passant_core::PolicyParseError) -> PyErr {
 fn _passant(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDfcPolicy>()?;
     module.add_class::<PyPlanner>()?;
+    module.add_class::<PyRewriteStatsTimings>()?;
+    module.add_class::<PyRewriteStats>()?;
+    module.add_class::<PyStatementRewriteSummary>()?;
     module.add("PassantRewriteError", _py.get_type::<PassantRewriteError>())?;
     module.add_function(wrap_pyfunction!(parse_sql_to_ir, module)?)?;
     module.add_function(wrap_pyfunction!(parse_policy_to_json, module)?)?;

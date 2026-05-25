@@ -5,7 +5,7 @@ use sqlparser::ast::{Select, SetExpr, TableFactor, TableWithJoins};
 use crate::identifiers::{Alias, AliasByBase, TableKey, TableName};
 
 /// Visible tables and alias map for a SELECT.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TableScope {
     pub(crate) base_tables: HashSet<TableKey>,
     pub(crate) direct_base_tables: HashSet<TableKey>,

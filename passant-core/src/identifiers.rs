@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use sqlparser::ast::{Expr, Ident, ObjectName};
 
@@ -151,27 +152,35 @@ impl fmt::Display for SinkName {
 
 /// Normalized, case-insensitive table lookup key for scope and applicability checks.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TableKey(String);
+pub struct TableKey(Arc<str>);
 
 impl TableKey {
     pub fn new(name: &str) -> Self {
-        Self(normalize_key(name))
+        Self(Arc::from(normalize_key(name)))
+    }
+
+    pub(crate) fn from_arc(arc: Arc<str>) -> Self {
+        Self(arc)
     }
 
     pub fn from_table(table: &TableName) -> Self {
-        Self(table.key())
+        Self(Arc::from(table.key()))
     }
 
     pub fn from_source(source: &SourceName) -> Self {
-        Self(source.key())
+        Self(Arc::from(source.key()))
     }
 
     pub fn from_sink(sink: &SinkName) -> Self {
-        Self(sink.key())
+        Self(Arc::from(sink.key()))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn same_allocation_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// First character of the normalized key plus `_`, for legacy column-prefix heuristics.
@@ -186,6 +195,34 @@ impl TableKey {
 }
 
 impl fmt::Display for TableKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Normalized, case-insensitive column lookup key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ColumnKey(Arc<str>);
+
+impl ColumnKey {
+    pub fn new(name: &str) -> Self {
+        Self(Arc::from(normalize_key(name)))
+    }
+
+    pub(crate) fn from_arc(arc: Arc<str>) -> Self {
+        Self(arc)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn same_allocation_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Display for ColumnKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }

@@ -1289,6 +1289,37 @@ def test_python_compat_policy_applies_to_right_semi_join_source():
     )
 
 
+def test_python_compat_transform_query_collect_stats():
+    rewriter = SQLRewriter()
+    rewriter.execute("CREATE TABLE foo (id INTEGER)")
+    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
+    for index in range(50):
+        table = f"other_{index}"
+        rewriter.conn.execute(f"CREATE TABLE {table} (id INTEGER)")
+    rewriter.register_policy(
+        DFCPolicy(
+            sources=["foo"],
+            constraint="max(foo.id) > 1",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    for index in range(50):
+        table = f"other_{index}"
+        rewriter.register_policy(
+            DFCPolicy(
+                sources=[table],
+                constraint=f"max({table}.id) > 1",
+                on_fail=Resolution.REMOVE,
+            )
+        )
+
+    rewriter.transform_query("SELECT id FROM foo", collect_stats=True)
+    stats = rewriter.last_rewrite_stats()
+    assert stats is not None
+    assert stats.policy_constraints_parsed_during_rewrite == 0
+    assert stats.candidate_policies == 1
+
+
 def test_python_compat_allows_anti_join_policy_on_preserved_source():
     rewriter = SQLRewriter()
     rewriter.execute("CREATE TABLE foo (id INTEGER)")

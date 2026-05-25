@@ -1,7 +1,8 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use passant_core::{
-    PassantPlanner, PassantRewriter, PolicyIr, Resolution, parse_policy_text, parse_query_to_ir,
+    PassantPlanner, PassantRewriter, PolicyIr, Resolution, RewriteOptions, parse_policy_text,
+    parse_query_to_ir,
 };
 
 #[derive(Debug, Parser)]
@@ -18,11 +19,18 @@ enum Commands {
         sql: String,
         #[arg(long)]
         policy: Vec<String>,
+        #[arg(long, help = "Print rewrite stats JSON after rewritten SQL")]
+        stats: bool,
     },
     Explain {
         sql: String,
         #[arg(long)]
         policy: Vec<String>,
+        #[arg(
+            long,
+            help = "Run a rewrite with stats collection and include timings in output"
+        )]
+        stats: bool,
     },
     Plan {
         sql: String,
@@ -46,22 +54,47 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Rewrite { sql, policy } => {
+        Commands::Rewrite { sql, policy, stats } => {
             let mut rewriter = PassantRewriter::new();
             for policy_text in policy {
                 rewriter
                     .register_policy_text(&policy_text)
                     .context("failed to parse policy")?;
             }
-            println!(
-                "{}",
-                rewriter.rewrite(&sql).context("failed to rewrite SQL")?
-            );
+            let options = RewriteOptions {
+                collect_stats: stats,
+                ..RewriteOptions::default()
+            };
+            let rewritten = rewriter
+                .rewrite_with_options(&sql, options)
+                .context("failed to rewrite SQL")?;
+            println!("{rewritten}");
+            if stats {
+                let export = passant_core::RewriteStatsExport::from(rewriter.last_rewrite_stats());
+                eprintln!("{}", serde_json::to_string_pretty(&export)?);
+            }
         }
-        Commands::Explain { sql, policy } => {
+        Commands::Explain { sql, policy, stats } => {
+            let mut rewriter = PassantRewriter::new();
+            for policy_text in policy {
+                rewriter
+                    .register_policy_text(&policy_text)
+                    .context("failed to parse policy")?;
+            }
             let ir = parse_query_to_ir(&sql).context("failed to parse SQL")?;
-            let policies = parse_policy_args(policy)?;
-            let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
+            let mut explanation = PassantPlanner::new().explain_rewrite(&ir, &rewriter.policies());
+            if stats {
+                rewriter
+                    .rewrite_with_options(
+                        &sql,
+                        RewriteOptions {
+                            collect_stats: true,
+                            ..RewriteOptions::default()
+                        },
+                    )
+                    .context("failed to rewrite SQL for stats")?;
+                explanation.rewrite_stats = Some(rewriter.last_rewrite_stats().into());
+            }
             println!("{}", serde_json::to_string_pretty(&explanation)?);
         }
         Commands::Plan { sql, policy } => {

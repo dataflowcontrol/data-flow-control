@@ -6,16 +6,17 @@ use std::collections::{HashMap, HashSet};
 use sqlparser::ast::{BinaryOperator, Expr, Ident, Query, Select, SelectItem, SetExpr, Statement};
 
 use crate::identifiers::TableKey;
-
 use crate::optimizer::RewriteStrategy;
-use crate::policy::{PolicyIr, Resolution};
+use crate::policy::Resolution;
+use crate::query_analysis::SelectAnalysis;
 use crate::rewrite_strategy::{RewriteAttempt, RewriteEngine, RewriteRequest, StatementKind};
 use crate::rewriter::{
-    PassantRewriter, RewriteContext, RewriteError, TableScope, apply_policy_having,
-    build_compat_dfc_filter_expr, collect_compound_columns_by_name, ensure_projection_aliases,
-    extract_policy_comparison, group_by_join_specs, kill_expr, outer_limited_projection_items,
-    parse_expr, policy_applicability, projected_column_name, replace_identifiers, resolver_expr,
-    select_is_aggregation, unqualify_columns,
+    PassantRewriter, PolicyResolutionAction, RewriteContext, RewriteError, TableScope,
+    apply_policy_having, collect_compound_columns_by_name, ensure_projection_aliases,
+    extract_policy_comparison_for_policy, group_by_join_specs, kill_expr,
+    outer_limited_projection_items, parse_expr, plan_policy_filter_actions, projected_column_name,
+    replace_identifiers, resolver_expr, scope_has_enforcement_policies, select_is_aggregation,
+    unqualify_columns,
 };
 use crate::sql::{
     alias_column, and_exprs, column_comparison, cte, empty_select, function_call,
@@ -50,7 +51,7 @@ impl RewriteEngine for PartialPushEngine {
     }
 
     fn matches(&self, rewriter: &PassantRewriter, request: &RewriteRequest<'_>) -> bool {
-        if rewriter.policies().is_empty() {
+        if !rewriter.has_registered_policies() {
             return false;
         }
         if matches!(request.kind, StatementKind::Passthrough) {
@@ -77,7 +78,7 @@ impl RewriteEngine for PartialPushEngine {
 
         if request.kind != StatementKind::SelectQuery {
             let mut statement = request.statement.clone();
-            rewriter.rewrite_statement_full_push(&mut statement)?;
+            rewriter.rewrite_statement_full_push(&mut statement, request.options.collect_stats)?;
             return Ok(RewriteAttempt::Applied(statement.to_string()));
         }
 
@@ -87,7 +88,7 @@ impl RewriteEngine for PartialPushEngine {
 
         let is_aggregation = select_is_aggregation(select);
         let has_limit = query_has_limit(query);
-        let has_remove = has_remove_enforcement_policy(rewriter);
+        let has_remove = select_has_applicable_remove_policy(rewriter, select);
 
         let rewritten = if has_limit && has_remove {
             if is_aggregation {
@@ -106,25 +107,13 @@ impl RewriteEngine for PartialPushEngine {
 }
 
 fn has_applicable_enforcement_policies(rewriter: &PassantRewriter, select: &Select) -> bool {
-    let table_scope = TableScope::from_select(select);
-    let main_tables = &table_scope.direct_base_tables;
-    let exists_subquery_tables = exists_subquery_policy_tables(select);
-
-    rewriter.policies().iter().any(|policy| {
-        if !matches!(
-            policy.resolution(),
-            Resolution::Remove | Resolution::Kill | Resolution::Llm
-        ) {
-            return false;
-        }
-        if policy_applicability(policy, main_tables, None, false).is_some() {
-            return true;
-        }
-        policy.sources().iter().any(|source| {
-            let key = TableKey::new(source);
-            exists_subquery_tables.contains(&key) && !main_tables.contains(&key)
-        })
-    })
+    let analysis = SelectAnalysis::from_select(select);
+    let main_tables = &analysis.scope.direct_base_tables;
+    scope_has_enforcement_policies(
+        rewriter.policy_store(),
+        main_tables,
+        &exists_subquery_policy_tables(select),
+    )
 }
 
 fn exists_subquery_policy_tables(select: &Select) -> HashSet<TableKey> {
@@ -157,7 +146,7 @@ fn exists_subquery_policy_tables(select: &Select) -> HashSet<TableKey> {
 }
 
 fn select_direct_base_tables(select: &Select) -> HashSet<TableKey> {
-    TableScope::from_select(select).direct_base_tables
+    SelectAnalysis::from_select(select).scope.direct_base_tables
 }
 
 fn flatten_and(expr: &Expr) -> Vec<Expr> {
@@ -175,11 +164,18 @@ fn flatten_and(expr: &Expr) -> Vec<Expr> {
     }
 }
 
-fn has_remove_enforcement_policy(rewriter: &PassantRewriter) -> bool {
+fn select_has_applicable_remove_policy(rewriter: &PassantRewriter, select: &Select) -> bool {
+    let analysis = SelectAnalysis::from_select(select);
+    let tables = &analysis.scope.direct_base_tables;
     rewriter
-        .policies()
+        .policy_store()
+        .candidate_scope_lookup(tables, None, crate::MultiSourceLookupMode::AnyOverlap)
         .iter()
-        .any(|policy| policy.resolution() == Resolution::Remove)
+        .any(|index| {
+            rewriter
+                .policy_at(index)
+                .is_some_and(|policy| policy.resolution() == Resolution::Remove)
+        })
 }
 
 fn partial_push_aggregation(
@@ -228,10 +224,15 @@ fn partial_push_limit_aggregation(
             "partial-push LIMIT rewrite requires a SELECT body",
         ));
     };
-    let remove_policy = rewriter
-        .policies()
-        .iter()
-        .find(|policy| policy.resolution() == Resolution::Remove)
+    let table_scope = TableScope::from_select(select);
+    let (remove_index, remove_policy) = rewriter
+        .policy_store()
+        .candidate_ids_for_tables(&table_scope.direct_base_tables)
+        .into_iter()
+        .find_map(|index| {
+            let policy = rewriter.policy_at(index)?;
+            (policy.resolution() == Resolution::Remove).then_some((index, policy))
+        })
         .ok_or_else(|| {
             RewriteError::unsupported_statement(
                 "partial-push LIMIT rewrite requires a REMOVE policy",
@@ -244,8 +245,20 @@ fn partial_push_limit_aggregation(
     }
 
     let group_specs = group_by_join_specs(select)?;
-    let (left, threshold, op) = extract_policy_comparison(remove_policy.constraint())?;
-    let dfc_expr = parse_expr(&left)?;
+    let (left, threshold, op) = extract_policy_comparison_for_policy(
+        rewriter.policy_store(),
+        remove_index,
+        remove_policy.constraint(),
+        None,
+    )?;
+    let constraint_expr =
+        rewriter
+            .policy_store()
+            .constraint_expr(remove_index, remove_policy.constraint(), None)?;
+    let dfc_expr = match constraint_expr {
+        Expr::BinaryOp { left, .. } => *left,
+        _ => parse_expr(&left)?,
+    };
 
     let (policy_eval_query, join_keys, extra_dfc) = build_policy_eval_query(
         rewriter,
@@ -339,15 +352,26 @@ fn partial_push_limit_scan(
     let mut propagated_filter_columns = HashMap::new();
     let projected_names = projected_select_names(select);
 
-    for (policy, applicability) in rewriter.policies().iter().filter_map(|policy| {
-        policy_applicability(policy, &table_scope.direct_base_tables, None, false)
-            .map(|applicability| (policy, applicability))
-    }) {
-        let PolicyIr::CompatDfc {
-            constraint,
+    let context = RewriteContext::default();
+    let (actions, _) = plan_policy_filter_actions(
+        rewriter.policy_store(),
+        rewriter.catalog(),
+        None,
+        &table_scope.direct_base_tables,
+        &table_scope,
+        None,
+        &context,
+        false,
+        &HashSet::new(),
+        &HashSet::new(),
+    )?;
+
+    for action in actions {
+        let PolicyResolutionAction::CompatDfc {
+            filter: mut expr,
             on_fail,
             ..
-        } = policy
+        } = action
         else {
             continue;
         };
@@ -357,18 +381,6 @@ fn partial_push_limit_scan(
         ) {
             continue;
         }
-        let mut expr = build_compat_dfc_filter_expr(
-            policy.sources(),
-            constraint,
-            &match policy {
-                PolicyIr::CompatDfc { sink_alias, .. } => sink_alias.clone(),
-                _ => None,
-            },
-            applicability,
-            &RewriteContext::default(),
-            &table_scope,
-            false,
-        )?;
         let mut source_columns = HashMap::new();
         collect_compound_columns_by_name(&expr, &mut source_columns);
         unqualify_columns(&mut expr);
@@ -380,9 +392,9 @@ fn partial_push_limit_scan(
                     .or_insert((source_expr, alias));
             }
         }
-        if *on_fail == Resolution::Kill {
+        if on_fail == Resolution::Kill {
             expr = kill_expr(expr)?;
-        } else if *on_fail == Resolution::Llm {
+        } else if on_fail == Resolution::Llm {
             expr = resolver_expr(expr)?;
         }
         let replacements = propagated_filter_columns

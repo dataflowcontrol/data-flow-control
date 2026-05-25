@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use smallvec::SmallVec;
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, JoinOperator, Select,
     SetExpr, TableFactor, TableWithJoins,
@@ -10,6 +11,7 @@ use sqlparser::ast::{
 
 use crate::identifiers::{TableKey, TableName};
 use crate::policy::{PolicyIr, Resolution};
+use crate::policy_store::PolicyStore;
 use crate::sql::parse_projection_expr;
 
 pub fn set_expr_source_tables(set_expr: &SetExpr) -> HashSet<TableKey> {
@@ -98,6 +100,145 @@ pub fn set_operation_requires_cross_source_policies(
     })
 }
 
+/// Indexed variant: only inspects multi-source policies registered in `PolicyStore`.
+pub fn set_operation_requires_cross_source_policies_for_store(
+    store: &PolicyStore,
+    left: &SetExpr,
+    right: &SetExpr,
+) -> bool {
+    let left_tables = set_expr_source_tables(left);
+    let right_tables = set_expr_source_tables(right);
+    if left_tables.is_empty() || right_tables.is_empty() {
+        return false;
+    }
+    store
+        .multi_source_policy_indices()
+        .into_iter()
+        .any(|index| {
+            let Some(policy) = store.policy(index) else {
+                return false;
+            };
+            policy_requires_set_split(policy, &left_tables, &right_tables)
+        })
+}
+
+pub fn cross_source_policies_for_branch_indexed(
+    store: &PolicyStore,
+    branch_tables: &HashSet<TableKey>,
+) -> Vec<PolicyIr> {
+    store
+        .multi_source_policy_indices()
+        .into_iter()
+        .filter_map(|index| {
+            let policy = store.policy(index)?;
+            if policy.sources().len() > 1
+                && policy
+                    .sources()
+                    .iter()
+                    .any(|source| branch_tables.contains(&TableKey::new(source)))
+            {
+                Some(policy.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub fn split_set_operation_policies_for_store(
+    store: &PolicyStore,
+    left: &SetExpr,
+    right: &SetExpr,
+) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
+    let left_tables = set_expr_source_tables(left);
+    let right_tables = set_expr_source_tables(right);
+    let mut all_tables = left_tables.clone();
+    all_tables.extend(right_tables.iter().cloned());
+    let scope_policies = store.candidate_entries_for_scope(&all_tables, None);
+    split_set_operation_policy_entries(&scope_policies, store, left, right)
+}
+
+pub fn split_select_policies_for_nullable_joins_for_store(
+    store: &PolicyStore,
+    select: &Select,
+    direct_base_tables: &HashSet<TableKey>,
+    sink: Option<&TableKey>,
+) -> Option<Vec<PolicyIr>> {
+    if select_nullable_source_tables(select).is_empty() {
+        return None;
+    }
+    let scope_policies = store.candidate_entries_for_scope(direct_base_tables, sink);
+    split_select_policy_entries_for_nullable_joins(
+        &scope_policies,
+        store,
+        select,
+        direct_base_tables,
+    )
+}
+
+fn split_select_policy_entries_for_nullable_joins(
+    policies: &[(usize, PolicyIr)],
+    store: &PolicyStore,
+    select: &Select,
+    direct_base_tables: &HashSet<TableKey>,
+) -> Option<Vec<PolicyIr>> {
+    let _ = select;
+    let mut split_policies = Vec::new();
+    let mut changed = false;
+    for (index, policy) in policies {
+        if policy.sources().len() <= 1 {
+            split_policies.push(policy.clone());
+            continue;
+        }
+        let Some(split) = split_policy_by_source_local_conjuncts(
+            policy,
+            store
+                .compiled(*index)
+                .and_then(|c| c.source_local_conjuncts.as_ref()),
+            store.clone_constraint_ast(*index).as_ref(),
+            direct_base_tables,
+        ) else {
+            split_policies.push(policy.clone());
+            continue;
+        };
+        changed = true;
+        split_policies.extend(split);
+    }
+    changed.then_some(split_policies)
+}
+
+fn split_set_operation_policy_entries(
+    policies: &[(usize, PolicyIr)],
+    store: &PolicyStore,
+    left: &SetExpr,
+    right: &SetExpr,
+) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
+    let left_tables = set_expr_source_tables(left);
+    let right_tables = set_expr_source_tables(right);
+    let mut left_policies = Vec::new();
+    let mut right_policies = Vec::new();
+
+    for (index, policy) in policies {
+        let compiled = store.compiled(*index);
+        if !multi_source_policy_needs_set_split(policy, compiled, &left_tables, &right_tables) {
+            left_policies.push(policy.clone());
+            right_policies.push(policy.clone());
+            continue;
+        }
+        let constraint_ast = store.clone_constraint_ast(*index);
+        let (left_split, right_split) = split_policy_for_set_branches(
+            policy,
+            constraint_ast.as_ref(),
+            &left_tables,
+            &right_tables,
+        )?;
+        left_policies.extend(left_split);
+        right_policies.extend(right_split);
+    }
+
+    Some((left_policies, right_policies))
+}
+
 pub fn cross_source_policies_for_branch(
     policies: &[PolicyIr],
     branch_tables: &HashSet<TableKey>,
@@ -130,7 +271,9 @@ pub fn split_select_policies_for_nullable_joins(
             split_policies.push(policy.clone());
             continue;
         }
-        let Some(split) = split_policy_by_source_local_conjuncts(policy, direct_base_tables) else {
+        let Some(split) =
+            split_policy_by_source_local_conjuncts(policy, None, None, direct_base_tables)
+        else {
             split_policies.push(policy.clone());
             continue;
         };
@@ -157,7 +300,7 @@ pub fn split_set_operation_policies(
             continue;
         }
         let (left_split, right_split) =
-            split_policy_for_set_branches(policy, &left_tables, &right_tables)?;
+            split_policy_for_set_branches(policy, None, &left_tables, &right_tables)?;
         left_policies.extend(left_split);
         right_policies.extend(right_split);
     }
@@ -179,8 +322,34 @@ pub fn policy_requires_set_split(
             || !sources.iter().all(|source| right_tables.contains(source)))
 }
 
+fn multi_source_policy_needs_set_split(
+    policy: &PolicyIr,
+    compiled: Option<&crate::policy_store::CompiledPolicy>,
+    left_tables: &HashSet<TableKey>,
+    right_tables: &HashSet<TableKey>,
+) -> bool {
+    if !policy_requires_set_split(policy, left_tables, right_tables) {
+        return false;
+    }
+    let Some(compiled) = compiled else {
+        return true;
+    };
+    if compiled.constraint_referenced_sources.is_empty() {
+        return true;
+    }
+    compiled
+        .constraint_referenced_sources
+        .iter()
+        .any(|source| left_tables.contains(source))
+        && compiled
+            .constraint_referenced_sources
+            .iter()
+            .any(|source| right_tables.contains(source))
+}
+
 pub fn split_policy_for_set_branches(
     policy: &PolicyIr,
+    constraint_ast: Option<&Expr>,
     left_tables: &HashSet<TableKey>,
     right_tables: &HashSet<TableKey>,
 ) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
@@ -208,7 +377,9 @@ pub fn split_policy_for_set_branches(
     }
 
     let policy_sources = policy_source_keys(sources);
-    let expr = parse_constraint_expr(constraint).ok()?;
+    let expr = constraint_ast
+        .cloned()
+        .or_else(|| parse_constraint_expr(constraint).ok())?;
     let mut left_constraints = Vec::new();
     let mut right_constraints = Vec::new();
     for conjunct in split_conjuncts(expr) {
@@ -270,6 +441,114 @@ pub fn split_policy_for_set_branches(
 
 pub fn split_policy_by_source_local_conjuncts(
     policy: &PolicyIr,
+    cached_conjuncts: Option<&SmallVec<[(TableKey, Expr); 4]>>,
+    constraint_ast: Option<&Expr>,
+    available_tables: &HashSet<TableKey>,
+) -> Option<Vec<PolicyIr>> {
+    if let Some(conjuncts) = cached_conjuncts
+        && let Some(split) = split_policy_from_cached_conjuncts(policy, conjuncts, available_tables)
+    {
+        return Some(split);
+    }
+    split_policy_by_source_local_conjuncts_from_ast(policy, constraint_ast, available_tables)
+}
+
+pub(crate) fn compile_source_local_conjuncts(
+    constraint: &Expr,
+    source_keys: &[TableKey],
+) -> Option<SmallVec<[(TableKey, Expr); 4]>> {
+    if source_keys.len() <= 1 {
+        return None;
+    }
+    let policy_sources: HashSet<_> = source_keys.iter().cloned().collect();
+    let mut grouped: HashMap<TableKey, Vec<Expr>> = HashMap::new();
+    for conjunct in split_conjuncts(constraint.clone()) {
+        let refs = expr_referenced_policy_sources(&conjunct, &policy_sources);
+        if refs.len() != 1 {
+            return None;
+        }
+        let source = refs.into_iter().next()?;
+        grouped.entry(source).or_default().push(conjunct);
+    }
+    if grouped.is_empty() {
+        return None;
+    }
+    let mut result = SmallVec::new();
+    for source in source_keys {
+        let Some(exprs) = grouped.remove(source) else {
+            continue;
+        };
+        result.push((source.clone(), join_conjuncts(exprs)));
+    }
+    (!result.is_empty()).then_some(result)
+}
+
+pub(crate) fn compile_constraint_referenced_source_keys(
+    constraint: &Expr,
+    source_keys: &[TableKey],
+) -> SmallVec<[TableKey; 4]> {
+    let policy_sources: HashSet<_> = source_keys.iter().cloned().collect();
+    let mut refs = HashSet::new();
+    collect_referenced_policy_sources(constraint, &policy_sources, &mut refs);
+    let mut sorted = refs.into_iter().collect::<Vec<_>>();
+    sorted.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    sorted.into_iter().collect::<SmallVec<[TableKey; 4]>>()
+}
+
+fn split_policy_from_cached_conjuncts(
+    policy: &PolicyIr,
+    conjuncts: &SmallVec<[(TableKey, Expr); 4]>,
+    available_tables: &HashSet<TableKey>,
+) -> Option<Vec<PolicyIr>> {
+    let PolicyIr::CompatDfc {
+        sources,
+        required_sources,
+        dimensions,
+        sink,
+        sink_alias,
+        on_fail,
+        description,
+        ..
+    } = policy
+    else {
+        return None;
+    };
+    if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
+        return None;
+    }
+    if !matches!(
+        on_fail,
+        Resolution::Remove | Resolution::Kill | Resolution::Llm
+    ) {
+        return None;
+    }
+
+    let mut split = Vec::new();
+    for source in sources {
+        let source_key = TableKey::new(source);
+        if !available_tables.contains(&source_key) {
+            return None;
+        }
+        let Some((_, expr)) = conjuncts.iter().find(|(key, _)| key == &source_key) else {
+            continue;
+        };
+        split.push(PolicyIr::CompatDfc {
+            sources: vec![source.clone()],
+            required_sources: Vec::new(),
+            dimensions: Vec::new(),
+            sink: None,
+            sink_alias: sink_alias.clone(),
+            constraint: expr.to_string(),
+            on_fail: *on_fail,
+            description: description.clone(),
+        });
+    }
+    (!split.is_empty()).then_some(split)
+}
+
+fn split_policy_by_source_local_conjuncts_from_ast(
+    policy: &PolicyIr,
+    constraint_ast: Option<&Expr>,
     available_tables: &HashSet<TableKey>,
 ) -> Option<Vec<PolicyIr>> {
     let PolicyIr::CompatDfc {
@@ -296,7 +575,9 @@ pub fn split_policy_by_source_local_conjuncts(
     }
 
     let policy_sources = policy_source_keys(sources);
-    let expr = parse_constraint_expr(constraint).ok()?;
+    let expr = constraint_ast
+        .cloned()
+        .or_else(|| parse_constraint_expr(constraint).ok())?;
     let mut constraints_by_source: HashMap<TableKey, Vec<Expr>> = HashMap::new();
     for conjunct in split_conjuncts(expr) {
         let refs = expr_referenced_policy_sources(&conjunct, &policy_sources);
@@ -333,7 +614,7 @@ pub fn split_policy_by_source_local_conjuncts(
     (!split.is_empty()).then_some(split)
 }
 
-fn table_with_joins_source_tables(table: &TableWithJoins) -> HashSet<TableKey> {
+pub fn table_with_joins_source_tables(table: &TableWithJoins) -> HashSet<TableKey> {
     let mut tables = table_factor_source_tables(&table.relation);
     for join in &table.joins {
         tables.extend(table_factor_source_tables(&join.relation));
@@ -542,7 +823,7 @@ mod tests {
             description: None,
         };
         let available = HashSet::from([TableKey::new("bar"), TableKey::new("foo")]);
-        let split = split_policy_by_source_local_conjuncts(&policy, &available)
+        let split = split_policy_by_source_local_conjuncts(&policy, None, None, &available)
             .expect("policy should split");
         assert_eq!(split.len(), 2);
         assert!(split.iter().any(|policy| {

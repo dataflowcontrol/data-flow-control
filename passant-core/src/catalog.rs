@@ -456,7 +456,7 @@ fn validate_qualified_columns(sql: &str, label: &str) -> Result<(), RewriteError
 
 fn qualified_columns(sql: &str) -> Result<Vec<QualifiedColumn>, RewriteError> {
     let expr = parse_constraint_expr(sql)?;
-    Ok(QualifiedColumnCollector::collect(&expr))
+    Ok(crate::sql::collect_qualified_columns_from_expr(&expr))
 }
 
 fn unaggregated_source_columns(
@@ -484,29 +484,6 @@ impl UnqualifiedColumnCollector {
     fn visit(&mut self, expr: &Expr, inside_aggregate: bool) {
         if let Expr::Identifier(ident) = expr {
             self.found.push(ident.value.clone());
-        }
-        expr_visit_children(
-            expr,
-            |child, inside| self.visit(child, inside),
-            inside_aggregate,
-        );
-    }
-}
-
-struct QualifiedColumnCollector {
-    found: Vec<QualifiedColumn>,
-}
-
-impl QualifiedColumnCollector {
-    fn collect(expr: &Expr) -> Vec<QualifiedColumn> {
-        let mut collector = Self { found: Vec::new() };
-        collector.visit(expr, false);
-        collector.found
-    }
-
-    fn visit(&mut self, expr: &Expr, inside_aggregate: bool) {
-        if let Some(column) = QualifiedColumn::from_expr(expr) {
-            self.found.push(column);
         }
         expr_visit_children(
             expr,

@@ -5,29 +5,33 @@ use crate::policy::PolicyIr;
 
 use super::RewriteError;
 use super::aggregates::{
-    aggregate_finalize_sql, aggregate_finalize_sql_fallback, aggregate_temp_column,
-    policy_aggregate_temp_entries, rewrite_source_aggregates_for_finalize,
+    aggregate_finalize_sql_fallback, aggregate_finalize_sql_from_expr, aggregate_temp_column,
+    policy_aggregate_temp_entries_from_expr, rewrite_source_aggregates_for_finalize_from_expr,
 };
 use super::scope::TableScope;
 use super::types::{FinalizeQuery, PassantRewriter, SourceAggregate};
 
 impl PassantRewriter {
     pub fn finalize_aggregate_policies(&self, sink_table: &str) -> Vec<(String, Option<String>)> {
-        self.policies
-            .iter()
-            .filter_map(|policy| match policy {
-                PolicyIr::CompatAggregate(policy)
-                    if policy
-                        .sink
-                        .as_deref()
-                        .is_none_or(|sink| sink.eq_ignore_ascii_case(sink_table)) =>
+        self.store
+            .aggregate_policy_indices_for_sink(sink_table)
+            .into_iter()
+            .filter_map(|index| {
+                let policy = self.store.policy(index)?;
+                let PolicyIr::CompatAggregate(policy) = policy else {
+                    return None;
+                };
+                if policy
+                    .sink
+                    .as_deref()
+                    .is_some_and(|sink| !sink.eq_ignore_ascii_case(sink_table))
                 {
-                    Some((
-                        PolicyId::from_aggregate_constraint(&policy.constraint).to_string(),
-                        None,
-                    ))
+                    return None;
                 }
-                _ => None,
+                Some((
+                    PolicyId::from_aggregate_constraint(&policy.constraint).to_string(),
+                    None,
+                ))
             })
             .collect()
     }
@@ -36,36 +40,47 @@ impl PassantRewriter {
         let aggregate_temp_columns = self
             .source_aggregate_temp_columns(sink_table, None)
             .unwrap_or_default();
-        self.policies
-            .iter()
-            .filter_map(|policy| match policy {
-                PolicyIr::CompatAggregate(policy)
-                    if policy
-                        .sink
-                        .as_deref()
-                        .is_none_or(|sink| sink.eq_ignore_ascii_case(sink_table)) =>
+        self.store
+            .aggregate_policy_indices_for_sink(sink_table)
+            .into_iter()
+            .filter_map(|index| {
+                let policy = self.store.policy(index)?;
+                let PolicyIr::CompatAggregate(policy) = policy else {
+                    return None;
+                };
+                if policy
+                    .sink
+                    .as_deref()
+                    .is_some_and(|sink| !sink.eq_ignore_ascii_case(sink_table))
                 {
-                    let constraint = rewrite_source_aggregates_for_finalize(
+                    return None;
+                }
+                let constraint_expr = self
+                    .store
+                    .constraint_expr(index, &policy.constraint, None)
+                    .ok()?;
+                let (constraint, rewritten_expr) =
+                    rewrite_source_aggregates_for_finalize_from_expr(
+                        Some(&constraint_expr),
                         &policy.constraint,
                         &policy.sources,
                         &aggregate_temp_columns,
                     )
-                    .unwrap_or_else(|_| policy.constraint.clone());
-                    let (sql, invalidate_sql) =
-                        aggregate_finalize_sql(sink_table, &constraint, &policy.dimensions)
-                            .unwrap_or_else(|_| {
-                                aggregate_finalize_sql_fallback(sink_table, &constraint)
-                            });
-                    Some(FinalizeQuery {
-                        policy_id: PolicyId::from_aggregate_constraint(&policy.constraint)
-                            .to_string(),
-                        sql,
-                        invalidate_sql: Some(invalidate_sql),
-                        description: policy.description.clone(),
-                        constraint: policy.constraint.clone(),
-                    })
-                }
-                _ => None,
+                    .unwrap_or_else(|_| (policy.constraint.clone(), constraint_expr));
+                let (sql, invalidate_sql) = aggregate_finalize_sql_from_expr(
+                    sink_table,
+                    &constraint,
+                    &rewritten_expr,
+                    &policy.dimensions,
+                )
+                .unwrap_or_else(|_| aggregate_finalize_sql_fallback(sink_table, &constraint));
+                Some(FinalizeQuery {
+                    policy_id: PolicyId::from_aggregate_constraint(&policy.constraint).to_string(),
+                    sql,
+                    invalidate_sql: Some(invalidate_sql),
+                    description: policy.description.clone(),
+                    constraint: policy.constraint.clone(),
+                })
             })
             .collect()
     }
@@ -77,8 +92,13 @@ impl PassantRewriter {
     ) -> Result<Vec<(SourceAggregate, String)>, RewriteError> {
         let mut temp_columns = Vec::new();
         let mut seen = HashSet::new();
-        for policy in &self.policies {
-            let PolicyIr::CompatAggregate(policy) = policy else {
+        for index in self.store.aggregate_policy_indices_for_scope(
+            sink,
+            &table_scope
+                .map(|scope| scope.direct_base_tables.clone())
+                .unwrap_or_default(),
+        ) {
+            let Some(PolicyIr::CompatAggregate(policy)) = self.store.policy(index) else {
                 continue;
             };
             if policy
@@ -99,7 +119,11 @@ impl PassantRewriter {
                     continue;
                 }
             }
-            for aggregate in policy_aggregate_temp_entries(
+            let constraint_expr = self
+                .store
+                .constraint_expr(index, &policy.constraint, None)?;
+            for aggregate in policy_aggregate_temp_entries_from_expr(
+                Some(&constraint_expr),
                 &policy.constraint,
                 &policy.sources,
                 policy.sink.as_deref(),

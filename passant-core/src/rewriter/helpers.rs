@@ -7,6 +7,7 @@ use sqlparser::ast::{
 
 use crate::identifiers::TableKey;
 use crate::policy::PolicyIr;
+use crate::policy_store::PolicyStore;
 use crate::threshold;
 
 use super::expr::{and_expr, projection_expr_and_name, table_factor_base_and_alias};
@@ -84,43 +85,65 @@ pub(crate) fn table_with_joins_base_tables(table: &TableWithJoins) -> HashSet<Ta
     bases
 }
 
-pub(crate) fn prune_dominated_remove_policies(
-    applicable: Vec<(&PolicyIr, PolicyApplicability)>,
-) -> Vec<(&PolicyIr, PolicyApplicability)> {
+pub(crate) fn prune_dominated_applicable_with_store<'a>(
+    store: &PolicyStore,
+    applicable: Vec<(usize, &'a PolicyIr, PolicyApplicability)>,
+) -> (Vec<(usize, &'a PolicyIr, PolicyApplicability)>, usize) {
     let mut keep = vec![true; applicable.len()];
-    let mut strongest_by_key: HashMap<threshold::ThresholdKey, usize> = HashMap::new();
+    let mut strongest_by_key: HashMap<
+        threshold::ThresholdKey,
+        (usize, threshold::ThresholdPredicate),
+    > = HashMap::new();
 
-    for (index, (policy, applicability)) in applicable.iter().enumerate() {
+    for (slot, (index, policy, applicability)) in applicable.iter().enumerate() {
         if *applicability != PolicyApplicability::Normal {
             continue;
         }
-        let Some(candidate) = threshold::threshold_predicate_from_policy(policy) else {
+        let Some(candidate) = store
+            .compiled(*index)
+            .and_then(|entry| entry.threshold.clone())
+            .or_else(|| threshold::threshold_predicate_from_policy(policy))
+        else {
             continue;
         };
-        if let Some(existing_index) = strongest_by_key.get(&candidate.key).copied() {
-            let Some(existing) =
-                threshold::threshold_predicate_from_policy(applicable[existing_index].0)
-            else {
-                continue;
-            };
+        if let Some((existing_slot, existing)) = strongest_by_key.get(&candidate.key).cloned() {
             if threshold::threshold_dominates_predicates(&existing, &candidate) {
-                keep[index] = false;
+                keep[slot] = false;
                 continue;
             }
             if threshold::threshold_dominates_predicates(&candidate, &existing) {
-                keep[existing_index] = false;
-                strongest_by_key.insert(candidate.key.clone(), index);
+                keep[existing_slot] = false;
+                strongest_by_key.insert(candidate.key.clone(), (slot, candidate));
             }
         } else {
-            strongest_by_key.insert(candidate.key.clone(), index);
+            strongest_by_key.insert(candidate.key.clone(), (slot, candidate));
         }
     }
 
-    applicable
+    let dominated = keep.iter().filter(|&&k| !k).count();
+    let kept = applicable
         .into_iter()
         .enumerate()
-        .filter(|(index, _)| keep[*index])
+        .filter(|(slot, _)| keep[*slot])
         .map(|(_, item)| item)
+        .collect();
+    (kept, dominated)
+}
+
+#[allow(dead_code)]
+pub(crate) fn prune_dominated_remove_policies(
+    applicable: Vec<(&PolicyIr, PolicyApplicability)>,
+) -> Vec<(&PolicyIr, PolicyApplicability)> {
+    let indexed = applicable
+        .into_iter()
+        .enumerate()
+        .map(|(index, (policy, applicability))| (index, policy, applicability))
+        .collect::<Vec<_>>();
+    let store = PolicyStore::default();
+    prune_dominated_applicable_with_store(&store, indexed)
+        .0
+        .into_iter()
+        .map(|(_, policy, applicability)| (policy, applicability))
         .collect()
 }
 

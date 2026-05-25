@@ -1,5 +1,10 @@
+//! Policy constraint expression building and transformation.
+
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashSet;
 
+use smallvec::SmallVec;
 use sqlparser::ast::{
     Assignment, AssignmentTarget, BinaryOperator, Expr, FunctionArg, FunctionArgExpr,
     FunctionArguments, Ident, ObjectName,
@@ -9,6 +14,8 @@ use crate::catalog::TableCatalog;
 use crate::diagnostics::RewriteError;
 use crate::identifiers::{AliasByBase, QualifiedColumn, TableKey, TableName};
 use crate::policy::{PolicyIr, Resolution};
+use crate::policy_store::{CompiledPolicy, PolicyStore};
+use crate::rewrite_stats::RewriteStatsCell;
 use crate::semiring;
 use crate::sql::{count_distinct_eq_one, scalar_subquery};
 
@@ -21,6 +28,36 @@ use super::expr::{
 };
 use super::scope::TableScope;
 use super::types::{PolicyApplicability, RewriteContext};
+
+/// Registration-time constraint AST lookup for rewrite hot paths.
+pub(crate) struct ConstraintExprCtx<'a> {
+    pub store: &'a PolicyStore,
+    pub index: usize,
+    pub stats: Option<&'a RewriteStatsCell>,
+}
+
+impl ConstraintExprCtx<'_> {
+    pub fn expr(&self, constraint: &str) -> Result<Expr, RewriteError> {
+        if let Some(ast) = self.store.clone_constraint_ast(self.index) {
+            return Ok(ast);
+        }
+        if let Some(stats) = self.stats {
+            stats.record_constraint_parse();
+        }
+        parse_expr(constraint)
+    }
+
+    pub fn scan_policy_base_expr(&self, constraint: &str) -> Result<Expr, RewriteError> {
+        if let Some(expr) = self.store.scan_ready_expr(self.index) {
+            return Ok(expr);
+        }
+        self.expr(constraint)
+    }
+
+    pub fn uses_scan_ready_expr(&self) -> bool {
+        self.store.scan_ready_expr(self.index).is_some()
+    }
+}
 
 fn referenced_source_tables(expr: &Expr, sources: &[String]) -> Vec<String> {
     let source_keys = sources
@@ -212,23 +249,9 @@ fn inverse_alias_map(alias_by_base: &AliasByBase) -> AliasByBase {
     alias_by_base.inverted()
 }
 
-pub(crate) fn join_pushdown_policy_matches(policy: &PolicyIr, joined_base: &str) -> bool {
-    matches!(
-        policy,
-        PolicyIr::CompatDfc {
-            sources,
-            required_sources,
-            sink: None,
-            on_fail: Resolution::Remove | Resolution::Kill | Resolution::Llm,
-            ..
-        } if required_sources.is_empty()
-            && sources.len() == 1
-            && sources[0].eq_ignore_ascii_case(joined_base)
-    )
-}
-
 pub(crate) fn join_pushdown_expr(
     policy: &PolicyIr,
+    constraint_ctx: &ConstraintExprCtx<'_>,
     base: &str,
     alias: Option<String>,
     catalog: &TableCatalog,
@@ -243,7 +266,8 @@ pub(crate) fn join_pushdown_expr(
             "non-DFC policy cannot be pushed into joins",
         ));
     };
-    let mut expr = parse_expr(constraint)?;
+    let scan_ready = constraint_ctx.uses_scan_ready_expr();
+    let mut expr = constraint_ctx.scan_policy_base_expr(constraint)?;
     if let Some(alias) = alias {
         rewrite_column_qualifiers(&mut expr, &AliasByBase::single(base, alias));
     }
@@ -252,8 +276,9 @@ pub(crate) fn join_pushdown_expr(
         policy.sources(),
         &RewriteContext::default(),
         &AliasByBase::default(),
+        scan_ready,
     )?;
-    if let Some(guard) = unique_column_guard_from_constraint(constraint, catalog) {
+    if let Some(guard) = unique_column_guard_from_constraint(constraint, catalog, constraint_ctx) {
         expr = and_expr(guard, expr);
     }
     if *on_fail == Resolution::Kill {
@@ -269,9 +294,13 @@ pub(crate) fn scan_policy_expr(
     sources: &[String],
     context: &RewriteContext,
     alias_by_base: &AliasByBase,
+    scan_ready: bool,
 ) -> Result<Expr, RewriteError> {
     let non_distributive = non_distributive_aggregates(&expr)?;
     if non_distributive.is_empty() {
+        if scan_ready {
+            return Ok(expr);
+        }
         return transform_scan_aggregates(expr);
     }
     if context.sink.is_none() && !sources.is_empty() && expr_is_aggregate_only(&expr) {
@@ -332,16 +361,32 @@ fn scalar_policy_subquery_expr(expr: Expr, sources: &[String]) -> Result<Expr, R
     Ok(scalar_subquery(expr, &source))
 }
 
-pub(crate) fn policy_applicability(
+pub(crate) fn compiled_policy_applicability(
+    compiled: &CompiledPolicy,
+    tables: &HashSet<TableKey>,
+    sink: Option<&TableKey>,
+    allow_partial_source_visibility: bool,
+) -> Option<PolicyApplicability> {
+    policy_applicability_from_keys(
+        &compiled.policy,
+        tables,
+        sink,
+        &compiled.source_keys,
+        &compiled.required_source_keys,
+        allow_partial_source_visibility,
+    )
+}
+
+fn policy_applicability_from_keys(
     policy: &PolicyIr,
     tables: &HashSet<TableKey>,
-    sink: Option<&str>,
+    sink: Option<&TableKey>,
+    source_keys: &SmallVec<[TableKey; 4]>,
+    required_source_keys: &SmallVec<[TableKey; 4]>,
     allow_partial_source_visibility: bool,
 ) -> Option<PolicyApplicability> {
     let sink_matches = match policy.sink() {
-        Some(policy_sink) => {
-            sink.is_some_and(|query_sink| TableKey::new(query_sink) == TableKey::new(policy_sink))
-        }
+        Some(_) => compiled_sink_matches(policy, sink),
         None => true,
     };
     if !sink_matches {
@@ -349,42 +394,32 @@ pub(crate) fn policy_applicability(
     }
 
     if policy.sink().is_some() {
-        let required_sources = policy
-            .required_sources()
+        let required_sources = required_source_keys.iter().collect::<HashSet<_>>();
+        let non_required_sources_match = source_keys
             .iter()
-            .map(|source| TableKey::new(source))
-            .collect::<HashSet<_>>();
-        let non_required_sources_match = policy.sources().iter().all(|source| {
-            let source_key = TableKey::new(source);
-            required_sources.contains(&source_key) || tables.contains(&source_key)
-        });
+            .all(|source_key| required_sources.contains(source_key) || tables.contains(source_key));
         if !non_required_sources_match {
             return None;
         }
-        if policy
-            .required_sources()
+        if required_source_keys
             .iter()
-            .any(|source| !tables.contains(&TableKey::new(source)))
+            .any(|source| !tables.contains(source))
         {
             return Some(PolicyApplicability::RequiredSourceMissing);
         }
         return Some(PolicyApplicability::Normal);
     }
 
-    policy
-        .sources()
+    source_keys
         .iter()
-        .all(|source| tables.contains(&TableKey::new(source)))
+        .all(|source| tables.contains(source))
         .then_some(PolicyApplicability::Normal)
         .or_else(|| {
             if allow_partial_source_visibility
                 && policy.sink().is_none()
-                && policy.required_sources().is_empty()
-                && policy.sources().len() > 1
-                && policy
-                    .sources()
-                    .iter()
-                    .any(|source| tables.contains(&TableKey::new(source)))
+                && required_source_keys.is_empty()
+                && source_keys.len() > 1
+                && source_keys.iter().any(|source| tables.contains(source))
             {
                 Some(PolicyApplicability::Normal)
             } else {
@@ -393,6 +428,14 @@ pub(crate) fn policy_applicability(
         })
 }
 
+fn compiled_sink_matches(policy: &PolicyIr, sink: Option<&TableKey>) -> bool {
+    let Some(policy_sink) = policy.sink() else {
+        return false;
+    };
+    sink.is_some_and(|query_sink| query_sink.as_str() == TableKey::new(policy_sink).as_str())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_compat_dfc_filter_expr(
     sources: &[String],
     constraint: &str,
@@ -401,6 +444,7 @@ pub(crate) fn build_compat_dfc_filter_expr(
     context: &RewriteContext,
     table_scope: &TableScope,
     is_aggregation: bool,
+    constraint_ctx: &ConstraintExprCtx<'_>,
 ) -> Result<Expr, RewriteError> {
     if applicability == PolicyApplicability::RequiredSourceMissing {
         return Ok(bool_literal(false));
@@ -421,6 +465,7 @@ pub(crate) fn build_compat_dfc_filter_expr(
                         &base,
                         alias,
                         is_aggregation,
+                        constraint_ctx,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -436,9 +481,15 @@ pub(crate) fn build_compat_dfc_filter_expr(
                 .alias_for(&TableName::parse(&base))
                 .unwrap_or(sources[0].as_str()),
             is_aggregation,
+            constraint_ctx,
         );
     }
-    let mut expr = parse_expr(constraint)?;
+    let scan_ready = !is_aggregation && constraint_ctx.uses_scan_ready_expr();
+    let mut expr = if is_aggregation {
+        constraint_ctx.expr(constraint)?
+    } else {
+        constraint_ctx.scan_policy_base_expr(constraint)?
+    };
     if let Some(sink) = &context.sink {
         expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
         expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
@@ -448,7 +499,13 @@ pub(crate) fn build_compat_dfc_filter_expr(
     }
     rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
     if !is_aggregation {
-        expr = scan_policy_expr(expr, sources, context, &table_scope.alias_by_base)?;
+        expr = scan_policy_expr(
+            expr,
+            sources,
+            context,
+            &table_scope.alias_by_base,
+            scan_ready,
+        )?;
     }
     Ok(expr)
 }
@@ -456,8 +513,9 @@ pub(crate) fn build_compat_dfc_filter_expr(
 pub(crate) fn unique_column_guard_from_constraint(
     constraint: &str,
     catalog: &TableCatalog,
+    constraint_ctx: &ConstraintExprCtx<'_>,
 ) -> Option<Expr> {
-    let expr = parse_expr(constraint).ok()?;
+    let expr = constraint_ctx.expr(constraint).ok()?;
     let column = extract_simple_column_comparison(&expr)?;
     if !catalog.is_unique_column(column.table.as_str(), column.column.as_str()) {
         return None;
@@ -486,11 +544,12 @@ pub(crate) fn build_pgn_over_filter_expr(
     applicability: PolicyApplicability,
     context: &RewriteContext,
     table_scope: &TableScope,
+    constraint_ctx: &ConstraintExprCtx<'_>,
 ) -> Result<Expr, RewriteError> {
     if applicability == PolicyApplicability::RequiredSourceMissing {
         return Ok(bool_literal(false));
     }
-    let mut expr = parse_expr(constraint)?;
+    let mut expr = constraint_ctx.expr(constraint)?;
     if let Some(sink) = &context.sink {
         expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
         expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
@@ -589,6 +648,7 @@ pub(crate) fn apply_update_resolution(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_single_alias_compat_dfc_filter_expr(
     constraint: &str,
     sink_alias: &Option<String>,
@@ -597,9 +657,15 @@ pub(crate) fn build_single_alias_compat_dfc_filter_expr(
     base: &str,
     alias: &str,
     is_aggregation: bool,
+    constraint_ctx: &ConstraintExprCtx<'_>,
 ) -> Result<Expr, RewriteError> {
     let alias_map = AliasByBase::single(base, alias);
-    let mut expr = parse_expr(constraint)?;
+    let scan_ready = !is_aggregation && constraint_ctx.uses_scan_ready_expr();
+    let mut expr = if is_aggregation {
+        constraint_ctx.expr(constraint)?
+    } else {
+        constraint_ctx.scan_policy_base_expr(constraint)?
+    };
     if let Some(sink) = &context.sink {
         expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
         expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
@@ -609,7 +675,7 @@ pub(crate) fn build_single_alias_compat_dfc_filter_expr(
     }
     rewrite_column_qualifiers(&mut expr, &alias_map);
     if !is_aggregation {
-        expr = scan_policy_expr(expr, sources, context, &alias_map)?;
+        expr = scan_policy_expr(expr, sources, context, &alias_map, scan_ready)?;
     }
     Ok(expr)
 }
@@ -621,11 +687,12 @@ pub(crate) fn build_invalidate_projection_expr(
     applicability: PolicyApplicability,
     context: &RewriteContext,
     table_scope: &TableScope,
+    constraint_ctx: &ConstraintExprCtx<'_>,
 ) -> Result<Expr, RewriteError> {
     if applicability == PolicyApplicability::RequiredSourceMissing {
         return Ok(bool_literal(false));
     }
-    let mut expr = parse_expr(constraint)?;
+    let mut expr = constraint_ctx.expr(constraint)?;
     if let Some(sink) = &context.sink {
         expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
         expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);

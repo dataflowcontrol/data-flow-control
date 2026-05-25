@@ -9,6 +9,7 @@ use crate::identifiers::{TableKey, column_name_from_expr, table_name_from_column
 use crate::parser::parse_query;
 use crate::partial_push::ExtraDfcFilter;
 use crate::policy::{PolicyIr, Resolution};
+use crate::policy_store::MultiSourceLookupMode;
 use crate::sql::{
     alias_expr, binary_comparison, function_call, grouped_select, qualified_column,
     query_from_select, unqualify_table_refs,
@@ -19,7 +20,7 @@ use super::expr::{
     add_filter, first_function_expr, is_aggregate_name, parse_expr, projection_expr_and_name,
 };
 use super::helpers::{flatten_and, rebuild_and};
-use super::projection::extract_policy_comparison;
+use super::projection::extract_policy_comparison_for_policy;
 use super::scope::TableScope;
 use super::types::PassantRewriter;
 
@@ -77,11 +78,10 @@ fn remove_join_equality_from_where(
 }
 
 fn exists_subquery_aggregate_projection(
-    constraint: &str,
+    constraint: &Expr,
     policy_table: &str,
 ) -> Result<(SelectItem, String), RewriteError> {
-    let expr = parse_expr(constraint)?;
-    let Expr::BinaryOp { left, .. } = expr else {
+    let Expr::BinaryOp { left, .. } = constraint else {
         return Err(RewriteError::unsupported_statement(
             "EXISTS policy constraint must be a comparison",
         ));
@@ -136,13 +136,12 @@ fn build_exists_join_subquery_sql(
     Ok(query_from_select(select).to_string())
 }
 
-fn exists_subquery_having_expr(constraint: &str, agg_alias: &str) -> Result<Expr, RewriteError> {
-    let expr = parse_expr(constraint)?;
+fn exists_subquery_having_expr(constraint: &Expr, agg_alias: &str) -> Result<Expr, RewriteError> {
     let Expr::BinaryOp {
         mut left,
         op,
         right,
-    } = expr
+    } = constraint.clone()
     else {
         return Err(RewriteError::unsupported_statement(
             "EXISTS policy constraint must be a comparison",
@@ -200,31 +199,40 @@ impl PassantRewriter {
                 continue;
             };
             let subquery_tables = select_direct_base_tables(in_select);
-            let Some((policy_index, constraint)) =
-                self.policies
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, policy)| {
-                        let PolicyIr::CompatDfc {
-                            sources,
-                            constraint,
-                            on_fail: Resolution::Remove,
-                            ..
-                        } = policy
-                        else {
-                            return None;
-                        };
-                        if !sources.iter().any(|source| {
-                            let key = TableKey::new(source);
-                            subquery_tables.contains(&key) && !main_tables.contains(&key)
-                        }) {
-                            return None;
-                        }
-                        Some((index, constraint.clone()))
-                    })
+            let mut candidate_tables = main_tables.clone();
+            candidate_tables.extend(subquery_tables.iter().cloned());
+            let Some((policy_index, constraint)) = self
+                .store
+                .candidate_scope_lookup(&candidate_tables, None, MultiSourceLookupMode::Subset)
+                .iter()
+                .find_map(|index| {
+                    let policy = self.store.policy(index)?;
+                    let PolicyIr::CompatDfc {
+                        sources,
+                        constraint,
+                        on_fail: Resolution::Remove,
+                        ..
+                    } = policy
+                    else {
+                        return None;
+                    };
+                    if !sources.iter().any(|source| {
+                        let key = TableKey::new(source);
+                        subquery_tables.contains(&key) && !main_tables.contains(&key)
+                    }) {
+                        return None;
+                    }
+                    Some((index, constraint.to_string()))
+                })
             else {
                 remaining.push(conjunct);
                 continue;
+            };
+
+            let constraint_ctx = crate::rewriter::policy_expr::ConstraintExprCtx {
+                store: &self.store,
+                index: policy_index,
+                stats: None,
             };
 
             let Some(join_key_col) = in_select
@@ -246,12 +254,22 @@ impl PassantRewriter {
 
             let mut subquery_body = subquery.clone();
             if let SetExpr::Select(sub_select) = subquery_body.body.as_mut() {
-                let (left, threshold, op) = extract_policy_comparison(&constraint)?;
-                let metric_expr = if let Ok(Expr::Function(function)) = parse_expr(&left) {
-                    if let Some(arg) = first_function_expr(&function) {
-                        function_call("max", vec![arg.clone()])
+                let (left, threshold, op) = extract_policy_comparison_for_policy(
+                    &self.store,
+                    policy_index,
+                    &constraint,
+                    None,
+                )?;
+                let constraint_expr = constraint_ctx.expr(&constraint)?;
+                let metric_expr = if let Expr::BinaryOp { left, .. } = &constraint_expr {
+                    if let Expr::Function(function) = left.as_ref() {
+                        if let Some(arg) = first_function_expr(function) {
+                            function_call("max", vec![arg.clone()])
+                        } else {
+                            parse_expr("max(l_quantity)")?
+                        }
                     } else {
-                        parse_expr("max(l_quantity)")?
+                        left.as_ref().clone()
                     }
                 } else {
                     parse_expr(&left)?
@@ -320,25 +338,28 @@ impl PassantRewriter {
                 continue;
             };
             let subquery_tables = select_direct_base_tables(exists_select);
-            let Some((policy_index, policy_table)) =
-                self.policies
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, policy)| {
-                        let PolicyIr::CompatDfc {
-                            sources,
-                            on_fail: Resolution::Remove,
-                            ..
-                        } = policy
-                        else {
-                            return None;
-                        };
-                        let policy_source = sources.iter().find(|source| {
-                            let key = TableKey::new(source);
-                            subquery_tables.contains(&key) && !main_tables.contains(&key)
-                        })?;
-                        Some((index, TableKey::new(policy_source).as_str().to_string()))
-                    })
+            let mut candidate_tables = main_tables.clone();
+            candidate_tables.extend(subquery_tables.iter().cloned());
+            let Some((policy_index, policy_table)) = self
+                .store
+                .candidate_scope_lookup(&candidate_tables, None, MultiSourceLookupMode::Subset)
+                .iter()
+                .find_map(|index| {
+                    let policy = self.store.policy(index)?;
+                    let PolicyIr::CompatDfc {
+                        sources,
+                        on_fail: Resolution::Remove,
+                        ..
+                    } = policy
+                    else {
+                        return None;
+                    };
+                    let policy_source = sources.iter().find(|source| {
+                        let key = TableKey::new(source);
+                        subquery_tables.contains(&key) && !main_tables.contains(&key)
+                    })?;
+                    Some((index, TableKey::new(policy_source).as_str().to_string()))
+                })
             else {
                 remaining.push(conjunct);
                 continue;
@@ -355,12 +376,14 @@ impl PassantRewriter {
                 continue;
             };
 
-            let PolicyIr::CompatDfc { constraint, .. } = &self.policies[policy_index] else {
+            let Some(PolicyIr::CompatDfc { constraint, .. }) = self.store.policy(policy_index)
+            else {
                 remaining.push(conjunct);
                 continue;
             };
+            let constraint_expr = self.store.constraint_expr(policy_index, constraint, None)?;
             let (agg_projection, agg_alias) =
-                exists_subquery_aggregate_projection(constraint, &policy_table)?;
+                exists_subquery_aggregate_projection(&constraint_expr, &policy_table)?;
             let other_where =
                 remove_join_equality_from_where(subquery_where, &subquery_col, &outer_col);
             let join_subquery_sql = build_exists_join_subquery_sql(
@@ -403,7 +426,7 @@ impl PassantRewriter {
                 join_operator: JoinOperator::Inner(JoinConstraint::On(join_on)),
             });
 
-            let having_expr = exists_subquery_having_expr(constraint, &agg_alias)?;
+            let having_expr = exists_subquery_having_expr(&constraint_expr, &agg_alias)?;
             add_filter(select, having_expr, true)?;
             handled.insert(policy_index);
         }

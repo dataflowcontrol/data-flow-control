@@ -3,14 +3,10 @@ use std::collections::HashSet;
 use sqlparser::ast::{BinaryOperator, Expr, GroupByExpr, Ident, Select, SelectItem};
 
 use crate::diagnostics::RewriteError;
-use crate::policy::{PolicyIr, Resolution};
 
 use super::PassantRewriter;
-use super::expr::{
-    apply_resolution, expr_contains_aggregate, parse_expr, projected_column_name,
-    projection_expr_and_name,
-};
-use super::policy_expr::{build_compat_dfc_filter_expr, policy_applicability};
+use super::expr::{expr_contains_aggregate, projected_column_name, projection_expr_and_name};
+use super::plan::{apply_policy_resolution_actions, plan_policy_filter_actions};
 use super::scope::TableScope;
 use super::types::RewriteContext;
 use crate::sql::sanitize_projection_alias;
@@ -137,12 +133,11 @@ pub(crate) fn group_by_join_specs(select: &Select) -> Result<Vec<(String, Expr)>
     Ok(specs)
 }
 
-pub(crate) fn extract_policy_comparison(
-    constraint: &str,
+pub(crate) fn extract_policy_comparison_from_expr(
+    expr: &Expr,
 ) -> Result<(String, String, &'static str), RewriteError> {
-    let expr = parse_expr(constraint)?;
     let (left, op, right) = match expr {
-        Expr::BinaryOp { left, op, right } => (left, op, right),
+        Expr::BinaryOp { left, op, right } => (left.as_ref(), op, right.as_ref()),
         _ => {
             return Err(RewriteError::unsupported_statement(
                 "partial-push policy constraint must be a comparison",
@@ -165,55 +160,34 @@ pub(crate) fn extract_policy_comparison(
     Ok((left.to_string(), right.to_string(), op_str))
 }
 
+pub(crate) fn extract_policy_comparison_for_policy(
+    store: &crate::policy_store::PolicyStore,
+    index: usize,
+    constraint: &str,
+    stats: Option<&crate::rewrite_stats::RewriteStatsCell>,
+) -> Result<(String, String, &'static str), RewriteError> {
+    let expr = store.constraint_expr(index, constraint, stats)?;
+    extract_policy_comparison_from_expr(&expr)
+}
+
 pub(crate) fn apply_policy_having(
     rewriter: &PassantRewriter,
     select: &mut Select,
     skip_indices: &HashSet<usize>,
 ) -> Result<(), RewriteError> {
     let table_scope = TableScope::from_select(select);
-    let applicable = rewriter
-        .policies()
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !skip_indices.contains(index))
-        .filter_map(|(_, policy)| {
-            policy_applicability(policy, &table_scope.direct_base_tables, None, false)
-                .map(|applicability| (policy, applicability))
-        })
-        .collect::<Vec<_>>();
-
-    for (policy, applicability) in applicable {
-        let PolicyIr::CompatDfc {
-            sources,
-            constraint,
-            on_fail,
-            sink_alias,
-            description,
-            ..
-        } = policy
-        else {
-            continue;
-        };
-        if !matches!(
-            on_fail,
-            Resolution::Remove
-                | Resolution::Kill
-                | Resolution::Llm
-                | Resolution::Invalidate
-                | Resolution::InvalidateMessage
-        ) {
-            continue;
-        }
-        let expr = build_compat_dfc_filter_expr(
-            sources,
-            constraint,
-            &sink_alias.clone(),
-            applicability,
-            &RewriteContext::default(),
-            &table_scope,
-            true,
-        )?;
-        apply_resolution(select, expr, *on_fail, description.as_deref(), true, None)?;
-    }
-    Ok(())
+    let context = RewriteContext::default();
+    let (actions, _) = plan_policy_filter_actions(
+        rewriter.policy_store(),
+        rewriter.catalog(),
+        None,
+        &table_scope.direct_base_tables,
+        &table_scope,
+        None,
+        &context,
+        true,
+        skip_indices,
+        &HashSet::new(),
+    )?;
+    apply_policy_resolution_actions(select, &actions, true)
 }

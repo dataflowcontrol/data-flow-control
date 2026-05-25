@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::explain::{ExplainStep, RewriteExplanation};
@@ -5,7 +7,7 @@ use crate::identifiers::TableKey;
 use crate::ir::QueryIr;
 use crate::optimizer::{CandidatePlan, RewriteOptimizer, RewriteStrategy};
 use crate::policy::PolicyIr;
-use crate::rewriter::PassantRewriter;
+use crate::rewriter::{PassantRewriter, resolve_scope_policies};
 use crate::semiring;
 use crate::threshold;
 
@@ -130,12 +132,44 @@ impl PassantPlanner {
             });
         }
 
+        let policy_plan = {
+            let rewriter = PassantRewriter::from_policies(policies.to_vec());
+            let visible_keys = result
+                .scope
+                .visible_tables
+                .iter()
+                .map(|table| TableKey::new(table))
+                .collect::<HashSet<_>>();
+            let (_, diagnostics) = resolve_scope_policies(
+                rewriter.policy_store(),
+                &visible_keys,
+                None,
+                false,
+                &HashSet::new(),
+                &HashSet::new(),
+            );
+            steps.push(ExplainStep {
+                stage: "policy_plan".into(),
+                detail: format!(
+                    "total={}; candidates={}; applicable={}; dominated={}",
+                    rewriter.policy_store().active_count(),
+                    diagnostics.candidate_policies,
+                    diagnostics.applicable_policies,
+                    diagnostics.dominated_policies
+                ),
+            });
+            Some(diagnostics)
+        };
+
         RewriteExplanation {
             scope: result.scope,
             applicable_policies: result.applicable_policies,
             candidates: result.candidates,
             chosen: result.chosen,
             steps,
+            policy_plan,
+            statement_plan: None,
+            rewrite_stats: None,
         }
     }
 
@@ -266,6 +300,7 @@ impl PassantPlanner {
             query.raw_sql(),
             crate::rewriter::RewriteOptions {
                 use_partial_push: chosen == crate::optimizer::RewriteStrategy::PartialPush,
+                collect_stats: false,
             },
         );
         let (rewritten_sql, rewrite_error) = match rewrite_result {

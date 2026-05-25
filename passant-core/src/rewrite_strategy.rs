@@ -4,12 +4,15 @@
 //! Partial-Push is used only for non-semiring policy constraints.
 
 use sqlparser::ast::{Query, SetExpr, Statement};
+use std::time::Instant;
 
 use crate::optimizer::RewriteStrategy;
 use crate::parser::parse_query;
-use crate::policy::PolicyIr;
+use crate::policy_store::PolicyStore;
+use crate::query_analysis::StatementAnalysis;
 use crate::rewriter::{PassantRewriter, RewriteError, RewriteOptions};
 use crate::semiring::SemiringAnalysis;
+use crate::statement_tables::{statement_sink_key, statement_table_keys};
 
 /// Planner-visible strategy label (re-exported for engine implementations).
 pub use crate::optimizer::RewriteStrategy as StrategyKind;
@@ -49,7 +52,9 @@ pub struct RewriteRequest<'a> {
     pub options: RewriteOptions,
     pub kind: StatementKind,
     pub select: Option<SelectShape>,
+    pub candidate_count: usize,
     pub semiring: SemiringAnalysis,
+    pub analysis: StatementAnalysis,
 }
 
 impl<'a> RewriteRequest<'a> {
@@ -57,16 +62,50 @@ impl<'a> RewriteRequest<'a> {
         original_sql: &'a str,
         statement: &'a Statement,
         options: RewriteOptions,
-        policies: &[PolicyIr],
+        store: &PolicyStore,
     ) -> Self {
+        Self::analyze_with_stats(original_sql, statement, options, store, None)
+    }
+
+    pub(crate) fn analyze_with_stats(
+        original_sql: &'a str,
+        statement: &'a Statement,
+        options: RewriteOptions,
+        store: &PolicyStore,
+        stats: Option<&crate::rewrite_stats::RewriteStatsCell>,
+    ) -> Self {
+        let lookup_start = Instant::now();
+        let tables = statement_table_keys(statement);
+        let sink = statement_sink_key(statement);
+        let candidate_lookup = store.candidate_scope_lookup(
+            &tables,
+            sink.as_ref(),
+            crate::policy_store::MultiSourceLookupMode::Subset,
+        );
+        let mut candidate_count = 0usize;
+        let semiring = store
+            .semiring_for_candidate_iter(candidate_lookup.iter().inspect(|_| candidate_count += 1));
+        if let Some(stats) = stats {
+            stats.add_elapsed_candidate_lookup(lookup_start.elapsed());
+        }
+
+        let analysis_start = Instant::now();
+        let analysis = StatementAnalysis::from_statement_with_stats(statement, stats);
         let (kind, select) = classify_statement(statement);
+        if let Some(stats) = stats {
+            stats.add_elapsed_analysis(analysis_start.elapsed());
+            stats.set_query_nodes(analysis.select_scopes.len());
+        }
+
         Self {
             original_sql,
             statement,
             options,
             kind,
             select,
-            semiring: crate::semiring::analyze_policies(policies),
+            semiring,
+            candidate_count,
+            analysis,
         }
     }
 
@@ -111,20 +150,46 @@ impl RewritePipeline {
         sql: &str,
         options: RewriteOptions,
     ) -> Result<String, RewriteError> {
+        let collect_stats = options.collect_stats;
+        if collect_stats {
+            rewriter.stats.reset(rewriter.policy_store().active_count());
+        }
+        rewriter.statement_summary.reset();
+
+        let parse_start = Instant::now();
         let statement = parse_query(sql)?;
-        let request = RewriteRequest::analyze(sql, &statement, options, rewriter.policies());
+        if collect_stats {
+            rewriter.stats.add_elapsed_parse(parse_start.elapsed());
+        }
+
+        let stats = collect_stats.then_some(&rewriter.stats);
+        let request = RewriteRequest::analyze_with_stats(
+            sql,
+            &statement,
+            options,
+            rewriter.policy_store(),
+            stats,
+        );
+
+        let rewrite_start = Instant::now();
         for engine in &self.engines {
             if !engine.matches(rewriter, &request) {
                 continue;
             }
             match engine.rewrite(rewriter, &request)? {
                 RewriteAttempt::Applied(rewritten) => {
+                    if collect_stats {
+                        rewriter.stats.add_elapsed_rewrite(rewrite_start.elapsed());
+                    }
                     return Ok(rewritten);
                 }
                 RewriteAttempt::Skipped => continue,
             }
         }
-        if !rewriter.policies().is_empty() && request.kind == StatementKind::Passthrough {
+        if collect_stats {
+            rewriter.stats.add_elapsed_rewrite(rewrite_start.elapsed());
+        }
+        if rewriter.has_registered_policies() && request.kind == StatementKind::Passthrough {
             return Err(RewriteError::unsupported_statement(format!(
                 "unsupported statement form with registered policies: {}",
                 crate::parser::statement_label(request.statement)
@@ -215,7 +280,7 @@ mod tests {
             "SELECT category, sum(amount) FROM foo GROUP BY category",
             &statement,
             RewriteOptions::default(),
-            rewriter.policies(),
+            rewriter.policy_store(),
         );
         assert_eq!(request.kind, StatementKind::SelectQuery);
         assert!(request.semiring.all_distributive);
@@ -238,7 +303,7 @@ mod tests {
             "SELECT id FROM foo",
             &statement,
             RewriteOptions::default(),
-            rewriter.policies(),
+            rewriter.policy_store(),
         );
         assert!(!request.semiring.all_distributive);
         assert!(!FullPushEngine.matches(&rewriter, &request));

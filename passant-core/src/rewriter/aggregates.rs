@@ -6,6 +6,7 @@ use sqlparser::ast::{
 };
 
 use crate::diagnostics::RewriteError;
+use crate::policy_store::PolicyStore;
 use crate::sql::{
     alias_expr, and_exprs, binary_comparison, bool_literal, case_when, duckdb_array, function_call,
     grouped_select, int_literal, is_not_null, null_literal, object_name, passant_agg_temp_column,
@@ -238,6 +239,16 @@ pub(crate) fn aggregate_finalize_sql(
     dimensions: &[String],
 ) -> Result<(String, String), RewriteError> {
     let constraint_expr = parse_expr(constraint)?;
+    aggregate_finalize_sql_from_expr(sink_table, constraint, &constraint_expr, dimensions)
+}
+
+pub(crate) fn aggregate_finalize_sql_from_expr(
+    sink_table: &str,
+    _constraint: &str,
+    constraint_expr: &Expr,
+    dimensions: &[String],
+) -> Result<(String, String), RewriteError> {
+    let constraint_expr = constraint_expr.clone();
 
     if dimensions.is_empty() {
         let finalize = statement_from_query(query_from_select(grouped_select(
@@ -400,14 +411,22 @@ fn build_finalize_invalidate_update(
     })
 }
 
-pub(crate) fn rewrite_source_aggregates_for_finalize(
+pub(crate) fn rewrite_source_aggregates_for_finalize_from_expr(
+    constraint_expr: Option<&Expr>,
     constraint: &str,
     sources: &[String],
     aggregate_temp_columns: &[(SourceAggregate, String)],
-) -> Result<String, RewriteError> {
-    let mut expr = parse_expr(constraint)?;
+) -> Result<(String, Expr), RewriteError> {
+    let mut expr = match constraint_expr {
+        Some(expr) => expr.clone(),
+        None => parse_expr(constraint)?,
+    };
+    let aggregates = match constraint_expr {
+        Some(expr) => constraint_aggregates_from_expr(expr, constraint, sources, None)?,
+        None => constraint_aggregates(constraint, sources, None)?,
+    };
     let mut replacements = Vec::new();
-    for aggregate in source_aggregates(constraint, sources)? {
+    for aggregate in aggregates {
         if let Some((_, temp_name)) = aggregate_temp_columns
             .iter()
             .find(|(candidate, _)| candidate.sql == aggregate.sql)
@@ -423,14 +442,7 @@ pub(crate) fn rewrite_source_aggregates_for_finalize(
         }
     }
     expr = replace_expr_subtrees(expr, &replacements);
-    Ok(expr.to_string())
-}
-
-fn source_aggregates(
-    constraint: &str,
-    sources: &[String],
-) -> Result<Vec<SourceAggregate>, RewriteError> {
-    constraint_aggregates(constraint, sources, None)
+    Ok((expr.to_string(), expr))
 }
 
 pub(crate) fn constraint_aggregates(
@@ -439,17 +451,30 @@ pub(crate) fn constraint_aggregates(
     sink: Option<&str>,
 ) -> Result<Vec<SourceAggregate>, RewriteError> {
     let expr = parse_expr(constraint)?;
-    let mut aggregates = Vec::new();
-    collect_constraint_aggregates(&expr, constraint, sources, sink, &mut aggregates);
-    Ok(aggregates)
+    constraint_aggregates_from_expr(&expr, constraint, sources, sink)
 }
 
-pub(crate) fn policy_aggregate_temp_entries(
+pub(crate) fn constraint_aggregates_from_expr(
+    expr: &Expr,
     constraint: &str,
     sources: &[String],
     sink: Option<&str>,
 ) -> Result<Vec<SourceAggregate>, RewriteError> {
-    let all = constraint_aggregates(constraint, sources, sink)?;
+    let mut aggregates = Vec::new();
+    collect_constraint_aggregates(expr, constraint, sources, sink, &mut aggregates);
+    Ok(aggregates)
+}
+
+pub(crate) fn policy_aggregate_temp_entries_from_expr(
+    constraint_expr: Option<&Expr>,
+    constraint: &str,
+    sources: &[String],
+    sink: Option<&str>,
+) -> Result<Vec<SourceAggregate>, RewriteError> {
+    let all = match constraint_expr {
+        Some(expr) => constraint_aggregates_from_expr(expr, constraint, sources, sink)?,
+        None => constraint_aggregates(constraint, sources, sink)?,
+    };
     let mut ordered = Vec::new();
     for source in sources {
         for aggregate in &all {
@@ -736,5 +761,50 @@ fn expr_references_any_source(expr: &Expr, sources: &[String]) -> bool {
             false
         }
         _ => false,
+    }
+}
+
+pub(crate) fn finalize_policy_scan_ready(store: &mut PolicyStore, index: usize) {
+    let Some(compiled) = store.compiled(index) else {
+        return;
+    };
+    let Some(constraint) = compiled.constraint.as_ref() else {
+        return;
+    };
+    if !compiled.semiring.all_distributive || compiled.semiring.aggregate_count == 0 {
+        return;
+    }
+    if let Ok(scan_ready) = transform_scan_aggregates(constraint.ast.clone()) {
+        store.set_scan_ready_expr(index, scan_ready);
+    }
+}
+
+#[cfg(test)]
+mod scan_ready_tests {
+    use super::finalize_policy_scan_ready;
+    use crate::policy::{PolicyIr, Resolution};
+    use crate::policy_store::PolicyStore;
+
+    fn remove_policy(source: &str, constraint: &str) -> PolicyIr {
+        PolicyIr::CompatDfc {
+            sources: vec![source.to_string()],
+            required_sources: Vec::new(),
+            dimensions: Vec::new(),
+            sink: None,
+            sink_alias: None,
+            constraint: constraint.to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn finalize_policy_scan_ready_populates_scan_ready_expr() {
+        let mut store = PolicyStore::default();
+        let index = store.register(remove_policy("orders", "max(orders.amount) > 1"));
+
+        finalize_policy_scan_ready(&mut store, index);
+
+        assert!(store.scan_ready_expr(index).is_some());
     }
 }

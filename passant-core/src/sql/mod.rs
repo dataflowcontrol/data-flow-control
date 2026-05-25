@@ -1,9 +1,12 @@
 //! AST-backed SQL construction helpers. Rendering happens at the rewrite boundary.
 
+pub mod ast_stats;
 pub mod builders;
+pub mod columns;
 pub mod expr;
 pub mod parse;
 
+pub use ast_stats::{count_expr, count_query, count_select, count_set_expr, count_statement};
 pub use parse::parse_projection_expr;
 
 pub use builders::{
@@ -16,4 +19,5 @@ pub use builders::{
     sanitize_projection_alias, scalar_subquery, statement_from_query, string_concat,
     string_literal, table_alias, table_factor, with_ctes, wrap_table_with_filter,
 };
+pub use columns::collect_qualified_columns_from_expr;
 pub use expr::{rename_table_refs, replace_expr_subtrees, unqualify_table_refs};
