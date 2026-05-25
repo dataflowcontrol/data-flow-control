@@ -205,7 +205,7 @@ def test_explain_rewrite_uses_registered_policies():
         )
     )
 
-    explanation = json.loads(rewriter.explain_rewrite("SELECT id FROM foo"))
+    explanation = rewriter.explain_rewrite("SELECT id FROM foo")
     assert explanation["chosen"]["rewritten_sql"] == "SELECT id FROM foo WHERE foo.id > 1"
     assert explanation["applicable_policies"][0]["CompatDfc"]["sources"] == ["foo"]
 
@@ -222,9 +222,7 @@ def test_explain_rewrite_reports_full_push_strategy_for_join():
         )
     )
 
-    explanation = json.loads(
-        rewriter.explain_rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-    )
+    explanation = rewriter.explain_rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
     assert explanation["chosen"]["strategy"] == "FullPush"
     assert explanation["scope"]["visible_tables"] == ["foo", "bar"]
 
@@ -241,9 +239,7 @@ def test_explain_rewrite_reports_non_distributive_policy_aggregate():
         )
     )
 
-    explanation = json.loads(
-        rewriter.explain_rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-    )
+    explanation = rewriter.explain_rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
     assert explanation["chosen"]["strategy"] == "PartialPush"
     assert explanation["scope"]["policy_aggregate_count"] == 1
     assert explanation["scope"]["policy_aggregates_distributive"] is False
@@ -352,9 +348,7 @@ def test_explain_rewrite_reports_unsupported_rewrite_error():
         )
     )
 
-    explanation = json.loads(
-        rewriter.explain_rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo")
-    )
+    explanation = rewriter.explain_rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo")
     assert explanation["scope"]["requires_source_set_annotations"] is True
     assert explanation["chosen"]["rewrite_error"] is None
     assert explanation["chosen"]["rewritten_sql"] == (
@@ -374,8 +368,8 @@ def test_explain_rewrite_reports_source_set_error():
         )
     )
 
-    explanation = json.loads(
-        rewriter.explain_rewrite("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
+    explanation = rewriter.explain_rewrite(
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id"
     )
     assert explanation["scope"]["requires_source_set_annotations"] is True
     assert explanation["chosen"]["rewrite_error"] is None

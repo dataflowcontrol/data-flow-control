@@ -4,11 +4,12 @@ from typing import Any
 
 import duckdb
 
+from ..catalog import build_catalog_snapshot
 from .base import Capabilities
 
 
 def quote_sql_identifier(name: str) -> str:
-    """Quote a DuckDB table identifier, including schema-qualified names."""
+    """Quote a SQL identifier, including schema-qualified names."""
     name = name.strip()
     if not name:
         raise ValueError("Table name must be non-empty")
@@ -25,7 +26,12 @@ def quote_sql_identifier(name: str) -> str:
 
 class DuckDBAdapter:
     dialect = "duckdb"
-    capabilities = Capabilities(supports_kill=True)
+    capabilities = Capabilities(
+        exception_udf=True,
+        update_from=True,
+        aggregate_filter=True,
+        cte_in_insert=True,
+    )
 
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self._conn = conn
@@ -60,7 +66,12 @@ class DuckDBAdapter:
                 "columns": list(column_types.keys()),
                 "types": column_types,
             }
-        return {"tables": tables, "unique_columns": []}
+        return build_catalog_snapshot(
+            dialect=self.dialect,
+            tables=tables,
+            default_schema="main",
+            search_path=["main"],
+        )
 
     def _list_catalog_tables(self) -> list[str]:
         try:

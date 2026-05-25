@@ -37,7 +37,9 @@ pub use ir::{
     Assignment, ExprRef, FromItem, JoinRef, PassantSelect, ProjectionItem, QueryIr, TableRef,
 };
 pub use optimizer::{CandidatePlan, RewriteOptimizer, RewriteStrategy};
-pub use parser::{ParseArtifact, ParseError, parse_query, parse_query_to_ir};
+pub use parser::{
+    ParseArtifact, ParseError, parse_query, parse_query_to_ir, parse_query_with_dialect,
+};
 pub use planner::{ChosenPlan, PassantPlanner, PlanQueryResult, ScopeInfo};
 pub use policy::{
     AggregateDfcPolicy, PgnPolicy, PgnPolicyKind, PolicyIr, PolicyParseError, PolicyScope,
@@ -65,5 +67,6 @@ pub use source_sets::{
     split_select_policies_for_nullable_joins, split_select_policies_for_nullable_joins_for_store,
     split_set_operation_policies, table_factor_source_tables,
 };
+pub use sql::SqlDialect;
 pub use statement_tables::{statement_sink_key, statement_table_keys};
 pub use threshold::{prune_dominated_remove_policies, threshold_dominates};

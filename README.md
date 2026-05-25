@@ -1,14 +1,17 @@
 # Passant
 
-Passant is a Rust-backed Data Flow Control (DFC) SQL rewrite engine with a small
-Python API for DuckDB (`wrap`, `Connection`, `Policy`).
+Passant is a Rust-backed Data Flow Control (DFC) SQL rewrite engine with a
+portable Python API (`wrap`, `connect`, `Connection`, `Policy`) for DuckDB,
+SQLite, PostgreSQL, ClickHouse, Apache DataFusion, and partial Umbra support.
 
 ## Workspace
 
 - `passant-core`: parser, IR, planner, optimizer, SQL rewriter, and explain output.
 - `passant-cli`: CLI for rewrite, explain, plan, and policy parsing.
 - `passant-py`: PyO3 extension module used by the Python package.
-- `python/passant`: Python API (`wrap`, `Connection`, `Policy`, adapters).
+- `python/passant`: Python API (`wrap`, `connect`, `Connection`, `Policy`, adapters).
+
+See [docs/python-api.md](docs/python-api.md) for dialect support and adapter capabilities.
 
 ## Current Status
 

@@ -9,6 +9,7 @@ use crate::partial_push::ExtraDfcFilter;
 use crate::policy::{PolicyIr, Resolution, parse_policy_text};
 use crate::policy_store::{PolicyStore, PolicyStoreMemoryUsage};
 use crate::rewrite_stats::{RewriteStats, RewriteStatsCell};
+use crate::sql::SqlDialect;
 
 mod scope;
 mod types;
@@ -62,6 +63,7 @@ impl PassantRewriter {
         Self {
             store: PolicyStore::default(),
             catalog,
+            parse_dialect: SqlDialect::default(),
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
         }

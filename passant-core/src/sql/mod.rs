@@ -3,10 +3,12 @@
 pub mod ast_stats;
 pub mod builders;
 pub mod columns;
+pub mod dialect;
 pub mod expr;
 pub mod parse;
 
 pub use ast_stats::{count_expr, count_query, count_select, count_set_expr, count_statement};
+pub use dialect::SqlDialect;
 pub use parse::parse_projection_expr;
 
 pub use builders::{

@@ -6,7 +6,16 @@ from typing import Any, Protocol
 
 @dataclass(frozen=True)
 class Capabilities:
-    supports_kill: bool = False
+    """Backend features used for policy registration and rewrite strategy selection."""
+
+    exception_udf: bool = False
+    update_from: bool = True
+    aggregate_filter: bool = True
+    cte_in_insert: bool = True
+
+    @property
+    def supports_kill(self) -> bool:
+        return self.exception_udf
 
 
 class Adapter(Protocol):

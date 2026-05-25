@@ -2,13 +2,13 @@ use sqlparser::ast::{
     Assignment as SqlAssignment, Expr, JoinConstraint, JoinOperator, Query, Select, SelectItem,
     SetExpr, Statement, TableAlias, TableFactor, TableWithJoins,
 };
-use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use thiserror::Error;
 
 use crate::ir::{
     Assignment, ExprRef, FromItem, JoinRef, PassantSelect, ProjectionItem, QueryIr, TableRef,
 };
+use crate::sql::SqlDialect;
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -26,13 +26,53 @@ pub struct ParseArtifact {
     pub ir: QueryIr,
 }
 
-pub fn parse_query(sql: &str) -> Result<Statement, ParseError> {
-    let dialect = DuckDbDialect {};
-    let mut statements = Parser::parse_sql(&dialect, sql)?;
-    if statements.len() != 1 {
-        return Err(ParseError::ExpectedSingleStatement);
+pub fn parse_query_with_dialect(sql: &str, dialect: SqlDialect) -> Result<Statement, ParseError> {
+    match dialect {
+        SqlDialect::DuckDb => {
+            let dialect = sqlparser::dialect::DuckDbDialect {};
+            let mut statements = Parser::parse_sql(&dialect, sql)?;
+            if statements.len() != 1 {
+                return Err(ParseError::ExpectedSingleStatement);
+            }
+            Ok(statements.remove(0))
+        }
+        SqlDialect::Postgres => {
+            let dialect = sqlparser::dialect::PostgreSqlDialect {};
+            let mut statements = Parser::parse_sql(&dialect, sql)?;
+            if statements.len() != 1 {
+                return Err(ParseError::ExpectedSingleStatement);
+            }
+            Ok(statements.remove(0))
+        }
+        SqlDialect::SQLite => {
+            let dialect = sqlparser::dialect::SQLiteDialect {};
+            let mut statements = Parser::parse_sql(&dialect, sql)?;
+            if statements.len() != 1 {
+                return Err(ParseError::ExpectedSingleStatement);
+            }
+            Ok(statements.remove(0))
+        }
+        SqlDialect::ClickHouse => {
+            let dialect = sqlparser::dialect::ClickHouseDialect {};
+            let mut statements = Parser::parse_sql(&dialect, sql)?;
+            if statements.len() != 1 {
+                return Err(ParseError::ExpectedSingleStatement);
+            }
+            Ok(statements.remove(0))
+        }
+        SqlDialect::DataFusion | SqlDialect::Umbra | SqlDialect::GenericAnsi => {
+            let dialect = sqlparser::dialect::GenericDialect {};
+            let mut statements = Parser::parse_sql(&dialect, sql)?;
+            if statements.len() != 1 {
+                return Err(ParseError::ExpectedSingleStatement);
+            }
+            Ok(statements.remove(0))
+        }
     }
-    Ok(statements.remove(0))
+}
+
+pub fn parse_query(sql: &str) -> Result<Statement, ParseError> {
+    parse_query_with_dialect(sql, SqlDialect::DuckDb)
 }
 
 pub fn parse_query_to_ir(sql: &str) -> Result<QueryIr, ParseError> {

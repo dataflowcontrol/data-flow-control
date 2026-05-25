@@ -16,7 +16,7 @@ fn quoted_catalog() -> TableCatalog {
                 types: HashMap::new(),
             },
         )]),
-        unique_columns: vec![],
+        ..Default::default()
     })
 }
 

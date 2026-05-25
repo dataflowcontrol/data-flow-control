@@ -7,7 +7,7 @@ use sqlparser::ast::{Query, SetExpr, Statement};
 use std::time::Instant;
 
 use crate::optimizer::RewriteStrategy;
-use crate::parser::parse_query;
+use crate::parser::parse_query_with_dialect;
 use crate::policy_store::PolicyStore;
 use crate::query_analysis::StatementAnalysis;
 use crate::rewriter::{PassantRewriter, RewriteError, RewriteOptions};
@@ -157,7 +157,8 @@ impl RewritePipeline {
         rewriter.statement_summary.reset();
 
         let parse_start = Instant::now();
-        let statement = parse_query(sql)?;
+        let parse_dialect = options.effective_parse_dialect(rewriter.parse_dialect);
+        let statement = parse_query_with_dialect(sql, parse_dialect)?;
         if collect_stats {
             rewriter.stats.add_elapsed_parse(parse_start.elapsed());
         }

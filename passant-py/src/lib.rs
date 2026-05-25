@@ -312,7 +312,7 @@ impl PyPlanner {
     fn sync_catalog(&mut self, catalog_json: String) -> PyResult<()> {
         let snapshot = serde_json::from_str::<CatalogSnapshot>(&catalog_json)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        self.rewriter.catalog_mut().load_snapshot(snapshot);
+        self.rewriter.apply_catalog_snapshot(snapshot);
         Ok(())
     }
 
@@ -349,16 +349,21 @@ impl PyPlanner {
         ))
     }
 
-    #[pyo3(signature = (query, use_partial_push=false, collect_stats=false))]
+    #[pyo3(signature = (query, use_partial_push=false, collect_stats=false, dialect=None))]
     fn transform_registered(
         &self,
         query: String,
         use_partial_push: bool,
         collect_stats: bool,
+        dialect: Option<String>,
     ) -> PyResult<String> {
+        let parse_dialect = dialect
+            .as_deref()
+            .and_then(|value| value.parse::<passant_core::SqlDialect>().ok());
         let options = passant_core::RewriteOptions {
             use_partial_push,
             collect_stats,
+            parse_dialect,
         };
         self.rewriter
             .rewrite_with_options(&query, options)

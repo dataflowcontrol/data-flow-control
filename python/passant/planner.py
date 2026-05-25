@@ -4,6 +4,7 @@ import json
 from typing import TYPE_CHECKING
 
 from ._rust import require_extension, resolution_to_python
+from .options import RewriteOptions
 
 if TYPE_CHECKING:
     from .policy import AggregatePolicy, PgnPolicy, Policy
@@ -66,15 +67,30 @@ class Planner:
         *,
         use_partial_push: bool = False,
         collect_stats: bool = False,
+        dialect: str | None = None,
+        options: RewriteOptions | None = None,
     ) -> str:
+        opts = options or RewriteOptions(
+            use_partial_push=use_partial_push,
+            collect_stats=collect_stats,
+            dialect=dialect,
+        )
         if not self._planner.has_registered_policies():
             return self._planner.transform_query(sql)
-        return self._planner.transform_registered(sql, use_partial_push, collect_stats)
+        return self._planner.transform_registered(
+            sql,
+            opts.use_partial_push,
+            opts.collect_stats,
+            opts.dialect,
+        )
 
     def explain(self, sql: str) -> str:
         if not self._planner.has_registered_policies():
             return self._planner.explain_rewrite(sql)
         return self._planner.explain_rewrite_registered(sql)
+
+    def explain_dict(self, sql: str) -> dict:
+        return json.loads(self.explain(sql))
 
     def last_rewrite_stats(self):
         return self._planner.last_rewrite_stats()

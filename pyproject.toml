@@ -17,6 +17,16 @@ dev = [
     "ruff>=0.11.0",
     "sql-rewriter",
 ]
+postgres = [
+    "psycopg[binary]>=3.2.0",
+]
+clickhouse = [
+    "clickhouse-connect>=0.7.0",
+]
+datafusion = [
+    "datafusion>=53.0.0; python_version >= '3.10'",
+    "pyarrow>=14.0.0",
+]
 
 [tool.uv.sources]
 sql-rewriter = { path = "../sql_rewriter", editable = true }
@@ -36,6 +46,9 @@ testpaths = ["python/tests"]
 pythonpath = ["python"]
 markers = [
     "completion: tests that must pass before Passant is feature-complete",
+    "postgres: requires psycopg and Passant docker postgres service",
+    "clickhouse: requires clickhouse-connect and Passant docker clickhouse service",
+    "umbra: requires psycopg and Passant docker umbra service",
 ]
 
 [tool.ruff]

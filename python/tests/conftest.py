@@ -1,5 +1,7 @@
 """Shared fixtures for Passant Python tests."""
 
+from __future__ import annotations
+
 import duckdb
 import pytest
 
@@ -22,3 +24,15 @@ def rewriter():
     yield db
 
     db.close()
+
+
+@pytest.fixture(scope="session")
+def passant_docker():
+    """Start local Docker services used by postgres/clickhouse/umbra tests."""
+    from tests.docker_services import PassantDockerStack
+
+    try:
+        stack = PassantDockerStack.start()
+    except Exception as exc:
+        pytest.skip(f"Passant docker services unavailable: {exc}")
+    return stack

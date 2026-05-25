@@ -301,6 +301,7 @@ impl PassantPlanner {
             crate::rewriter::RewriteOptions {
                 use_partial_push: chosen == crate::optimizer::RewriteStrategy::PartialPush,
                 collect_stats: false,
+                ..Default::default()
             },
         );
         let (rewritten_sql, rewrite_error) = match rewrite_result {

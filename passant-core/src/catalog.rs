@@ -17,12 +17,28 @@ pub struct TableCatalog {
     loaded: bool,
 }
 
-/// JSON catalog snapshot from Python DuckDB introspection.
-#[derive(Debug, Clone, Deserialize)]
+/// JSON catalog snapshot from Python adapter introspection.
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct CatalogSnapshot {
+    #[serde(default)]
+    pub dialect: Option<String>,
+    #[serde(default)]
+    pub default_schema: Option<String>,
+    #[serde(default)]
+    pub search_path: Vec<String>,
+    #[serde(default)]
     pub tables: HashMap<String, CatalogTableInfo>,
     #[serde(default)]
     pub unique_columns: Vec<[String; 2]>,
+}
+
+impl CatalogSnapshot {
+    pub fn sql_dialect(&self) -> crate::sql::SqlDialect {
+        self.dialect
+            .as_deref()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
