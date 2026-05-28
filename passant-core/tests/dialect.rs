@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn remove_scan_policy() -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

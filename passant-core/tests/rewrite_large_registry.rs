@@ -1,7 +1,7 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
 fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -14,7 +14,7 @@ fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
 }
 
 fn sink_only_remove_policy(sink: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

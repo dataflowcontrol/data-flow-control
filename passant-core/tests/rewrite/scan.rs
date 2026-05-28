@@ -3,7 +3,7 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 #[test]
 fn rewriter_applies_scan_remove_policy_without_comment_stub() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -23,7 +23,7 @@ fn rewriter_applies_scan_remove_policy_without_comment_stub() {
 #[test]
 fn rewriter_collapses_dominated_remove_thresholds() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -33,7 +33,7 @@ fn rewriter_collapses_dominated_remove_thresholds() {
         on_fail: Resolution::Remove,
         description: None,
     });
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -53,7 +53,7 @@ fn rewriter_collapses_dominated_remove_thresholds() {
 #[test]
 fn rewriter_collapses_dominated_upper_thresholds() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -63,7 +63,7 @@ fn rewriter_collapses_dominated_upper_thresholds() {
         on_fail: Resolution::Remove,
         description: None,
     });
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -83,7 +83,7 @@ fn rewriter_collapses_dominated_upper_thresholds() {
 #[test]
 fn rewriter_applies_aliases_and_having_for_aggregation() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -106,7 +106,7 @@ fn rewriter_applies_aliases_and_having_for_aggregation() {
 #[test]
 fn rewriter_filters_after_limit_for_remove_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -129,7 +129,7 @@ fn rewriter_filters_after_limit_for_remove_policy() {
 #[test]
 fn rewriter_filters_after_offset_for_remove_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -152,7 +152,7 @@ fn rewriter_filters_after_offset_for_remove_policy() {
 #[test]
 fn rewriter_filters_after_limit_offset_for_remove_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -175,7 +175,7 @@ fn rewriter_filters_after_limit_offset_for_remove_policy() {
 #[test]
 fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -198,7 +198,7 @@ fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
 #[test]
 fn rewriter_rejects_delete_when_policies_are_registered() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -221,7 +221,7 @@ fn rewriter_rejects_delete_when_policies_are_registered() {
 #[test]
 fn rewriter_rewrites_except_branch_when_policies_are_registered() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

@@ -254,7 +254,7 @@ pub(crate) fn join_pushdown_expr(
     alias: Option<String>,
     catalog: &TableCatalog,
 ) -> Result<Expr, RewriteError> {
-    let PolicyIr::CompatDfc {
+    let PolicyIr::Dfc {
         constraint,
         on_fail,
         ..
@@ -321,9 +321,10 @@ pub(crate) fn scan_policy_expr(
 }
 
 pub(crate) fn non_distributive_aggregates(expr: &Expr) -> Result<Vec<String>, RewriteError> {
-    let aggregates = semiring::analyze_constraint(&expr.to_string()).map_err(|err| {
-        RewriteError::unsupported_statement(format!("policy aggregate analysis: {err}"))
-    })?;
+    let aggregates =
+        semiring::analyze_constraint(&crate::sql::render_expr(expr, None)).map_err(|err| {
+            RewriteError::unsupported_statement(format!("policy aggregate analysis: {err}"))
+        })?;
     Ok(aggregates
         .into_iter()
         .filter(|aggregate| !aggregate.distributive)
@@ -432,7 +433,7 @@ fn compiled_sink_matches(policy: &PolicyIr, sink: Option<&TableKey>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_compat_dfc_filter_expr(
+pub(crate) fn build_dfc_filter_expr(
     sources: &[String],
     constraint: &str,
     sink_alias: &Option<String>,
@@ -453,7 +454,7 @@ pub(crate) fn build_compat_dfc_filter_expr(
             let filters = aliases
                 .iter()
                 .map(|alias| {
-                    build_single_alias_compat_dfc_filter_expr(
+                    build_single_alias_dfc_filter_expr(
                         constraint,
                         sink_alias,
                         context,
@@ -467,7 +468,7 @@ pub(crate) fn build_compat_dfc_filter_expr(
                 .collect::<Result<Vec<_>, _>>()?;
             return Ok(join_conjuncts(filters));
         }
-        return build_single_alias_compat_dfc_filter_expr(
+        return build_single_alias_dfc_filter_expr(
             constraint,
             sink_alias,
             context,
@@ -584,7 +585,7 @@ pub(crate) fn apply_update_resolution(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_single_alias_compat_dfc_filter_expr(
+pub(crate) fn build_single_alias_dfc_filter_expr(
     constraint: &str,
     sink_alias: &Option<String>,
     context: &RewriteContext,

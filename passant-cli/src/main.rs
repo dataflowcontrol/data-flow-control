@@ -114,7 +114,7 @@ fn main() -> anyhow::Result<()> {
                 parse_policy_text(&text).context("failed to parse policy")?
             } else {
                 let constraint = constraint.context("--constraint is required without --text")?;
-                PolicyIr::CompatDfc {
+                PolicyIr::Dfc {
                     sources: source,
                     required_sources: Vec::new(),
                     dimensions: dimension,

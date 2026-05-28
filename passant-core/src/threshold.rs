@@ -36,7 +36,7 @@ pub fn threshold_dominates(left: &str, right: &str) -> bool {
 }
 
 pub(crate) fn threshold_predicate_from_policy(policy: &PolicyIr) -> Option<ThresholdPredicate> {
-    let PolicyIr::CompatDfc {
+    let PolicyIr::Dfc {
         constraint,
         on_fail: Resolution::Remove,
         ..
@@ -199,7 +199,7 @@ mod tests {
     use crate::policy::PolicyIr;
 
     fn remove_policy(constraint: &str) -> PolicyIr {
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn non_remove_policies_are_not_pruned() {
         let policies = vec![
-            PolicyIr::CompatDfc {
+            PolicyIr::Dfc {
                 sources: vec!["foo".to_string()],
                 required_sources: Vec::new(),
                 dimensions: Vec::new(),

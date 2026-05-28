@@ -54,7 +54,7 @@ def assert_tpch_rewrite_executes(
     tpch_rewriter.register_policy(lineitem_policy)
     transformed = tpch_rewriter.transform_query(query)
     assert require_policy_marker.lower() in transformed.lower(), transformed
-    result = tpch_rewriter.connection.execute(transformed).fetchall()
+    result = tpch_rewriter.raw_connection.execute(transformed).fetchall()
     assert result is not None
     return transformed
 

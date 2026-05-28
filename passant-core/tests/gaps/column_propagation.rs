@@ -5,7 +5,7 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 #[test]
 fn subquery_missing_policy_column_is_propagated_to_select_list() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -28,7 +28,7 @@ fn subquery_missing_policy_column_is_propagated_to_select_list() {
 #[test]
 fn multi_source_subquery_join_propagates_both_policy_columns() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string(), "baz".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -53,7 +53,7 @@ fn multi_source_subquery_join_propagates_both_policy_columns() {
 #[test]
 fn cte_missing_policy_column_is_propagated_to_select_list() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

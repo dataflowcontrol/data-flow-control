@@ -67,7 +67,7 @@ def test_sqlite_kill_registration_fails():
 
     db = wrap(sqlite3.connect(":memory:"), dialect="sqlite")
     db.execute("CREATE TABLE foo (id INTEGER)")
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )

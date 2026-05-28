@@ -2,14 +2,14 @@
 mod common;
 
 use passant_core::{
-    AggregateDfcPolicy, PassantPlanner, PassantRewriter, PolicyIr, Resolution, RewriteStrategy,
-    analyze_constraint, parse_query_to_ir,
+    PassantPlanner, PassantRewriter, PolicyIr, Resolution, RewriteStrategy, analyze_constraint,
+    parse_query_to_ir,
 };
 
 #[test]
 fn planner_chooses_full_push_for_aggregate_query() {
     let ir = parse_query_to_ir("SELECT max(foo.id) FROM foo").expect("query should parse");
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -28,7 +28,7 @@ fn planner_chooses_full_push_for_aggregate_query() {
 fn planner_chooses_full_push_for_monotonic_spj_query() {
     let ir = parse_query_to_ir("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -63,7 +63,7 @@ fn semiring_analysis_classifies_policy_aggregates() {
 fn planner_uses_partial_push_for_non_distributive_policy_aggregate() {
     let ir = parse_query_to_ir("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -87,7 +87,7 @@ fn planner_uses_partial_push_for_non_distributive_policy_aggregate() {
 #[test]
 fn rewriter_uses_partial_push_for_aggregate_only_non_distributive_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -108,7 +108,7 @@ fn rewriter_uses_partial_push_for_aggregate_only_non_distributive_policy() {
 #[test]
 fn rewriter_splits_source_local_non_distributive_policies_via_partial_push() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -130,7 +130,7 @@ fn rewriter_splits_source_local_non_distributive_policies_via_partial_push() {
 #[test]
 fn rewriter_uses_partial_push_for_alias_non_distributive_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -151,7 +151,7 @@ fn rewriter_uses_partial_push_for_alias_non_distributive_policy() {
 #[test]
 fn rewriter_partial_pushes_cross_source_non_distributive_aggregate_comparison() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -171,7 +171,7 @@ fn rewriter_partial_pushes_cross_source_non_distributive_aggregate_comparison() 
 #[test]
 fn rewriter_partial_pushes_mixed_row_and_non_distributive_aggregate_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -192,7 +192,7 @@ fn rewriter_partial_pushes_mixed_row_and_non_distributive_aggregate_policy() {
 fn planner_chooses_full_push_for_non_monotonic_query() {
     let ir = parse_query_to_ir("SELECT id FROM bar EXCEPT SELECT id FROM foo")
         .expect("query should parse");
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -213,7 +213,7 @@ fn planner_chooses_full_push_for_non_monotonic_query() {
 fn planner_marks_outer_join_as_requiring_source_set_annotations() {
     let ir = parse_query_to_ir("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -230,26 +230,10 @@ fn planner_marks_outer_join_as_requiring_source_set_annotations() {
 }
 
 #[test]
-fn planner_can_defer_aggregate_policy_finalize() {
-    let ir = parse_query_to_ir("INSERT INTO reports SELECT max(foo.id) AS id FROM foo")
-        .expect("query should parse");
-    let policies = vec![PolicyIr::CompatAggregate(AggregateDfcPolicy {
-        sources: vec!["foo".to_string()],
-        dimensions: Vec::new(),
-        sink: Some("reports".to_string()),
-        constraint: "sum(reports.id) > 1".to_string(),
-        description: None,
-    })];
-
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
-    assert!(!result.chosen.finalize_metadata.is_empty());
-}
-
-#[test]
 fn planner_records_successful_except_rewrite_in_explain_output() {
     let ir = parse_query_to_ir("SELECT id FROM bar EXCEPT SELECT id FROM foo")
         .expect("query should parse");
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -268,7 +252,7 @@ fn planner_records_successful_except_rewrite_in_explain_output() {
 fn planner_records_successful_source_set_rewrite_in_explain_output() {
     let ir = parse_query_to_ir("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

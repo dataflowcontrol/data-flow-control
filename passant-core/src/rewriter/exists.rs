@@ -12,7 +12,7 @@ use crate::policy::{PolicyIr, Resolution};
 use crate::policy_store::MultiSourceLookupMode;
 use crate::sql::{
     alias_expr, binary_comparison, function_call, grouped_select, qualified_column,
-    query_from_select, unqualify_table_refs,
+    query_from_select, statement_from_query, unqualify_table_refs,
 };
 
 use super::RewriteError;
@@ -52,10 +52,16 @@ fn extract_exists_join_columns(where_expr: &Expr, policy_table: &str) -> Option<
         let left_is_subquery = column_matches_policy_table(left.as_ref(), policy_table);
         let right_is_subquery = column_matches_policy_table(right.as_ref(), policy_table);
         if left_is_subquery && !right_is_subquery {
-            return Some((right.to_string(), left.to_string()));
+            return Some((
+                crate::sql::render_expr(right.as_ref(), None),
+                crate::sql::render_expr(left.as_ref(), None),
+            ));
         }
         if right_is_subquery && !left_is_subquery {
-            return Some((left.to_string(), right.to_string()));
+            return Some((
+                crate::sql::render_expr(left.as_ref(), None),
+                crate::sql::render_expr(right.as_ref(), None),
+            ));
         }
     }
     None
@@ -70,8 +76,10 @@ fn remove_join_equality_from_where(
         .into_iter()
         .filter(|conjunct| {
             !matches!(conjunct, Expr::BinaryOp { left, op: BinaryOperator::Eq, right }
-                if left.to_string() == subquery_col && right.to_string() == outer_col
-                    || left.to_string() == outer_col && right.to_string() == subquery_col)
+                if (crate::sql::expr_key_matches_str(left, subquery_col)
+                    && crate::sql::expr_key_matches_str(right, outer_col))
+                    || (crate::sql::expr_key_matches_str(left, outer_col)
+                        && crate::sql::expr_key_matches_str(right, subquery_col)))
         })
         .collect::<Vec<_>>();
     rebuild_and(remaining)
@@ -110,7 +118,7 @@ fn build_exists_join_subquery_sql(
     let join_key_expr = parse_expr(join_key_col)?;
     let join_key_name = column_name_from_expr(&join_key_expr)
         .map(|name| name.as_str().to_string())
-        .unwrap_or_else(|| join_key_expr.to_string());
+        .unwrap_or_else(|| crate::sql::render_expr(&join_key_expr, None));
     let projection = vec![
         alias_expr(join_key_expr.clone(), &join_key_name),
         agg_projection.clone(),
@@ -133,7 +141,10 @@ fn build_exists_join_subquery_sql(
         other_where.cloned(),
         vec![parse_expr(join_key_col)?],
     );
-    Ok(query_from_select(select).to_string())
+    Ok(crate::sql::render_statement(
+        &statement_from_query(query_from_select(select)),
+        None,
+    ))
 }
 
 fn exists_subquery_having_expr(constraint: &Expr, agg_alias: &str) -> Result<Expr, RewriteError> {
@@ -207,7 +218,7 @@ impl PassantRewriter {
                 .iter()
                 .find_map(|index| {
                     let policy = self.store.policy(index)?;
-                    let PolicyIr::CompatDfc {
+                    let PolicyIr::Dfc {
                         sources,
                         constraint,
                         on_fail: Resolution::Remove,
@@ -235,11 +246,9 @@ impl PassantRewriter {
                 stats: None,
             };
 
-            let Some(join_key_col) = in_select
-                .projection
-                .first()
-                .and_then(|item| projection_expr_and_name(item).map(|(expr, _)| expr.to_string()))
-            else {
+            let Some(join_key_col) = in_select.projection.first().and_then(|item| {
+                projection_expr_and_name(item).map(|(expr, _)| crate::sql::render_expr(expr, None))
+            }) else {
                 remaining.push(conjunct);
                 continue;
             };
@@ -346,7 +355,7 @@ impl PassantRewriter {
                 .iter()
                 .find_map(|index| {
                     let policy = self.store.policy(index)?;
-                    let PolicyIr::CompatDfc {
+                    let PolicyIr::Dfc {
                         sources,
                         on_fail: Resolution::Remove,
                         ..
@@ -376,8 +385,7 @@ impl PassantRewriter {
                 continue;
             };
 
-            let Some(PolicyIr::CompatDfc { constraint, .. }) = self.store.policy(policy_index)
-            else {
+            let Some(PolicyIr::Dfc { constraint, .. }) = self.store.policy(policy_index) else {
                 remaining.push(conjunct);
                 continue;
             };

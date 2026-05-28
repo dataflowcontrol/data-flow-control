@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, SetExpr};
-use sqlparser::dialect::DuckDbDialect;
-use sqlparser::parser::Parser;
+use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments};
 
 use crate::policy::PolicyIr;
 
@@ -54,27 +52,9 @@ pub fn analyze_policies(policies: &[PolicyIr]) -> SemiringAnalysis {
 }
 
 pub fn analyze_constraint(constraint: &str) -> Result<Vec<AggregateAnalysis>, String> {
-    let mut statements = Parser::parse_sql(&DuckDbDialect {}, &format!("SELECT {constraint}"))
-        .map_err(|err| err.to_string())?;
-    if statements.len() != 1 {
-        return Err("expected one parsed statement".into());
-    }
-    let sqlparser::ast::Statement::Query(query) = statements.remove(0) else {
-        return Err("expected SELECT wrapper".into());
-    };
-    let SetExpr::Select(select) = *query.body else {
-        return Err("expected SELECT expression".into());
-    };
-
+    let expr = crate::sql::parse_policy_expr_duckdb(constraint).map_err(|err| err.to_string())?;
     let mut aggregates = Vec::new();
-    for item in &select.projection {
-        match item {
-            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-                collect_aggregates(expr, &mut aggregates);
-            }
-            _ => {}
-        }
-    }
+    collect_aggregates(&expr, &mut aggregates);
     Ok(aggregates)
 }
 
@@ -86,7 +66,7 @@ fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
                 let distributive = is_distributive_aggregate(&function_name);
                 aggregates.push(AggregateAnalysis {
                     function_name,
-                    expression: expr.to_string(),
+                    expression: crate::sql::render_expr(expr, None),
                     distributive,
                     reason: (!distributive).then_some(
                         "aggregate is not distributive in the supported semiring".into(),
@@ -221,7 +201,7 @@ mod tests {
 
     #[test]
     fn analyze_policies_marks_unparseable_constraints_non_distributive() {
-        let policies = vec![PolicyIr::CompatDfc {
+        let policies = vec![PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

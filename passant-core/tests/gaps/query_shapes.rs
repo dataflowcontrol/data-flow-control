@@ -63,7 +63,7 @@ fn in_list_predicate_combines_with_policy_filter() {
 fn approx_count_distinct_equality_rewrites_to_one() {
     assert_rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -81,7 +81,7 @@ fn approx_count_distinct_equality_rewrites_to_one() {
 fn nested_aggregation_constraint_uses_inner_expression() {
     let sql = rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

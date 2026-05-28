@@ -3,7 +3,7 @@ mod common;
 use passant_core::{PolicyIr, Resolution, parse_policy_text};
 
 #[test]
-fn parse_pgn_compat_policy_text() {
+fn parse_pgn_dfc_policy_text() {
     let policy = parse_policy_text(
         "SOURCE foo SINK reports CONSTRAINT max(foo.id) > 1 ON FAIL KILL DESCRIPTION stop bad rows",
     )
@@ -24,7 +24,7 @@ fn parse_pgn_sink_alias_policy_text() {
     assert_eq!(policy.sink(), Some("reports"));
     assert!(matches!(
         policy,
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sink_alias: Some(ref alias),
             ..
         } if alias == "r"
@@ -76,13 +76,15 @@ fn parse_pgn_dimension_policy_text() {
 }
 
 #[test]
-fn parse_pgn_aggregate_dimension_policy_text() {
-    let policy = parse_policy_text(
+fn parse_rejects_aggregate_dfc_policy_text() {
+    let err = parse_policy_text(
         "AGGREGATE SOURCE foo SINK reports DIMENSION reports.region CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
     )
-    .expect("policy should parse");
-
-    assert_eq!(policy.dimensions(), &["reports.region".to_string()]);
+    .expect_err("aggregate DFC policies should be rejected");
+    assert!(
+        err.to_string()
+            .contains("aggregate policies are not supported")
+    );
 }
 
 #[test]

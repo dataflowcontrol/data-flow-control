@@ -1,64 +1,19 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use sqlparser::ast::{
-    Assignment, Expr, Ident, MergeAction, Select, SelectItem, SetExpr, Statement, TableFactor,
-    TableWithJoins,
+    Assignment, Expr, MergeAction, SetExpr, Statement, TableFactor, TableWithJoins,
 };
 
-use crate::policy::PolicyIr;
 use crate::source_sets::table_factor_source_tables;
 
 use super::RewriteError;
-use super::aggregates::{
-    aggregate_temp_column, aggregate_temp_projection_expr, policy_aggregate_temp_entries_from_expr,
-};
-use super::expr::{filter_table_factor, join_conjuncts, parse_expr};
+use super::expr::{filter_table_factor, join_conjuncts};
 use super::helpers::{insert_select_mapping, update_assignment_mapping, update_target_name};
-use super::plan::{
-    apply_update_scope_plan, plan_insert_aggregate_temp_columns, plan_merge_source_filters,
-    plan_update_scope,
-};
-use super::projection::select_is_aggregation;
+use super::plan::{apply_update_scope_plan, plan_merge_source_filters, plan_update_scope};
 use super::scope::TableScope;
-use super::types::{PassantRewriter, RewriteContext, SourceAggregate};
+use super::types::{PassantRewriter, RewriteContext};
 
 impl PassantRewriter {
-    pub(crate) fn scan_aggregate_temp_columns(
-        &self,
-        table_scope: &TableScope,
-    ) -> Result<Vec<(SourceAggregate, String)>, RewriteError> {
-        let mut temp_columns = Vec::new();
-        let mut seen = HashSet::new();
-        for index in self
-            .store
-            .aggregate_scan_policy_lookup(&table_scope.direct_base_tables)
-            .iter()
-        {
-            let Some(PolicyIr::CompatAggregate(policy)) = self.store.policy(index) else {
-                continue;
-            };
-            let constraint_expr = self
-                .store
-                .constraint_expr(index, &policy.constraint, None)?;
-            for aggregate in policy_aggregate_temp_entries_from_expr(
-                Some(&constraint_expr),
-                &policy.constraint,
-                &policy.sources,
-                policy.sink.as_deref(),
-            )? {
-                if seen.insert(aggregate.sql.clone()) {
-                    temp_columns.push((aggregate, String::new()));
-                }
-            }
-        }
-        Ok(temp_columns
-            .into_iter()
-            .enumerate()
-            .map(|(index, (aggregate, _))| (aggregate, aggregate_temp_column(index + 1)))
-            .collect())
-    }
-
     fn rewrite_merge(
         &self,
         _target: &TableFactor,
@@ -118,7 +73,7 @@ impl PassantRewriter {
                 }
                 self.expand_insert_columns_from_catalog(insert, &sink);
                 let context = RewriteContext {
-                    sink: Some(sink.clone()),
+                    sink: Some(sink),
                     sink_expr_by_column: insert_select_mapping(insert),
                     allow_partial_source_visibility: false,
                     collect_stats,
@@ -126,7 +81,6 @@ impl PassantRewriter {
                 if let Some(source) = insert.source.as_mut() {
                     self.rewrite_query_with_context(source, &context)?;
                 }
-                self.apply_aggregate_insert_columns(insert, &sink, &context)?;
                 Ok(())
             }
             Statement::Update {
@@ -165,22 +119,8 @@ impl PassantRewriter {
         };
         insert.columns = catalog_columns
             .iter()
-            .map(|column| Ident::new(column.as_str()))
+            .map(|column| sqlparser::ast::Ident::new(column.as_str()))
             .collect();
-    }
-
-    pub(crate) fn apply_aggregate_scan_columns(
-        &self,
-        select: &mut Select,
-    ) -> Result<(), RewriteError> {
-        let table_scope = TableScope::from_select(select);
-        for (aggregate, temp_name) in self.scan_aggregate_temp_columns(&table_scope)? {
-            select.projection.push(SelectItem::ExprWithAlias {
-                expr: parse_expr(&aggregate.sql)?,
-                alias: Ident::new(&temp_name),
-            });
-        }
-        Ok(())
     }
 
     fn rewrite_update(
@@ -222,57 +162,6 @@ impl PassantRewriter {
             );
         }
         apply_update_scope_plan(&update_plan, assignments, selection)?;
-        Ok(())
-    }
-
-    fn apply_aggregate_insert_columns(
-        &self,
-        insert: &mut sqlparser::ast::Insert,
-        sink: &str,
-        context: &RewriteContext,
-    ) -> Result<(), RewriteError> {
-        let source = insert.source.as_mut();
-        let Some(query) = source else {
-            return Ok(());
-        };
-        let SetExpr::Select(select) = query.body.as_mut() else {
-            return Ok(());
-        };
-        let table_scope = TableScope::from_select(select);
-        let is_query_aggregation = select_is_aggregation(select);
-        let stats = context.collect_stats.then_some(&self.stats);
-        let column_plan =
-            plan_insert_aggregate_temp_columns(&self.store, stats, sink, &table_scope)?;
-        self.statement_summary
-            .record_scope(column_plan.diagnostics.clone());
-        if context.collect_stats {
-            self.stats.accumulate_scope_diagnostics(
-                column_plan.diagnostics.candidate_policies,
-                column_plan.diagnostics.applicable_policies,
-                0,
-            );
-        }
-        for (aggregate, temp_name) in column_plan.temp_columns {
-            let expr = aggregate_temp_projection_expr(
-                &aggregate,
-                is_query_aggregation,
-                Some(context),
-                Some(sink),
-                Some(select),
-            )?;
-            select.projection.push(SelectItem::ExprWithAlias {
-                expr,
-                alias: Ident::new(&temp_name),
-            });
-            if !insert.columns.is_empty()
-                && !insert
-                    .columns
-                    .iter()
-                    .any(|column| column.value.eq_ignore_ascii_case(&temp_name))
-            {
-                insert.columns.push(Ident::new(&temp_name));
-            }
-        }
         Ok(())
     }
 }

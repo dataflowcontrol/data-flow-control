@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use passant_core::{
-    AggregateDfcPolicy, PassantPlanner, PassantRewriter, PlanQueryResult, PolicyIr, Resolution,
-    RewriteError, RewriteStrategy, TableCatalog, parse_query_to_ir,
+    PassantPlanner, PassantRewriter, PlanQueryResult, PolicyIr, Resolution, RewriteError,
+    RewriteStrategy, TableCatalog, parse_query_to_ir,
 };
 
 pub fn dfc_policy(sources: &[&str], constraint: &str) -> PolicyIr {
@@ -10,7 +10,7 @@ pub fn dfc_policy(sources: &[&str], constraint: &str) -> PolicyIr {
 }
 
 pub fn dfc_policy_with(sources: &[&str], constraint: &str, on_fail: Resolution) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -23,7 +23,7 @@ pub fn dfc_policy_with(sources: &[&str], constraint: &str, on_fail: Resolution) 
 }
 
 pub fn dfc_policy_sink(sources: &[&str], sink: &str, constraint: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -36,7 +36,7 @@ pub fn dfc_policy_sink(sources: &[&str], sink: &str, constraint: &str) -> Policy
 }
 
 pub fn dfc_policy_required(sources: &[&str], required: &[&str], constraint: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: required.iter().map(|s| (*s).to_string()).collect(),
         dimensions: Vec::new(),
@@ -46,16 +46,6 @@ pub fn dfc_policy_required(sources: &[&str], required: &[&str], constraint: &str
         on_fail: Resolution::Remove,
         description: None,
     }
-}
-
-pub fn aggregate_policy(sources: &[&str], sink: &str, constraint: &str) -> PolicyIr {
-    PolicyIr::CompatAggregate(AggregateDfcPolicy {
-        sources: sources.iter().map(|s| (*s).to_string()).collect(),
-        dimensions: Vec::new(),
-        sink: Some(sink.to_string()),
-        constraint: constraint.to_string(),
-        description: None,
-    })
 }
 
 pub fn rewriter_with_policies(policies: &[PolicyIr]) -> PassantRewriter {

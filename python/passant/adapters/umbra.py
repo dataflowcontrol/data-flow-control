@@ -14,12 +14,7 @@ except ImportError:  # pragma: no cover
 
 class UmbraAdapter:
     dialect = "umbra"
-    capabilities = Capabilities(
-        exception_udf=False,
-        update_from=True,
-        aggregate_filter=True,
-        cte_in_insert=True,
-    )
+    capabilities = Capabilities(exception_udf=False)
 
     def __init__(self, conn: Any) -> None:
         if psycopg is None:

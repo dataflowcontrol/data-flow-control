@@ -3,7 +3,7 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 #[test]
 fn rewriter_applies_update_remove_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: Vec::new(),
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -26,7 +26,7 @@ fn rewriter_applies_update_remove_policy() {
 #[test]
 fn rewriter_applies_update_sink_alias_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: Vec::new(),
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -49,7 +49,7 @@ fn rewriter_applies_update_sink_alias_policy() {
 #[test]
 fn rewriter_fails_closed_for_missing_required_source_on_update() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
         dimensions: Vec::new(),
@@ -69,7 +69,7 @@ fn rewriter_fails_closed_for_missing_required_source_on_update() {
 #[test]
 fn rewriter_applies_update_from_source_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

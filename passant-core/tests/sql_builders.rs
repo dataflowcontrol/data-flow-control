@@ -44,14 +44,7 @@ fn and_exprs_combines_predicates() {
 
 #[test]
 fn passant_internal_names_are_stable() {
-    use passant_core::sql::{
-        passant_agg_temp_column, passant_filter_temp_column, passant_internal_name,
-    };
-    assert_eq!(
-        passant_internal_name("__passant_agg", "0"),
-        "__passant_agg_0"
-    );
-    assert_eq!(passant_agg_temp_column(1), "__passant_agg_0");
+    use passant_core::sql::passant_filter_temp_column;
     assert_eq!(
         passant_filter_temp_column("amount"),
         "__passant_filter_amount"

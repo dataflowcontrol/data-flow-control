@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use passant_core::{MultiSourceLookupMode, PolicyIr, PolicyStore, Resolution, TableKey};
 
 fn dfc(source: &str, constraint: &str, on_fail: Resolution) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -18,7 +18,7 @@ fn dfc(source: &str, constraint: &str, on_fail: Resolution) -> PolicyIr {
 fn register_diverse_registry(store: &mut PolicyStore) {
     store.register(dfc("orders", "max(orders.amount) > 1", Resolution::Remove));
     store.register(dfc("customers", "max(customers.id) > 0", Resolution::Kill));
-    store.register(PolicyIr::CompatDfc {
+    store.register(PolicyIr::Dfc {
         sources: vec!["orders".to_string(), "customers".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -28,7 +28,7 @@ fn register_diverse_registry(store: &mut PolicyStore) {
         on_fail: Resolution::Remove,
         description: None,
     });
-    store.register(PolicyIr::CompatDfc {
+    store.register(PolicyIr::Dfc {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
         dimensions: Vec::new(),
@@ -38,7 +38,7 @@ fn register_diverse_registry(store: &mut PolicyStore) {
         on_fail: Resolution::Remove,
         description: None,
     });
-    store.register(PolicyIr::CompatDfc {
+    store.register(PolicyIr::Dfc {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

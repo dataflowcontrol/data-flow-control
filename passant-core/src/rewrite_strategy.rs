@@ -234,7 +234,7 @@ mod tests {
     use crate::rewriter::{PassantRewriter, RewriteOptions};
 
     fn distributive_policy() -> PolicyIr {
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -247,7 +247,7 @@ mod tests {
     }
 
     fn non_distributive_policy() -> PolicyIr {
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

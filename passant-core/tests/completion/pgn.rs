@@ -42,12 +42,12 @@ fn pgn_policy_rewrites_insert_select() {
 }
 
 #[test]
-fn pgn_combined_with_compat_dfc_policy() {
+fn pgn_combined_with_dfc_policy() {
     use passant_core::Resolution;
 
     let policies = vec![
         sample_pgn_policy(),
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

@@ -276,7 +276,7 @@ impl PassantPlanner {
         let chosen_candidate = candidates.first();
         let chosen = chosen_candidate
             .map(|candidate| candidate.strategy)
-            .unwrap_or(RewriteStrategy::CompatibilityFallback);
+            .unwrap_or(RewriteStrategy::StableOutputFallback);
         let strategy_reasons = chosen_candidate
             .map(|candidate| candidate.reasons.clone())
             .unwrap_or_default();

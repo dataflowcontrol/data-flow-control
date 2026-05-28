@@ -168,11 +168,7 @@ impl PassantRewriter {
         }
 
         let is_aggregation = select_analysis.is_aggregation;
-        let apply_aggregate_scan = plan.apply_aggregate_scan_columns;
         apply_select_rewrite_plan(select, plan, is_aggregation)?;
-        if apply_aggregate_scan {
-            self.apply_aggregate_scan_columns(select)?;
-        }
         Ok(())
     }
 

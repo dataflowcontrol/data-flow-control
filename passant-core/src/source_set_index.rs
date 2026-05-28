@@ -152,7 +152,7 @@ mod tests {
     use crate::policy::{PolicyIr, Resolution};
 
     fn dfc_multi(constraint: &str) -> PolicyIr {
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

@@ -1,0 +1,202 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use smallvec::SmallVec;
+use sqlparser::ast::Expr;
+
+use super::PolicyStore;
+use crate::identifiers::{ColumnKey, TableKey};
+use crate::policy::{PolicyIr, Resolution};
+use crate::semiring::{AggregateAnalysis, SemiringAnalysis, analyze_constraint};
+use crate::source_sets::{
+    compile_constraint_referenced_source_keys, compile_source_local_conjuncts,
+};
+use crate::sql::{collect_qualified_columns_from_expr, parse_projection_expr};
+use crate::threshold::{ThresholdPredicate, threshold_predicate_from_policy};
+
+/// Parsed constraint metadata compiled once at policy registration.
+#[derive(Debug, Clone)]
+pub struct CompiledExpr {
+    pub source_sql: Arc<str>,
+    pub ast: Expr,
+}
+
+/// Registration-time compiled policy used by the rewrite path.
+#[derive(Debug, Clone)]
+pub struct CompiledPolicy {
+    pub index: usize,
+    pub policy: PolicyIr,
+    pub active: bool,
+    pub constraint: Option<CompiledExpr>,
+    pub semiring: SemiringAnalysis,
+    pub source_keys: SmallVec<[TableKey; 4]>,
+    pub required_source_keys: SmallVec<[TableKey; 4]>,
+    pub sink_key: Option<TableKey>,
+    pub(crate) threshold: Option<ThresholdPredicate>,
+    pub join_pushdown_eligible: bool,
+    /// Precomputed `transform_scan_aggregates` for distributive aggregate constraints.
+    pub(crate) scan_ready_expr: Option<Expr>,
+    /// Pre-split AND conjuncts keyed by source for multi-source enforcement policies.
+    pub(crate) source_local_conjuncts: Option<SmallVec<[(TableKey, Expr); 4]>>,
+    /// Source tables referenced in the constraint expression.
+    pub(crate) constraint_referenced_sources: SmallVec<[TableKey; 4]>,
+    /// Qualified columns referenced in the constraint/dimensions, interned at registration.
+    pub(crate) constraint_referenced_columns: SmallVec<[(TableKey, ColumnKey); 4]>,
+}
+
+pub(crate) fn is_enforcement_resolution(resolution: Resolution) -> bool {
+    matches!(resolution, Resolution::Remove | Resolution::Kill)
+}
+
+impl PolicyStore {
+    pub(crate) fn compile_policy(&mut self, index: usize, policy: PolicyIr) -> CompiledPolicy {
+        let constraint_sql = self.intern_string(policy.constraint());
+        let constraint = parse_projection_expr(constraint_sql.as_ref())
+            .ok()
+            .map(|ast| CompiledExpr {
+                source_sql: constraint_sql.clone(),
+                ast,
+            });
+        let semiring = semiring_for_constraint(constraint_sql.as_ref());
+        let source_keys = policy
+            .sources()
+            .iter()
+            .map(|source| self.intern_table_key(source))
+            .collect::<SmallVec<[TableKey; 4]>>();
+        let required_source_keys = policy
+            .required_sources()
+            .iter()
+            .map(|source| self.intern_table_key(source))
+            .collect::<SmallVec<[TableKey; 4]>>();
+        let sink_key = policy.sink().map(|sink| self.intern_table_key(sink));
+        let threshold = threshold_predicate_from_policy(&policy);
+        let join_pushdown_eligible = matches!(
+            &policy,
+            PolicyIr::Dfc {
+                sources,
+                required_sources,
+                sink: None,
+                on_fail: Resolution::Remove | Resolution::Kill,
+                ..
+            } if required_sources.is_empty() && sources.len() == 1
+        );
+        let (source_local_conjuncts, constraint_referenced_sources, constraint_referenced_columns) =
+            if let Some(compiled) = constraint.as_ref() {
+                let referenced =
+                    compile_constraint_referenced_source_keys(&compiled.ast, &source_keys);
+                let mut columns = compile_constraint_referenced_column_keys(self, &compiled.ast);
+                for dimension in policy.dimensions() {
+                    if let Ok(expr) = parse_projection_expr(dimension) {
+                        columns.extend(compile_constraint_referenced_column_keys(self, &expr));
+                    }
+                }
+                let columns = dedup_referenced_column_keys(columns);
+                let conjuncts =
+                    if matches!(policy.resolution(), Resolution::Remove | Resolution::Kill)
+                        && policy.sink().is_none()
+                        && policy.required_sources().is_empty()
+                        && policy.dimensions().is_empty()
+                        && source_keys.len() > 1
+                    {
+                        compile_source_local_conjuncts(&compiled.ast, &source_keys)
+                    } else {
+                        None
+                    };
+                (conjuncts, referenced, columns)
+            } else {
+                (None, SmallVec::new(), SmallVec::new())
+            };
+
+        CompiledPolicy {
+            index,
+            policy,
+            active: true,
+            constraint,
+            semiring,
+            source_keys,
+            required_source_keys,
+            sink_key,
+            threshold,
+            join_pushdown_eligible,
+            scan_ready_expr: None,
+            source_local_conjuncts,
+            constraint_referenced_sources,
+            constraint_referenced_columns,
+        }
+    }
+}
+
+fn compile_constraint_referenced_column_keys(
+    store: &mut PolicyStore,
+    expr: &Expr,
+) -> SmallVec<[(TableKey, ColumnKey); 4]> {
+    let mut pairs = SmallVec::new();
+    for column in collect_qualified_columns_from_expr(expr) {
+        let table = store.intern_table_key(column.table.as_str());
+        let column_key = store.intern_column_key(column.column.as_str());
+        pairs.push((table, column_key));
+    }
+    pairs
+}
+
+fn dedup_referenced_column_keys(
+    pairs: SmallVec<[(TableKey, ColumnKey); 4]>,
+) -> SmallVec<[(TableKey, ColumnKey); 4]> {
+    let mut seen = HashSet::new();
+    let mut deduped: SmallVec<[(TableKey, ColumnKey); 4]> = SmallVec::new();
+    for (table, column) in pairs {
+        if seen.insert((table.clone(), column.clone())) {
+            deduped.push((table, column));
+        }
+    }
+    deduped.sort_by(|left, right| {
+        left.0
+            .as_str()
+            .cmp(right.0.as_str())
+            .then_with(|| left.1.as_str().cmp(right.1.as_str()))
+    });
+    deduped
+}
+
+fn semiring_for_constraint(constraint: &str) -> SemiringAnalysis {
+    match analyze_constraint(constraint) {
+        Ok(aggregates) => merge_semiring_from_aggregates(aggregates),
+        Err(_) => SemiringAnalysis {
+            aggregate_count: 0,
+            all_distributive: false,
+            non_distributive_aggregates: vec![format!("unparseable::{constraint}")],
+        },
+    }
+}
+
+pub(crate) fn merge_semiring<'a>(
+    entries: impl Iterator<Item = &'a CompiledPolicy>,
+) -> SemiringAnalysis {
+    let mut result = SemiringAnalysis::default();
+    for entry in entries {
+        result.aggregate_count += entry.semiring.aggregate_count;
+        if !entry.semiring.all_distributive {
+            result.all_distributive = false;
+        }
+        result
+            .non_distributive_aggregates
+            .extend(entry.semiring.non_distributive_aggregates.iter().cloned());
+    }
+    result
+}
+
+fn merge_semiring_from_aggregates(aggregates: Vec<AggregateAnalysis>) -> SemiringAnalysis {
+    let mut non_distributive_aggregates = Vec::new();
+    let mut all_distributive = true;
+    for aggregate in &aggregates {
+        if !aggregate.distributive {
+            all_distributive = false;
+            non_distributive_aggregates.push(aggregate.expression.clone());
+        }
+    }
+    SemiringAnalysis {
+        aggregate_count: aggregates.len(),
+        all_distributive,
+        non_distributive_aggregates,
+    }
+}

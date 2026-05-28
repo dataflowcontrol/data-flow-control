@@ -47,7 +47,7 @@ def test_sqlite_remove_scan_conformance():
 def test_sqlite_kill_registration_fails():
     db = wrap(sqlite3.connect(":memory:"), dialect="sqlite")
     db.execute("CREATE TABLE foo (id INTEGER)")
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )
@@ -79,7 +79,7 @@ def test_datafusion_remove_scan_conformance():
 def test_datafusion_kill_registration_fails():
     datafusion = pytest.importorskip("datafusion")
     db = wrap(datafusion.SessionContext(), dialect="datafusion")
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )
@@ -91,7 +91,7 @@ def test_datafusion_connect():
     db = connect("datafusion://")
     import pyarrow as pa
 
-    db.connection.register_record_batches(
+    db.raw_connection.register_record_batches(
         "foo", [pa.table({"id": pa.array([1, 2], type=pa.int64())}).to_batches()]
     )
     db.register_policy(
@@ -144,7 +144,7 @@ def test_postgres_kill_registration_fails():
     from passant.adapters.postgres import PostgresAdapter
 
     db = wrap(PostgresAdapter(object()), dialect="postgres")
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )
@@ -161,7 +161,7 @@ def test_umbra_kill_registration_fails():
     from passant.adapters.umbra import UmbraAdapter
 
     db = wrap(UmbraAdapter(object()), dialect="umbra")
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )

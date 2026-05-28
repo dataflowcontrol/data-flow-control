@@ -3,7 +3,7 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 #[test]
 fn rewriter_recurses_into_derived_subqueries() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -26,7 +26,7 @@ fn rewriter_recurses_into_derived_subqueries() {
 #[test]
 fn rewriter_recurses_into_ctes() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -49,7 +49,7 @@ fn rewriter_recurses_into_ctes() {
 #[test]
 fn rewriter_recurses_into_union_branches() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -72,7 +72,7 @@ fn rewriter_recurses_into_union_branches() {
 #[test]
 fn rewriter_recurses_into_intersect_branches() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -95,7 +95,7 @@ fn rewriter_recurses_into_intersect_branches() {
 #[test]
 fn rewriter_recurses_into_exists_subquery() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -118,7 +118,7 @@ fn rewriter_recurses_into_exists_subquery() {
 #[test]
 fn rewriter_recurses_into_in_subquery() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -141,7 +141,7 @@ fn rewriter_recurses_into_in_subquery() {
 #[test]
 fn rewriter_recurses_into_not_exists_subquery() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -164,7 +164,7 @@ fn rewriter_recurses_into_not_exists_subquery() {
 #[test]
 fn rewriter_recurses_into_not_in_subquery() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::CompatDfc {
+    rewriter.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

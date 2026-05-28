@@ -43,7 +43,7 @@ fn planner_applies_dominance_before_rewrite() {
     use crate::common::{plan_query, rewrite};
 
     let policies = vec![
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -53,7 +53,7 @@ fn planner_applies_dominance_before_rewrite() {
             on_fail: Resolution::Remove,
             description: None,
         },
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

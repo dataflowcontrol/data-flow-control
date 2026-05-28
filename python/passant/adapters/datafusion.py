@@ -27,12 +27,7 @@ class _DataFusionCursor:
 
 class DataFusionAdapter:
     dialect = "datafusion"
-    capabilities = Capabilities(
-        exception_udf=False,
-        update_from=True,
-        aggregate_filter=True,
-        cte_in_insert=True,
-    )
+    capabilities = Capabilities(exception_udf=False)
 
     def __init__(self, context) -> None:
         self._ctx = context

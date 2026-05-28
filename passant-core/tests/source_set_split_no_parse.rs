@@ -1,7 +1,7 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
 fn cross_source_policy(left: &str, right: &str, constraint: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![left.to_string(), right.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -22,7 +22,7 @@ fn union_all_split_rewrite_uses_compiled_constraints_without_reparsing() {
         "max(foo.id) > 1 AND max(bar.id) > 10",
     ));
     for index in 0..2_000_usize {
-        rewriter.register_policy(PolicyIr::CompatDfc {
+        rewriter.register_policy(PolicyIr::Dfc {
             sources: vec![format!("other_{index:05}")],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

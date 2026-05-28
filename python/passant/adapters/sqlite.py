@@ -10,12 +10,7 @@ from .duckdb import quote_sql_identifier
 
 class SQLiteAdapter:
     dialect = "sqlite"
-    capabilities = Capabilities(
-        exception_udf=False,
-        update_from=False,
-        aggregate_filter=False,
-        cte_in_insert=True,
-    )
+    capabilities = Capabilities(exception_udf=False)
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn

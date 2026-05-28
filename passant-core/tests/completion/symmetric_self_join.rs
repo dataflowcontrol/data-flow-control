@@ -6,7 +6,7 @@ use crate::common::{plan_query, rewrite};
 
 #[test]
 fn self_join_three_aliases_applies_policy_once_per_occurrence_not_factorial() {
-    let policy = PolicyIr::CompatDfc {
+    let policy = PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -34,7 +34,7 @@ fn self_join_three_aliases_applies_policy_once_per_occurrence_not_factorial() {
 fn explain_does_not_expand_policy_permutations_for_self_join() {
     use passant_core::PassantPlanner;
 
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -65,7 +65,7 @@ fn self_join_execution_remove_filters_each_alias() {
 
     let sql = rewrite(
         "SELECT a.id FROM foo AS a JOIN foo AS b ON a.id = b.id",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -82,7 +82,7 @@ fn self_join_execution_remove_filters_each_alias() {
 
 #[test]
 fn self_join_sink_write_preserves_alias_symmetry() {
-    let policy = PolicyIr::CompatDfc {
+    let policy = PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

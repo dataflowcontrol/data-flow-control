@@ -1,7 +1,7 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
 fn remove_policy(source: &str, constraint: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

@@ -222,11 +222,6 @@ impl Iterator for PolicyIndexMergeIter<'_> {
     }
 }
 
-/// Merge sorted policy-id indexes into a vector (tests and debug validation).
-pub(crate) fn merge_policy_indexes(store: &PolicyStore, lists: &[&PolicyIndex]) -> Vec<usize> {
-    PolicyIndexMergeIter::new(store, lists).collect()
-}
-
 enum PolicyIndexCursorState<'a> {
     List {
         list: &'a [usize],
@@ -310,7 +305,7 @@ mod tests {
     fn roaring_bitmap_index_promotes_at_threshold() {
         let mut store = PolicyStore::default();
         for index in 0..600usize {
-            store.register(crate::policy::PolicyIr::CompatDfc {
+            store.register(crate::policy::PolicyIr::Dfc {
                 sources: vec!["orders".to_string()],
                 required_sources: Vec::new(),
                 dimensions: Vec::new(),

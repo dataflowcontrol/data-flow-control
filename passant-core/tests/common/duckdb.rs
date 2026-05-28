@@ -127,14 +127,6 @@ impl TestDb {
         self.exec(&rewritten);
     }
 
-    pub fn finalize_aggregate_policies(&self, sink_table: &str) {
-        for query in self.rewriter.finalize_aggregate_queries(sink_table) {
-            if let Some(invalidate_sql) = query.invalidate_sql {
-                self.exec(&invalidate_sql);
-            }
-        }
-    }
-
     pub fn run_rewritten_expect_error(&self, sql: &str) -> String {
         let rewritten = self
             .rewrite(sql)

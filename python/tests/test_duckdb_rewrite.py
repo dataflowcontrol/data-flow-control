@@ -1,6 +1,6 @@
 """End-to-end Python API tests: policy registration, rewrite, and DuckDB execution."""
 
-from passant import AggregatePolicy, Policy, Resolution, wrap
+from passant import Policy, Resolution, wrap
 import json
 import duckdb
 import pytest
@@ -16,9 +16,7 @@ def test_rewriter_preserves_policy_registration():
     )
     rewriter.register_policy(policy)
     assert rewriter.policies() == [policy]
-    assert json.loads(rewriter.planner.inner.dfc_policies_json())[0]["CompatDfc"]["sources"] == [
-        "foo"
-    ]
+    assert json.loads(rewriter.planner.inner.dfc_policies_json())[0]["Dfc"]["sources"] == ["foo"]
 
 
 def test_delete_policy_updates_rust_storage():
@@ -120,20 +118,6 @@ def test_dfc_policy_from_policy_str_preserves_dimensions():
     )
 
 
-def test_aggregate_policy_from_policy_str_uses_rust_parser():
-    policy = AggregatePolicy.from_policy_str(
-        "AGGREGATE SOURCES foo SINK reports DIMENSION reports.region "
-        "CONSTRAINT sum(reports.id) > 1 ON FAIL REMOVE"
-    )
-    assert policy == AggregatePolicy(
-        sources=["foo"],
-        sink="reports",
-        dimensions=["reports.region"],
-        constraint="sum(reports.id) > 1",
-        on_fail=Resolution.REMOVE,
-    )
-
-
 def test_policy_requires_sources_list():
     with pytest.raises(ValueError, match="Sources must be provided"):
         Policy(
@@ -205,9 +189,9 @@ def test_explain_rewrite_uses_registered_policies():
         )
     )
 
-    explanation = rewriter.explain_rewrite("SELECT id FROM foo")
+    explanation = rewriter.explain("SELECT id FROM foo")
     assert explanation["chosen"]["rewritten_sql"] == "SELECT id FROM foo WHERE foo.id > 1"
-    assert explanation["applicable_policies"][0]["CompatDfc"]["sources"] == ["foo"]
+    assert explanation["applicable_policies"][0]["Dfc"]["sources"] == ["foo"]
 
 
 def test_explain_rewrite_reports_full_push_strategy_for_join():
@@ -222,7 +206,7 @@ def test_explain_rewrite_reports_full_push_strategy_for_join():
         )
     )
 
-    explanation = rewriter.explain_rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
+    explanation = rewriter.explain("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
     assert explanation["chosen"]["strategy"] == "FullPush"
     assert explanation["scope"]["visible_tables"] == ["foo", "bar"]
 
@@ -239,7 +223,7 @@ def test_explain_rewrite_reports_non_distributive_policy_aggregate():
         )
     )
 
-    explanation = rewriter.explain_rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
+    explanation = rewriter.explain("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
     assert explanation["chosen"]["strategy"] == "PartialPush"
     assert explanation["scope"]["policy_aggregate_count"] == 1
     assert explanation["scope"]["policy_aggregates_distributive"] is False
@@ -348,7 +332,7 @@ def test_explain_rewrite_reports_unsupported_rewrite_error():
         )
     )
 
-    explanation = rewriter.explain_rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo")
+    explanation = rewriter.explain("SELECT id FROM bar EXCEPT SELECT id FROM foo")
     assert explanation["scope"]["requires_source_set_annotations"] is True
     assert explanation["chosen"]["rewrite_error"] is None
     assert explanation["chosen"]["rewritten_sql"] == (
@@ -368,9 +352,7 @@ def test_explain_rewrite_reports_source_set_error():
         )
     )
 
-    explanation = rewriter.explain_rewrite(
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id"
-    )
+    explanation = rewriter.explain("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
     assert explanation["scope"]["requires_source_set_annotations"] is True
     assert explanation["chosen"]["rewrite_error"] is None
     rewritten = explanation["chosen"]["rewritten_sql"]
@@ -383,22 +365,6 @@ def test_execute_round_trips_through_duckdb():
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (2,)]
-
-
-def test_kill_resolution_aborts_query():
-    rewriter = wrap(duckdb.connect())
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.execute("INSERT INTO foo VALUES (1)")
-    rewriter.register_policy(
-        Policy(
-            sources=["foo"],
-            constraint="max(foo.id) > 10",
-            on_fail=Resolution.KILL,
-        )
-    )
-
-    with pytest.raises(Exception, match="KILLing due to dfc policy violation"):
-        rewriter.fetchall("SELECT id FROM foo")
 
 
 def test_insert_sink_policy_maps_output_columns():
@@ -551,24 +517,6 @@ def test_update_sink_alias_policy_filters_assignments():
     assert rewriter.fetchall("SELECT * FROM reports") == [(1, "draft")]
     rewriter.execute("UPDATE reports SET status = 'approved'")
     assert rewriter.fetchall("SELECT * FROM reports") == [(1, "approved")]
-
-
-def test_update_kill_policy_aborts_invalid_assignment():
-    rewriter = wrap(duckdb.connect())
-    rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
-    rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
-    rewriter.register_policy(
-        Policy(
-            sources=[],
-            sink="reports",
-            constraint="reports.status = 'approved'",
-            on_fail=Resolution.KILL,
-        )
-    )
-
-    with pytest.raises(Exception, match="KILLing due to dfc policy violation"):
-        rewriter.execute("UPDATE reports SET status = 'draft'")
-    assert rewriter.fetchall("SELECT * FROM reports") == [(1, "draft")]
 
 
 def test_required_source_missing_fails_closed_on_update():
@@ -1012,7 +960,7 @@ def test_transform_query_collect_stats():
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     for index in range(50):
         table = f"other_{index}"
-        rewriter.connection.execute(f"CREATE TABLE {table} (id INTEGER)")
+        rewriter.raw_connection.execute(f"CREATE TABLE {table} (id INTEGER)")
     rewriter.register_policy(
         Policy(
             sources=["foo"],
@@ -1030,7 +978,9 @@ def test_transform_query_collect_stats():
             )
         )
 
-    rewriter.transform_query("SELECT id FROM foo", collect_stats=True)
+    from passant import RewriteOptions
+
+    rewriter.transform_query("SELECT id FROM foo", options=RewriteOptions(collect_stats=True))
     stats = rewriter.last_rewrite_stats()
     assert stats is not None
     assert stats.policy_constraints_parsed_during_rewrite == 0
@@ -1126,145 +1076,6 @@ def test_policy_applies_inside_not_in_subquery():
     assert rewriter.fetchall("SELECT id FROM bar WHERE id NOT IN (SELECT id FROM foo)") == [
         (1,),
         (3,),
-    ]
-
-
-def test_delete_aggregate_policy_updates_rust_storage():
-    rewriter = wrap(duckdb.connect())
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.execute("CREATE TABLE reports (id INTEGER)")
-    policy = AggregatePolicy(
-        sources=["foo"],
-        sink="reports",
-        constraint="sum(reports.id) > 1",
-        on_fail=Resolution.REMOVE,
-    )
-    rewriter.register_policy(policy)
-    assert (
-        json.loads(rewriter.planner.inner.aggregate_policies_json())[0]["CompatAggregate"][
-            "dimensions"
-        ]
-        == []
-    )
-
-    assert rewriter.delete_policy(
-        sources=["foo"],
-        sink="reports",
-        constraint="sum(reports.id) > 1",
-        on_fail=Resolution.REMOVE,
-    )
-    assert rewriter.aggregate_policies() == []
-
-
-def test_aggregate_policy_temp_columns():
-    rewriter = wrap(duckdb.connect())
-    rewriter.execute("CREATE TABLE foo (amount INTEGER)")
-    rewriter.execute(
-        "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
-    )
-    rewriter.execute("INSERT INTO foo VALUES (5), (10)")
-    rewriter.register_policy(
-        AggregatePolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="sum(foo.amount) >= sum(reports.total)",
-            on_fail=Resolution.REMOVE,
-        )
-    )
-
-    rewriter.execute("INSERT INTO reports (total) SELECT foo.amount FROM foo")
-    assert rewriter.fetchall(
-        "SELECT total, __passant_agg_0, __passant_agg_1 FROM reports ORDER BY total"
-    ) == [
-        (5, 5, 5),
-        (10, 10, 10),
-    ]
-
-
-def test_grouped_aggregate_policy_temp_columns():
-    rewriter = wrap(duckdb.connect())
-    rewriter.execute("CREATE TABLE foo (region VARCHAR, amount INTEGER)")
-    rewriter.execute(
-        "CREATE TABLE reports ("
-        "region VARCHAR, total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
-    )
-    rewriter.execute("INSERT INTO foo VALUES ('east', 5), ('east', 10), ('west', 3)")
-    rewriter.register_policy(
-        AggregatePolicy(
-            sources=["foo"],
-            sink="reports",
-            dimensions=["reports.region"],
-            constraint="sum(foo.amount) >= sum(reports.total)",
-            on_fail=Resolution.REMOVE,
-        )
-    )
-
-    rewriter.execute(
-        "INSERT INTO reports (region, total) "
-        "SELECT foo.region, sum(foo.amount) FROM foo GROUP BY foo.region"
-    )
-    assert rewriter.fetchall(
-        "SELECT region, total, __passant_agg_0, __passant_agg_1 FROM reports ORDER BY region"
-    ) == [
-        ("east", 15, 15, 15),
-        ("west", 3, 3, 3),
-    ]
-
-
-def test_count_aggregate_policy_temp_columns():
-    rewriter = wrap(duckdb.connect())
-    rewriter.execute("CREATE TABLE foo (id INTEGER, total INTEGER)")
-    rewriter.execute(
-        "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER)"
-    )
-    rewriter.execute("INSERT INTO foo VALUES (1, 1), (2, 1), (NULL, 1)")
-    rewriter.register_policy(
-        AggregatePolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="count(foo.id) >= sum(reports.total)",
-            on_fail=Resolution.REMOVE,
-        )
-    )
-
-    rewriter.execute("INSERT INTO reports (total) SELECT foo.total FROM foo")
-    assert rewriter.fetchall("SELECT total, __passant_agg_0, __passant_agg_1 FROM reports") == [
-        (1, 1, 1),
-        (1, 2, 1),
-        (1, None, 1),
-    ]
-
-
-def test_multiple_aggregate_policy_temp_columns():
-    rewriter = wrap(duckdb.connect())
-    rewriter.execute("CREATE TABLE foo (amount INTEGER, tax INTEGER)")
-    rewriter.execute(
-        "CREATE TABLE reports (total INTEGER, __passant_agg_0 INTEGER, __passant_agg_1 INTEGER, __passant_agg_2 INTEGER)"
-    )
-    rewriter.execute("INSERT INTO foo VALUES (5, 1), (10, 2)")
-    rewriter.register_policy(
-        AggregatePolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="sum(foo.amount) >= sum(reports.total)",
-            on_fail=Resolution.REMOVE,
-        )
-    )
-    rewriter.register_policy(
-        AggregatePolicy(
-            sources=["foo"],
-            sink="reports",
-            constraint="sum(foo.tax) >= 3",
-            on_fail=Resolution.REMOVE,
-        )
-    )
-
-    rewriter.execute("INSERT INTO reports (total) SELECT foo.amount FROM foo")
-    assert rewriter.fetchall(
-        "SELECT total, __passant_agg_0, __passant_agg_1, __passant_agg_2 FROM reports ORDER BY total"
-    ) == [
-        (5, 5, 5, 1),
-        (10, 10, 10, 2),
     ]
 
 

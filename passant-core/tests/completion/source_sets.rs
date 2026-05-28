@@ -5,7 +5,7 @@ use passant_core::{PolicyIr, Resolution};
 use crate::common::{assert_rewrite, rewrite};
 
 fn cross_source_policy() -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -39,7 +39,7 @@ fn full_outer_join_cross_source_policy_with_source_sets() {
 fn union_all_cross_source_policy_with_source_sets() {
     assert_rewrite(
         "SELECT id FROM foo UNION ALL SELECT id FROM bar",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -87,7 +87,7 @@ fn scope_flags_require_source_sets_for_cross_source_outer_join() {
 fn insert_sink_write_applies_per_tuple_source_sets() {
     assert_rewrite(
         "INSERT INTO reports SELECT bar.id, foo.amount FROM bar LEFT JOIN foo ON bar.id = foo.id",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["bar".to_string(), "foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

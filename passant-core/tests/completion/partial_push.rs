@@ -5,7 +5,7 @@ use passant_core::{PolicyIr, Resolution};
 use crate::common::rewrite;
 
 fn avg_policy(source: &str, constraint: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

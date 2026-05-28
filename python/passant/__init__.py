@@ -7,10 +7,9 @@ from .adapters import IMPLEMENTED_DIALECTS, SUPPORTED_DIALECTS
 from .connection import Connection, connect, wrap
 from .options import RewriteOptions
 from .planner import Planner
-from .policy import AggregatePolicy, PgnPolicy, Policy, Resolution
+from .policy import PgnPolicy, Policy, Resolution
 
 __all__ = [
-    "AggregatePolicy",
     "Connection",
     "IMPLEMENTED_DIALECTS",
     "PassantRewriteError",

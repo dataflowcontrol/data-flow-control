@@ -27,7 +27,7 @@ fn partial_push_remove_preserves_rows_when_policy_passes() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (3)");
-    db.register_policy(PolicyIr::CompatDfc {
+    db.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -51,7 +51,7 @@ fn partial_push_remove_filters_rows_when_aggregate_policy_fails() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (2), (3)");
-    db.register_policy(PolicyIr::CompatDfc {
+    db.register_policy(PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -77,7 +77,7 @@ fn outer_join_cross_source_remove_execution_matches_naive_filter() {
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO bar VALUES (1), (3)");
     db.exec("INSERT INTO foo VALUES (2), (4)");
-    db.register_policy(PolicyIr::CompatDfc {
+    db.register_policy(PolicyIr::Dfc {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

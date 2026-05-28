@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from passant import AggregatePolicy, Policy, Resolution
+from passant import Policy, Resolution
 
 
 class TestJoinTypes:
@@ -16,7 +16,7 @@ class TestJoinTypes:
         transformed = rewriter.transform_query("SELECT foo.id FROM foo CROSS JOIN baz")
         assert "CROSS JOIN" in transformed.upper()
         assert "foo.id > 1" in transformed
-        assert rewriter.connection.execute(transformed).fetchall() is not None
+        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
 
     def test_select_distinct_with_policy(self, rewriter):
         policy = Policy(
@@ -28,7 +28,7 @@ class TestJoinTypes:
         transformed = rewriter.transform_query("SELECT DISTINCT id FROM foo")
         assert "DISTINCT" in transformed.upper()
         assert "foo.id > 1" in transformed
-        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
+        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 2
 
 
 class TestWindowFunctions:
@@ -44,7 +44,7 @@ class TestWindowFunctions:
         assert "ROW_NUMBER() OVER" in transformed
         assert "foo.id > 1" in transformed
         assert "HAVING" not in transformed.upper()
-        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
+        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 2
 
 
 class TestInSubqueries:
@@ -58,7 +58,7 @@ class TestInSubqueries:
         transformed = rewriter.transform_query("SELECT id FROM foo WHERE id IN (1, 2, 3)")
         assert "IN (1, 2, 3)" in transformed
         assert "foo.id > 1" in transformed
-        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
+        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 2
 
 
 class TestCorrelatedSubqueries:
@@ -73,7 +73,7 @@ class TestCorrelatedSubqueries:
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
         assert "HAVING" not in transformed.upper()
-        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
+        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 2
 
     def test_correlated_subquery_in_where(self, rewriter):
         policy = Policy(
@@ -85,7 +85,7 @@ class TestCorrelatedSubqueries:
         query = "SELECT id FROM foo WHERE id = (SELECT x FROM baz WHERE baz.x = foo.id)"
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
-        assert rewriter.connection.execute(transformed).fetchall() is not None
+        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
 
 
 class TestExistsSubqueries:
@@ -108,7 +108,7 @@ class TestExistsSubqueries:
         transformed = rewriter.transform_query(query)
         assert "EXISTS" in transformed.upper()
         assert "o_orderkey" in transformed
-        assert rewriter.connection.execute(transformed).fetchall() is not None
+        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
 
     def test_exists_subquery_with_policy_on_inner_table_rewrites_to_join(self, rewriter):
         rewriter.execute(
@@ -144,7 +144,7 @@ ORDER BY o_orderpriority"""
         assert "base_query" not in transformed.lower()
         assert "exists_subquery" in transformed.lower()
         assert "having" in transformed.lower()
-        assert rewriter.connection.execute(transformed).fetchall() is not None
+        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
 
 
 class TestSubqueryWithMissingColumns:
@@ -158,7 +158,7 @@ class TestSubqueryWithMissingColumns:
         query = "SELECT sub.name FROM (SELECT foo.name FROM foo) AS sub"
         transformed = rewriter.transform_query(query)
         assert "foo.id" in transformed or "sub.id" in transformed
-        assert len(rewriter.connection.execute(transformed).fetchall()) == 2
+        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 2
 
 
 class TestMultipleCTEs:
@@ -176,7 +176,7 @@ class TestMultipleCTEs:
         """
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
-        assert rewriter.connection.execute(transformed).fetchall() is not None
+        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
 
     def test_multiple_ctes_with_joins(self, rewriter):
         policy = Policy(
@@ -192,7 +192,7 @@ class TestMultipleCTEs:
         """
         transformed = rewriter.transform_query(query)
         assert "foo.id > 1" in transformed
-        assert rewriter.connection.execute(transformed).fetchall() is not None
+        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
 
 
 class TestInsertStatements:
@@ -243,7 +243,7 @@ class TestPolicyRowDropping:
         )
         rewriter.register_policy(policy)
         transformed = rewriter.transform_query("SELECT id, name FROM foo ORDER BY id")
-        result = rewriter.connection.execute(transformed).fetchall()
+        result = rewriter.raw_connection.execute(transformed).fetchall()
         assert result == [(1, "Alice"), (3, "Charlie")]
 
     def test_policy_drops_rows_with_or_constraint(self, rewriter):
@@ -254,7 +254,7 @@ class TestPolicyRowDropping:
         )
         rewriter.register_policy(policy)
         transformed = rewriter.transform_query("SELECT id, name FROM foo ORDER BY id")
-        result = rewriter.connection.execute(transformed).fetchall()
+        result = rewriter.raw_connection.execute(transformed).fetchall()
         assert result == [(1, "Alice"), (3, "Charlie")]
 
     def test_policy_scan_with_approx_count_distinct(self, rewriter):
@@ -266,7 +266,7 @@ class TestPolicyRowDropping:
         rewriter.register_policy(policy)
         transformed = rewriter.transform_query("SELECT id FROM foo")
         assert "1 = 1" in transformed
-        assert len(rewriter.connection.execute(transformed).fetchall()) == 3
+        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 3
 
 
 class TestMultiSourceRewrites:
@@ -281,22 +281,4 @@ class TestMultiSourceRewrites:
         transformed = rewriter.transform_query(query)
         assert "foo.id >= 2" in transformed
         assert "baz.x <= 20" in transformed
-        assert rewriter.connection.execute(transformed).fetchall() is not None
-
-
-class TestAggregatePolicyFilter:
-    def test_aggregate_policy_filter_replaces_output_column(self, rewriter):
-        rewriter.execute("CREATE TABLE bank_txn (amount INTEGER, kind VARCHAR)")
-        rewriter.execute("INSERT INTO bank_txn VALUES (100, 'Income'), (50, 'Expense')")
-        rewriter.execute("CREATE TABLE irs_form (amount INTEGER, kind VARCHAR)")
-        policy = AggregatePolicy(
-            sources=["bank_txn"],
-            sink="irs_form",
-            constraint="sum(bank_txn.amount) filter (where bank_txn.kind = 'Income') > 0",
-            on_fail=Resolution.REMOVE,
-        )
-        rewriter.register_policy(policy)
-        query = "INSERT INTO irs_form SELECT amount, kind FROM bank_txn"
-        transformed = rewriter.transform_query(query)
-        assert "CASE WHEN" in transformed.upper()
-        assert "__passant_agg_0" in transformed
+        assert rewriter.raw_connection.execute(transformed).fetchall() is not None

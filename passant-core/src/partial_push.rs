@@ -20,7 +20,8 @@ use crate::rewriter::{
 use crate::sql::{
     alias_column, and_exprs, column_comparison, cte, empty_select, function_call,
     partial_push_join_from, partial_push_split_query, passant_filter_temp_column, qualified_column,
-    qualified_wildcard, query_from_select, statement_from_query, table_factor, with_ctes,
+    qualified_wildcard, query_from_select, render_statement, statement_from_query, table_factor,
+    with_ctes,
 };
 
 const BASE_QUERY_CTE: &str = "base_query";
@@ -78,7 +79,9 @@ impl RewriteEngine for PartialPushEngine {
         if request.kind != StatementKind::SelectQuery {
             let mut statement = request.statement.clone();
             rewriter.rewrite_statement_full_push(&mut statement, request.options.collect_stats)?;
-            return Ok(RewriteAttempt::Applied(statement.to_string()));
+            return Ok(RewriteAttempt::Applied(crate::sql::render_statement(
+                &statement, None,
+            )));
         }
 
         if !has_applicable_enforcement_policies(rewriter, select) {
@@ -201,12 +204,14 @@ fn partial_push_aggregation(
     let (policy_eval_query, join_keys, _extra_dfc) =
         build_policy_eval_query(rewriter, select, &group_specs, false, None)?;
 
-    Ok(statement_from_query(partial_push_split_query(
-        base_query,
-        policy_eval_query,
-        &join_keys,
+    Ok(render_statement(
+        &statement_from_query(partial_push_split_query(
+            base_query,
+            policy_eval_query,
+            &join_keys,
+        )),
+        None,
     ))
-    .to_string())
 }
 
 fn partial_push_limit_aggregation(
@@ -320,15 +325,17 @@ fn partial_push_limit_aggregation(
     }];
     outer_select.selection = and_exprs(where_exprs);
 
-    Ok(statement_from_query(with_ctes(
-        vec![
-            cte(BASE_QUERY_CTE, base_query),
-            cte(POLICY_EVAL_CTE, policy_eval_query),
-            cte(LIMIT_CTE, limit_query),
-        ],
-        SetExpr::Select(Box::new(outer_select)),
+    Ok(render_statement(
+        &statement_from_query(with_ctes(
+            vec![
+                cte(BASE_QUERY_CTE, base_query),
+                cte(POLICY_EVAL_CTE, policy_eval_query),
+                cte(LIMIT_CTE, limit_query),
+            ],
+            SetExpr::Select(Box::new(outer_select)),
+        )),
+        None,
     ))
-    .to_string())
 }
 
 fn partial_push_limit_scan(
@@ -366,7 +373,7 @@ fn partial_push_limit_scan(
     )?;
 
     for action in actions {
-        let PolicyResolutionAction::CompatDfc {
+        let PolicyResolutionAction::Dfc {
             filter: mut expr,
             on_fail,
             ..
@@ -430,11 +437,13 @@ fn partial_push_limit_scan(
     }];
     outer_select.selection = and_exprs(filters);
 
-    Ok(statement_from_query(with_ctes(
-        vec![cte(PARTIAL_SCAN_CTE, inner)],
-        SetExpr::Select(Box::new(outer_select)),
+    Ok(render_statement(
+        &statement_from_query(with_ctes(
+            vec![cte(PARTIAL_SCAN_CTE, inner)],
+            SetExpr::Select(Box::new(outer_select)),
+        )),
+        None,
     ))
-    .to_string())
 }
 
 fn partial_push_scan(
@@ -459,12 +468,14 @@ fn partial_push_scan(
         Statement::Query(query) => *query.clone(),
         _ => unreachable!("validated above"),
     };
-    Ok(statement_from_query(partial_push_split_query(
-        base_query,
-        policy_eval_query,
-        &join_keys,
+    Ok(render_statement(
+        &statement_from_query(partial_push_split_query(
+            base_query,
+            policy_eval_query,
+            &join_keys,
+        )),
+        None,
     ))
-    .to_string())
 }
 
 fn build_policy_eval_query(

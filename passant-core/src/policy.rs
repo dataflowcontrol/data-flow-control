@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sqlparser::dialect::DuckDbDialect;
-use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -62,18 +60,8 @@ pub struct PgnPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AggregateDfcPolicy {
-    pub sources: Vec<String>,
-    #[serde(default)]
-    pub dimensions: Vec<String>,
-    pub sink: Option<String>,
-    pub constraint: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolicyIr {
-    CompatDfc {
+    Dfc {
         sources: Vec<String>,
         required_sources: Vec<String>,
         dimensions: Vec<String>,
@@ -83,64 +71,57 @@ pub enum PolicyIr {
         on_fail: Resolution,
         description: Option<String>,
     },
-    CompatAggregate(AggregateDfcPolicy),
     NativePgn(PgnPolicy),
 }
 
 impl PolicyIr {
     pub fn sources(&self) -> &[String] {
         match self {
-            PolicyIr::CompatDfc { sources, .. } => sources,
-            PolicyIr::CompatAggregate(policy) => &policy.sources,
+            PolicyIr::Dfc { sources, .. } => sources,
             PolicyIr::NativePgn(policy) => &policy.scope.sources,
         }
     }
 
     pub fn required_sources(&self) -> &[String] {
         match self {
-            PolicyIr::CompatDfc {
+            PolicyIr::Dfc {
                 required_sources, ..
             } => required_sources,
-            PolicyIr::CompatAggregate(_) | PolicyIr::NativePgn(_) => &[],
+            PolicyIr::NativePgn(_) => &[],
         }
     }
 
     pub fn sink(&self) -> Option<&str> {
         match self {
-            PolicyIr::CompatDfc { sink, .. } => sink.as_deref(),
-            PolicyIr::CompatAggregate(policy) => policy.sink.as_deref(),
+            PolicyIr::Dfc { sink, .. } => sink.as_deref(),
             PolicyIr::NativePgn(policy) => policy.scope.sink.as_deref(),
         }
     }
 
     pub fn dimensions(&self) -> &[String] {
         match self {
-            PolicyIr::CompatDfc { dimensions, .. } => dimensions,
-            PolicyIr::CompatAggregate(policy) => &policy.dimensions,
+            PolicyIr::Dfc { dimensions, .. } => dimensions,
             PolicyIr::NativePgn(policy) => &policy.scope.dimensions,
         }
     }
 
     pub fn constraint(&self) -> &str {
         match self {
-            PolicyIr::CompatDfc { constraint, .. } => constraint,
-            PolicyIr::CompatAggregate(policy) => &policy.constraint,
+            PolicyIr::Dfc { constraint, .. } => constraint,
             PolicyIr::NativePgn(policy) => &policy.constraint,
         }
     }
 
     pub fn resolution(&self) -> Resolution {
         match self {
-            PolicyIr::CompatDfc { on_fail, .. } => *on_fail,
-            PolicyIr::CompatAggregate(_) => Resolution::Remove,
+            PolicyIr::Dfc { on_fail, .. } => *on_fail,
             PolicyIr::NativePgn(policy) => policy.on_fail,
         }
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            PolicyIr::CompatDfc { .. } => "compat_dfc",
-            PolicyIr::CompatAggregate(_) => "compat_aggregate",
+            PolicyIr::Dfc { .. } => "dfc",
             PolicyIr::NativePgn(_) => "pgn",
         }
     }
@@ -189,7 +170,12 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
         return parse_pgn_policy(&normalized);
     }
 
-    let is_aggregate = strip_keyword_prefix(&mut normalized, "AGGREGATE");
+    if strip_keyword_prefix(&mut normalized, "AGGREGATE") {
+        return Err(PolicyParseError::InvalidSyntax(
+            "aggregate policies are not supported; use Policy with REMOVE or KILL".into(),
+        ));
+    }
+
     let sources = clause_value(
         &normalized,
         &["SOURCE", "SOURCES"],
@@ -233,23 +219,7 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
     for dimension in &dimensions {
         validate_sql_expression(dimension.as_str(), "dimension")?;
     }
-    if is_aggregate {
-        let on_fail = Resolution::parse(&resolution)?;
-        if on_fail != Resolution::Remove {
-            return Err(PolicyParseError::InvalidSyntax(
-                "aggregate policies require ON FAIL REMOVE".into(),
-            ));
-        }
-        return Ok(PolicyIr::CompatAggregate(AggregateDfcPolicy {
-            sources: parsed_sources.sources,
-            dimensions,
-            sink,
-            constraint,
-            description,
-        }));
-    }
-
-    Ok(PolicyIr::CompatDfc {
+    Ok(PolicyIr::Dfc {
         sources: parsed_sources.sources,
         required_sources: parsed_sources.required_sources,
         dimensions,
@@ -477,13 +447,10 @@ fn parse_dimensions(value: &str) -> Result<Vec<String>, PolicyParseError> {
 }
 
 fn validate_sql_expression(value: &str, label: &str) -> Result<(), PolicyParseError> {
-    Parser::parse_sql(&DuckDbDialect {}, &format!("SELECT {value}"))
-        .map(|_| ())
-        .map_err(|err| {
-            PolicyParseError::InvalidSyntax(format!(
-                "invalid {label} SQL expression '{value}': {err}"
-            ))
-        })
+    crate::sql::parse_policy_expr_duckdb(value).map_err(|err| {
+        PolicyParseError::InvalidSyntax(format!("invalid {label} SQL expression '{value}': {err}"))
+    })?;
+    Ok(())
 }
 
 fn parse_table_reference(value: &str) -> Result<String, PolicyParseError> {
@@ -574,15 +541,6 @@ mod tests {
         assert!(Resolution::parse("INVALIDATE").is_err());
         assert!(Resolution::parse("INVALIDATE_MESSAGE").is_err());
         assert!(Resolution::parse("NOPE").is_err());
-    }
-
-    #[test]
-    fn aggregate_keyword_parses_into_compat_aggregate_policy() {
-        let policy = parse_policy_text(
-            "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
-        )
-        .expect("aggregate policy should parse");
-        assert!(matches!(policy, PolicyIr::CompatAggregate(_)));
     }
 
     #[test]

@@ -75,7 +75,7 @@ def test_clickhouse_kill_registration_fails():
             pass
 
     db = wrap(ClickHouseAdapter(_Client()), dialect="clickhouse")
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )
@@ -85,7 +85,7 @@ def test_umbra_kill_registration_fails():
     from passant.adapters.umbra import UmbraAdapter
 
     db = wrap(UmbraAdapter(object()), dialect="umbra")
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )

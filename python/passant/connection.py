@@ -9,7 +9,7 @@ from .adapters.registry import connect as open_connection
 from .adapters.registry import create_adapter
 from .options import RewriteOptions
 from .planner import Planner
-from .policy import AggregatePolicy, PgnPolicy, Policy, Resolution
+from .policy import PgnPolicy, Policy, Resolution
 
 
 def strip_passant_comment(sql: str) -> str:
@@ -38,7 +38,7 @@ class Connection:
             adapter.register_kill_function()
 
     @property
-    def connection(self):
+    def raw_connection(self):
         if isinstance(self.adapter, DuckDBAdapter):
             return self.adapter.connection
         if isinstance(self.adapter, DataFusionAdapter):
@@ -52,12 +52,12 @@ class Connection:
     def refresh_catalog(self) -> None:
         self.planner.sync_catalog(self.adapter.introspect_catalog())
 
-    def register_policy(self, policy: Policy | AggregatePolicy | PgnPolicy) -> None:
+    def register_policy(self, policy: Policy | PgnPolicy) -> None:
         if isinstance(policy, Policy) and policy.on_fail == Resolution.KILL:
             if not self.adapter.capabilities.exception_udf:
                 raise ValueError(
-                    f"Resolution KILL requires exception UDF support; "
-                    f"dialect {self.adapter.dialect!r} does not provide it"
+                    f"Resolution {policy.on_fail.value} is not supported for dialect "
+                    f"{self.adapter.dialect!r}: missing capability exception_udf"
                 )
         self.refresh_catalog()
         self.planner.register_policy(policy)
@@ -78,24 +78,10 @@ class Connection:
             description=description,
         )
 
-    def transform_query(
-        self,
-        sql: str,
-        *,
-        use_partial_push: bool = False,
-        collect_stats: bool = False,
-        options: RewriteOptions | None = None,
-    ) -> str:
-        opts = options or RewriteOptions(
-            use_partial_push=use_partial_push,
-            collect_stats=collect_stats,
-        )
-        return self.planner.rewrite(
-            sql,
-            options=opts,
-        )
+    def transform_query(self, sql: str, *, options: RewriteOptions | None = None) -> str:
+        return self.planner.rewrite(sql, options=options)
 
-    def explain_rewrite(self, query: str) -> dict:
+    def explain(self, query: str) -> dict:
         return self.planner.explain_dict(query)
 
     def last_rewrite_stats(self):
@@ -107,58 +93,20 @@ class Connection:
     def policies(self) -> list[Policy]:
         return self.planner.policies()
 
-    def aggregate_policies(self) -> list[AggregatePolicy]:
-        return self.planner.aggregate_policies()
-
     def pgn_policies(self) -> list[PgnPolicy]:
         return self.planner.pgn_policies()
 
-    def execute(
-        self,
-        query: str,
-        *,
-        params=None,
-        use_partial_push: bool = False,
-        collect_stats: bool = False,
-    ):
-        rewritten = self.transform_query(
-            query,
-            use_partial_push=use_partial_push,
-            collect_stats=collect_stats,
-        )
+    def execute(self, query: str, *, params=None, options: RewriteOptions | None = None):
+        rewritten = self.transform_query(query, options=options)
         executable = strip_passant_comment(rewritten)
         return self.adapter.execute(executable, params)
 
-    def fetchall(
-        self,
-        query: str,
-        *,
-        params=None,
-        use_partial_push: bool = False,
-        collect_stats: bool = False,
-    ):
-        result = self.execute(
-            query,
-            params=params,
-            use_partial_push=use_partial_push,
-            collect_stats=collect_stats,
-        )
+    def fetchall(self, query: str, *, params=None, options: RewriteOptions | None = None):
+        result = self.execute(query, params=params, options=options)
         return result.fetchall()
 
-    def fetchone(
-        self,
-        query: str,
-        *,
-        params=None,
-        use_partial_push: bool = False,
-        collect_stats: bool = False,
-    ):
-        result = self.execute(
-            query,
-            params=params,
-            use_partial_push=use_partial_push,
-            collect_stats=collect_stats,
-        )
+    def fetchone(self, query: str, *, params=None, options: RewriteOptions | None = None):
+        result = self.execute(query, params=params, options=options)
         return result.fetchone()
 
     def close(self) -> None:

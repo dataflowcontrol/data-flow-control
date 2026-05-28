@@ -21,6 +21,9 @@ pub enum ErrorKind {
     UnsupportedPolicyCombination,
     RewriteStrategyUnavailable,
     CatalogValidation,
+    UnsupportedDialect,
+    UnsupportedBackendCapability,
+    DialectParseFailure,
     InvariantViolation,
 }
 
@@ -40,6 +43,9 @@ impl ErrorKind {
             Self::UnsupportedPolicyCombination => "unsupported_policy_combination",
             Self::RewriteStrategyUnavailable => "rewrite_strategy_unavailable",
             Self::CatalogValidation => "catalog_validation",
+            Self::UnsupportedDialect => "unsupported_dialect",
+            Self::UnsupportedBackendCapability => "unsupported_backend_capability",
+            Self::DialectParseFailure => "dialect_parse_failure",
             Self::InvariantViolation => "invariant_violation",
         }
     }
@@ -60,19 +66,25 @@ impl ErrorKind {
     }
 }
 
+/// Catalog or constraint-syntax validation failure with structured context.
+#[derive(Debug)]
+pub struct CatalogErrorDetails {
+    pub kind: ErrorKind,
+    pub message: String,
+    pub table: Option<String>,
+    pub column: Option<String>,
+    pub constraint: Option<String>,
+    pub validation_phase: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum RewriteError {
     #[error(transparent)]
     Parse(#[from] ParseError),
     #[error(transparent)]
     PolicyParse(#[from] PolicyParseError),
-    #[error("{message}")]
-    Catalog {
-        kind: ErrorKind,
-        message: String,
-        table: Option<String>,
-        column: Option<String>,
-    },
+    #[error("{}", .0.message)]
+    Catalog(Box<CatalogErrorDetails>),
     #[error("unsupported query form: {message}")]
     Unsupported { kind: ErrorKind, message: String },
     #[error("unsupported resolution for SQL-only rewrite: {0:?}")]
@@ -82,9 +94,14 @@ pub enum RewriteError {
 impl RewriteError {
     pub fn kind(&self) -> ErrorKind {
         match self {
-            Self::Parse(_) => ErrorKind::Parse,
+            Self::Parse(err) => match err {
+                ParseError::Sql(_) => ErrorKind::DialectParseFailure,
+                ParseError::ExpectedSingleStatement | ParseError::Unsupported(_) => {
+                    ErrorKind::Parse
+                }
+            },
             Self::PolicyParse(_) => ErrorKind::PolicyParse,
-            Self::Catalog { kind, .. } => *kind,
+            Self::Catalog(details) => details.kind,
             Self::Unsupported { kind, .. } => *kind,
             Self::UnsupportedResolution(_) => ErrorKind::UnsupportedResolution,
         }
@@ -96,12 +113,33 @@ impl RewriteError {
         table: Option<String>,
         column: Option<String>,
     ) -> Self {
-        Self::Catalog {
+        Self::catalog_with_context(kind, message, table, column, None, None)
+    }
+
+    pub fn catalog_with_context(
+        kind: ErrorKind,
+        message: impl AsRef<str>,
+        table: Option<String>,
+        column: Option<String>,
+        constraint: Option<String>,
+        validation_phase: Option<&'static str>,
+    ) -> Self {
+        Self::Catalog(Box::new(CatalogErrorDetails {
             kind,
             message: message.as_ref().to_string(),
             table,
             column,
-        }
+            constraint,
+            validation_phase: validation_phase.map(str::to_string),
+        }))
+    }
+
+    pub fn unsupported_dialect(message: impl Into<String>) -> Self {
+        Self::unsupported(ErrorKind::UnsupportedDialect, message.into())
+    }
+
+    pub fn unsupported_backend_capability(message: impl Into<String>) -> Self {
+        Self::unsupported(ErrorKind::UnsupportedBackendCapability, message.into())
     }
 
     pub fn unsupported(kind: ErrorKind, message: String) -> Self {

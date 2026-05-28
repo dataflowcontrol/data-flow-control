@@ -1,3 +1,9 @@
+//! Adapter catalog snapshots and policy validation at registration time.
+//!
+//! `TableCatalog` holds normalized table/column facts from Python adapters.
+//! Validation is split between constraint syntax (`constraint_syntax`) and
+//! catalog membership (`catalog_validation`).
+
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
@@ -5,10 +11,10 @@ use sqlparser::ast::{Expr, Function, FunctionArguments, ObjectName};
 
 use crate::diagnostics::{ErrorKind, RewriteError};
 use crate::identifiers::{ColumnName, QualifiedColumn, SinkName, SourceName, TableKey};
-use crate::policy::{AggregateDfcPolicy, PolicyIr, Resolution};
+use crate::policy::{PolicyIr, Resolution};
 use crate::sql::parse_projection_expr;
 
-/// DuckDB catalog facts supplied at policy registration time.
+/// Catalog facts supplied at policy registration time (from any adapter snapshot).
 #[derive(Debug, Default, Clone)]
 pub struct TableCatalog {
     table_columns: HashMap<TableKey, Vec<String>>,
@@ -132,7 +138,7 @@ impl TableCatalog {
             return Ok(());
         }
         match policy {
-            PolicyIr::CompatDfc {
+            PolicyIr::Dfc {
                 sources,
                 dimensions,
                 sink,
@@ -149,7 +155,6 @@ impl TableCatalog {
                 constraint,
                 *on_fail,
             ),
-            PolicyIr::CompatAggregate(policy) => validate_aggregate_policy(self, policy),
             PolicyIr::NativePgn(_) => Ok(()),
         }
     }
@@ -175,11 +180,13 @@ fn validate_dfc_policy(
     for source in sources {
         let source_name = SourceName::parse(source);
         if !catalog.table_exists(source_name.as_str()) {
-            return Err(RewriteError::catalog(
+            return Err(RewriteError::catalog_with_context(
                 ErrorKind::UnknownTable,
                 format!("Source table '{source}' does not exist"),
                 Some(source.clone()),
                 None,
+                Some(constraint.to_string()),
+                Some("catalog_validation"),
             ));
         }
         let table_key = TableKey::from_source(&source_name);
@@ -197,11 +204,13 @@ fn validate_dfc_policy(
     let sink_columns = if let Some(sink) = sink {
         let sink_name = SinkName::parse(sink);
         if !catalog.table_exists(sink_name.as_str()) {
-            return Err(RewriteError::catalog(
+            return Err(RewriteError::catalog_with_context(
                 ErrorKind::UnknownTable,
                 format!("Sink table '{sink}' does not exist"),
                 Some(sink.to_string()),
                 None,
+                Some(constraint.to_string()),
+                Some("catalog_validation"),
             ));
         }
         Some(
@@ -237,14 +246,16 @@ fn validate_dfc_policy(
     if !sources.is_empty() {
         let unaggregated = unaggregated_source_columns(constraint, &source_names)?;
         if !unaggregated.is_empty() {
-            return Err(RewriteError::catalog(
+            return Err(RewriteError::catalog_with_context(
                 ErrorKind::UnaggregatedSourceColumn,
                 format!(
-                    "Source columns in DFCPolicy constraints must be aggregated: {}",
+                    "Source columns in Policy constraints must be aggregated: {}",
                     unaggregated.join(", ")
                 ),
                 None,
                 None,
+                Some(constraint.to_string()),
+                Some("catalog_validation"),
             ));
         }
     }
@@ -264,7 +275,7 @@ fn validate_dfc_policy(
                 continue;
             };
             if !columns.contains(&column_key) {
-                return Err(RewriteError::catalog(
+                return Err(RewriteError::catalog_with_context(
                     ErrorKind::UnknownColumn,
                     format!(
                         "Column '{table_name}.{column_name}' referenced in constraint \
@@ -272,13 +283,15 @@ fn validate_dfc_policy(
                     ),
                     Some(table_name.to_string()),
                     Some(column_name.to_string()),
+                    Some(constraint.to_string()),
+                    Some("catalog_validation"),
                 ));
             }
         } else if sink_names.contains(&table_key) {
             if let Some(columns) = &sink_columns
                 && !columns.contains(&column_key)
             {
-                return Err(RewriteError::catalog(
+                return Err(RewriteError::catalog_with_context(
                     ErrorKind::UnknownColumn,
                     format!(
                         "Column '{table_name}.{column_name}' referenced in constraint \
@@ -287,10 +300,12 @@ fn validate_dfc_policy(
                     ),
                     Some(table_name.to_string()),
                     Some(column_name.to_string()),
+                    Some(constraint.to_string()),
+                    Some("catalog_validation"),
                 ));
             }
         } else {
-            return Err(RewriteError::catalog(
+            return Err(RewriteError::catalog_with_context(
                 ErrorKind::UnknownColumn,
                 format!(
                     "Column '{table_name}.{column_name}' referenced in constraint \
@@ -299,111 +314,8 @@ fn validate_dfc_policy(
                 ),
                 Some(table_name.to_string()),
                 Some(column_name.to_string()),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_aggregate_policy(
-    catalog: &TableCatalog,
-    policy: &AggregateDfcPolicy,
-) -> Result<(), RewriteError> {
-    for source in &policy.sources {
-        if !catalog.table_exists(source) {
-            return Err(RewriteError::catalog(
-                ErrorKind::UnknownTable,
-                format!("Source table '{source}' does not exist"),
-                Some(source.clone()),
-                None,
-            ));
-        }
-    }
-    if let Some(sink) = &policy.sink
-        && !catalog.table_exists(sink)
-    {
-        return Err(RewriteError::catalog(
-            ErrorKind::UnknownTable,
-            format!("Sink table '{sink}' does not exist"),
-            Some(sink.clone()),
-            None,
-        ));
-    }
-
-    validate_qualified_columns(&policy.constraint, "constraint")?;
-    for dimension in &policy.dimensions {
-        validate_qualified_columns(dimension, "dimension")?;
-    }
-
-    let source_names = policy
-        .sources
-        .iter()
-        .map(|source| TableKey::new(source))
-        .collect::<HashSet<_>>();
-    let mut sink_names = HashSet::new();
-    if let Some(sink) = &policy.sink {
-        sink_names.insert(TableKey::new(sink));
-    }
-    sink_names.insert(TableKey::new("_output_"));
-
-    let mut referenced_columns = qualified_columns(&policy.constraint)?;
-    for dimension in &policy.dimensions {
-        referenced_columns.extend(qualified_columns(dimension)?);
-    }
-
-    for column in referenced_columns {
-        let table_name = column.table.as_str();
-        let column_name = column.column.as_str();
-        let table_key = TableKey::from_table(&column.table);
-        let column_key = column.column.key();
-        if source_names.contains(&table_key) {
-            let columns = catalog.columns(table_name).unwrap_or_default();
-            let column_keys = columns
-                .iter()
-                .map(|col| ColumnName::new(col).key())
-                .collect::<HashSet<_>>();
-            if !column_keys.contains(&column_key) {
-                return Err(RewriteError::catalog(
-                    ErrorKind::UnknownColumn,
-                    format!(
-                        "Column '{table_name}.{column_name}' referenced in constraint \
-                         does not exist in source table '{table_name}'"
-                    ),
-                    Some(table_name.to_string()),
-                    Some(column_name.to_string()),
-                ));
-            }
-        } else if sink_names.contains(&table_key) {
-            if let Some(sink) = &policy.sink {
-                let columns = catalog.columns(sink).unwrap_or_default();
-                let column_keys = columns
-                    .iter()
-                    .map(|col| ColumnName::new(col).key())
-                    .collect::<HashSet<_>>();
-                if !column_keys.contains(&column_key) {
-                    return Err(RewriteError::catalog(
-                        ErrorKind::UnknownColumn,
-                        format!(
-                            "Column '{table_name}.{column_name}' referenced in constraint \
-                             does not exist in sink table '{sink}'"
-                        ),
-                        Some(table_name.to_string()),
-                        Some(column_name.to_string()),
-                    ));
-                }
-            }
-        } else {
-            return Err(RewriteError::catalog(
-                ErrorKind::UnknownColumn,
-                format!(
-                    "Column '{table_name}.{column_name}' referenced in constraint \
-                     references table '{table_name}', which is not in sources ({:?}) \
-                     or sink ('{:?}')",
-                    policy.sources, policy.sink
-                ),
-                Some(table_name.to_string()),
-                Some(column_name.to_string()),
+                Some(constraint.to_string()),
+                Some("catalog_validation"),
             ));
         }
     }
@@ -421,7 +333,7 @@ fn validate_qualified_columns(sql: &str, label: &str) -> Result<(), RewriteError
     let expr = parse_constraint_expr(sql)?;
     let unqualified = UnqualifiedColumnCollector::collect(&expr);
     if !unqualified.is_empty() {
-        return Err(RewriteError::catalog(
+        return Err(RewriteError::catalog_with_context(
             ErrorKind::UnqualifiedColumn,
             format!(
                 "All columns in constraints and dimensions must be qualified with table names. \
@@ -430,6 +342,8 @@ fn validate_qualified_columns(sql: &str, label: &str) -> Result<(), RewriteError
             ),
             None,
             None,
+            Some(sql.to_string()),
+            Some("constraint_syntax"),
         ));
     }
     let _ = label;
@@ -617,8 +531,8 @@ mod tests {
     fn sample_catalog() -> TableCatalog {
         let mut catalog = TableCatalog::new();
         catalog.register_table("foo", vec!["id".into(), "region".into()]);
-        catalog.register_table("reports", vec!["id".into(), "valid".into()]);
-        catalog.register_column_type("reports", "valid", "BOOLEAN");
+        catalog.register_table("reports", vec!["id".into(), "active".into()]);
+        catalog.register_column_type("reports", "active", "BOOLEAN");
         catalog.loaded = true;
         catalog
     }
@@ -636,12 +550,21 @@ mod tests {
     fn rejects_unqualified_constraint_column() {
         let err = validate_constraint_expression("max(id) > 1", "constraint").expect_err("reject");
         assert_eq!(err.kind(), ErrorKind::UnqualifiedColumn);
+        if let RewriteError::Catalog(details) = err {
+            assert_eq!(details.constraint.as_deref(), Some("max(id) > 1"));
+            assert_eq!(
+                details.validation_phase.as_deref(),
+                Some("constraint_syntax")
+            );
+        } else {
+            panic!("expected catalog validation error");
+        }
     }
 
     #[test]
     fn rejects_missing_source_table() {
         let catalog = sample_catalog();
-        let policy = PolicyIr::CompatDfc {
+        let policy = PolicyIr::Dfc {
             sources: vec!["missing".into()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -658,7 +581,7 @@ mod tests {
     #[test]
     fn rejects_unaggregated_source_column() {
         let catalog = sample_catalog();
-        let policy = PolicyIr::CompatDfc {
+        let policy = PolicyIr::Dfc {
             sources: vec!["foo".into()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -675,7 +598,7 @@ mod tests {
     #[test]
     fn rejects_missing_source_column() {
         let catalog = sample_catalog();
-        let policy = PolicyIr::CompatDfc {
+        let policy = PolicyIr::Dfc {
             sources: vec!["foo".into()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

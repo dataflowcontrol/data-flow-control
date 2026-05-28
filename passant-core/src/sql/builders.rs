@@ -382,10 +382,6 @@ pub fn passant_internal_name(prefix: &str, suffix: &str) -> String {
     format!("{prefix}_{suffix}")
 }
 
-pub fn passant_agg_temp_column(index: usize) -> String {
-    passant_internal_name("__passant_agg", &index.saturating_sub(1).to_string())
-}
-
 pub fn passant_filter_temp_column(column: &str) -> String {
     passant_internal_name("__passant_filter", column)
 }

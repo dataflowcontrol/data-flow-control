@@ -7,7 +7,7 @@ from ._rust import require_extension, resolution_to_python
 from .options import RewriteOptions
 
 if TYPE_CHECKING:
-    from .policy import AggregatePolicy, PgnPolicy, Policy
+    from .policy import PgnPolicy, Policy
 
 try:
     from . import _passant
@@ -30,18 +30,13 @@ class Planner:
     def sync_catalog(self, snapshot: dict) -> None:
         self._planner.sync_catalog(json.dumps(snapshot))
 
-    def register_policy(self, policy: Policy | AggregatePolicy | PgnPolicy) -> None:
-        from .policy import AggregatePolicy, PgnPolicy, Policy
+    def register_policy(self, policy: Policy | PgnPolicy) -> None:
+        from .policy import PgnPolicy
 
         if isinstance(policy, PgnPolicy):
             self._planner.register_policy_text(policy.text)
             return
-        dfc_policies = [policy] if isinstance(policy, Policy) else []
-        aggregate_policies = [policy] if isinstance(policy, AggregatePolicy) else []
-        policies_json, aggregate_policies_json = _policy_specs_json(
-            dfc_policies, aggregate_policies
-        )
-        self._planner.register_policy_specs(policies_json, aggregate_policies_json)
+        self._planner.register_policy_specs(_policy_specs_json([policy]))
 
     def delete_policy(
         self,
@@ -61,20 +56,8 @@ class Planner:
             description,
         )
 
-    def rewrite(
-        self,
-        sql: str,
-        *,
-        use_partial_push: bool = False,
-        collect_stats: bool = False,
-        dialect: str | None = None,
-        options: RewriteOptions | None = None,
-    ) -> str:
-        opts = options or RewriteOptions(
-            use_partial_push=use_partial_push,
-            collect_stats=collect_stats,
-            dialect=dialect,
-        )
+    def rewrite(self, sql: str, *, options: RewriteOptions | None = None) -> str:
+        opts = options or RewriteOptions()
         if not self._planner.has_registered_policies():
             return self._planner.transform_query(sql)
         return self._planner.transform_registered(
@@ -104,18 +87,12 @@ class Planner:
     def policies(self) -> list[Policy]:
         return _dfc_policies_from_rust(self._planner.dfc_policies_json())
 
-    def aggregate_policies(self) -> list[AggregatePolicy]:
-        return _aggregate_policies_from_rust(self._planner.aggregate_policies_json())
-
     def pgn_policies(self) -> list[PgnPolicy]:
         return _pgn_policies_from_rust(self._planner.pgn_policies_json())
 
 
-def _policy_specs_json(
-    dfc_policies: list[Policy],
-    aggregate_policies: list[AggregatePolicy],
-) -> tuple[str, str]:
-    policies_json = json.dumps(
+def _policy_specs_json(policies: list[Policy]) -> str:
+    return json.dumps(
         [
             {
                 "sources": policy.sources,
@@ -127,22 +104,9 @@ def _policy_specs_json(
                 "on_fail": policy.on_fail.value,
                 "description": policy.description,
             }
-            for policy in dfc_policies
+            for policy in policies
         ]
     )
-    aggregate_policies_json = json.dumps(
-        [
-            {
-                "sources": policy.sources,
-                "dimensions": policy.dimensions,
-                "sink": policy.sink,
-                "constraint": policy.constraint,
-                "description": policy.description,
-            }
-            for policy in aggregate_policies
-        ]
-    )
-    return policies_json, aggregate_policies_json
 
 
 def _dfc_policies_from_rust(policies_json: str) -> list[Policy]:
@@ -150,9 +114,9 @@ def _dfc_policies_from_rust(policies_json: str) -> list[Policy]:
 
     policies: list[Policy] = []
     for entry in json.loads(policies_json):
-        if "CompatDfc" not in entry:
+        if "Dfc" not in entry:
             continue
-        spec = entry["CompatDfc"]
+        spec = entry["Dfc"]
         policies.append(
             Policy(
                 constraint=spec["constraint"],
@@ -161,27 +125,6 @@ def _dfc_policies_from_rust(policies_json: str) -> list[Policy]:
                 required_sources=spec.get("required_sources", []),
                 sink=spec.get("sink"),
                 sink_alias=spec.get("sink_alias"),
-                description=spec.get("description"),
-                dimensions=spec.get("dimensions", []),
-            )
-        )
-    return policies
-
-
-def _aggregate_policies_from_rust(policies_json: str) -> list[AggregatePolicy]:
-    from .policy import AggregatePolicy, Resolution
-
-    policies: list[AggregatePolicy] = []
-    for entry in json.loads(policies_json):
-        if "CompatAggregate" not in entry:
-            continue
-        spec = entry["CompatAggregate"]
-        policies.append(
-            AggregatePolicy(
-                constraint=spec["constraint"],
-                on_fail=Resolution.REMOVE,
-                sources=spec["sources"],
-                sink=spec.get("sink"),
                 description=spec.get("description"),
                 dimensions=spec.get("dimensions", []),
             )

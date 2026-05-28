@@ -6,12 +6,9 @@ from typing import Any, Protocol
 
 @dataclass(frozen=True)
 class Capabilities:
-    """Backend features used for policy registration and rewrite strategy selection."""
+    """Backend features enforced at policy registration time."""
 
     exception_udf: bool = False
-    update_from: bool = True
-    aggregate_filter: bool = True
-    cte_in_insert: bool = True
 
     @property
     def supports_kill(self) -> bool:

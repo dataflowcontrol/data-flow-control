@@ -59,24 +59,6 @@ impl PassantRewriter {
     }
 }
 
-/// Aggregate policy finalization query bundle.
-#[derive(Debug, Clone)]
-pub struct FinalizeQuery {
-    pub policy_id: String,
-    pub sql: String,
-    pub invalidate_sql: Option<String>,
-    pub description: Option<String>,
-    pub constraint: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SourceAggregate {
-    pub(crate) sql: String,
-    pub(crate) function_name: String,
-    pub(crate) expr: Expr,
-    pub(crate) is_sink_aggregate: bool,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RewriteContext {
     pub(crate) sink: Option<String>,

@@ -27,7 +27,7 @@ fn required_source_fail_closed_on_insert() {
     db.exec("CREATE TABLE other (id INTEGER)");
     db.exec("CREATE TABLE reports (id INTEGER)");
     db.exec("INSERT INTO other VALUES (1)");
-    db.register_policy(PolicyIr::CompatDfc {
+    db.register_policy(PolicyIr::Dfc {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
         dimensions: Vec::new(),

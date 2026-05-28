@@ -11,8 +11,7 @@ pub enum RewriteStrategy {
     ProjectionPropagation,
     SinkMappedRewrite,
     AggregateInline,
-    FinalizeAggregate,
-    CompatibilityFallback,
+    StableOutputFallback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,7 +31,7 @@ impl RewriteOptimizer {
 
         if policies.is_empty() {
             candidates.push(CandidatePlan {
-                strategy: RewriteStrategy::CompatibilityFallback,
+                strategy: RewriteStrategy::StableOutputFallback,
                 score: 0,
                 reasons: vec!["No applicable policies".to_string()],
                 applied_policies: Vec::new(),
@@ -112,23 +111,10 @@ impl RewriteOptimizer {
             });
         }
 
-        if policies
-            .iter()
-            .any(|policy| matches!(policy, PolicyIr::CompatAggregate(_)))
-            && scope.has_finalize_capable_sink
-        {
-            candidates.push(CandidatePlan {
-                strategy: RewriteStrategy::FinalizeAggregate,
-                score: 35,
-                reasons: vec!["Aggregate invalidation can be deferred to finalize metadata".into()],
-                applied_policies: policy_names.clone(),
-            });
-        }
-
         candidates.push(CandidatePlan {
-            strategy: RewriteStrategy::CompatibilityFallback,
+            strategy: RewriteStrategy::StableOutputFallback,
             score: 100,
-            reasons: vec!["Legacy-compatible fallback preserves output stability".into()],
+            reasons: vec!["Stable-output fallback when no rewrite strategy applies".into()],
             applied_policies: policy_names,
         });
 
@@ -148,7 +134,7 @@ mod tests {
     }
 
     fn sample_policy() -> PolicyIr {
-        PolicyIr::CompatDfc {
+        PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -161,12 +147,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_policies_return_compatibility_fallback() {
+    fn empty_policies_return_stable_output_fallback() {
         let candidates = RewriteOptimizer.rank_candidates(&empty_scope(), &[]);
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].strategy,
-            RewriteStrategy::CompatibilityFallback
+            RewriteStrategy::StableOutputFallback
         );
     }
 

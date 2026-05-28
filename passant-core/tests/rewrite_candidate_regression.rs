@@ -8,7 +8,7 @@ use passant_core::{
 };
 
 fn dfc(source: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -21,7 +21,7 @@ fn dfc(source: &str, threshold: i64) -> PolicyIr {
 }
 
 fn sink_only_policy(sink: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -34,7 +34,7 @@ fn sink_only_policy(sink: &str) -> PolicyIr {
 }
 
 fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![hot.to_string(), other.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -44,19 +44,6 @@ fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
         on_fail: Resolution::Remove,
         description: None,
     }
-}
-
-fn aggregate_policy(sources: &[&str], sink: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::CompatAggregate(passant_core::policy::AggregateDfcPolicy {
-        sources: sources.iter().map(|s| (*s).to_string()).collect(),
-        dimensions: Vec::new(),
-        sink: Some(sink.to_string()),
-        constraint: format!(
-            "max({}.amount) > {threshold}",
-            sources.first().copied().unwrap_or("orders")
-        ),
-        description: None,
-    })
 }
 
 fn rewrite_candidate_count(rewriter: &PassantRewriter, sql: &str) -> usize {
@@ -117,42 +104,6 @@ fn sink_only_policies_are_excluded_from_plain_select_candidates() {
 }
 
 #[test]
-fn many_aggregate_policies_do_not_inflate_unrelated_select_candidates() {
-    let mut store = PolicyStore::default();
-    store.register(dfc("orders", 1));
-    for index in 0..500_usize {
-        store.register(aggregate_policy(
-            &["orders"],
-            "reports",
-            i64::try_from(index).unwrap_or(0),
-        ));
-        store.register(aggregate_policy(
-            &["orders", &format!("other_{index:03}")],
-            "reports",
-            i64::try_from(index).unwrap_or(0),
-        ));
-    }
-
-    let orders_only = HashSet::from([TableKey::new("orders")]);
-    assert_eq!(store.candidate_ids_for_scope(&orders_only, None), vec![0]);
-    assert_eq!(
-        store
-            .aggregate_policy_indices_for_scope("reports", &orders_only)
-            .len(),
-        500
-    );
-
-    let mut rewriter = PassantRewriter::new();
-    for policy in store.policies_vec() {
-        rewriter.register_policy(policy);
-    }
-    assert_eq!(
-        rewrite_candidate_count(&rewriter, "SELECT id, amount FROM orders WHERE amount > 0"),
-        1
-    );
-}
-
-#[test]
 fn hot_source_multi_source_subset_lookup_avoids_policy_blowup() {
     let mut store = PolicyStore::default();
     store.register(dfc("hot_source", 1));
@@ -190,7 +141,7 @@ fn hot_source_multi_source_subset_lookup_avoids_policy_blowup() {
 #[test]
 fn partial_push_enforcement_lookup_uses_overlap_for_multi_source() {
     let mut store = PolicyStore::default();
-    store.register(PolicyIr::CompatDfc {
+    store.register(PolicyIr::Dfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

@@ -5,7 +5,7 @@ use passant_core::{PolicyIr, Resolution, RewriteStrategy};
 use crate::common::{assert_explain_strategy, plan_query, rewrite};
 
 fn multi_source_sum_policy() -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -38,7 +38,7 @@ fn full_push_inner_join_decomposes_distributive_sum() {
 
 #[test]
 fn full_push_nested_subquery_join_uses_semiring_not_scalar_fallback() {
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -60,7 +60,7 @@ fn full_push_nested_subquery_join_uses_semiring_not_scalar_fallback() {
 
 #[test]
 fn full_push_left_join_preserves_nullable_side_semantics() {
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -97,7 +97,7 @@ fn distributive_sum_decomposition_across_sources() {
 
 #[test]
 fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -128,7 +128,7 @@ fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
 
 #[test]
 fn aggregation_query_full_push_inlines_having_semiring() {
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

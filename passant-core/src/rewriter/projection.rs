@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use sqlparser::ast::{BinaryOperator, Expr, GroupByExpr, Ident, Select, SelectItem};
 
 use crate::diagnostics::RewriteError;
+use crate::sql::ExprKey;
 
 use super::PassantRewriter;
 use super::expr::{expr_contains_aggregate, projected_column_name, projection_expr_and_name};
@@ -18,7 +19,7 @@ pub(crate) fn outer_limited_projection_items(select: &Select) -> Vec<SelectItem>
         .filter(|item| !is_passant_filter_projection(item))
         .map(|item| match item {
             SelectItem::UnnamedExpr(expr) => SelectItem::UnnamedExpr(Expr::Identifier(Ident::new(
-                projected_column_name(expr).unwrap_or_else(|| expr.to_string()),
+                projected_column_name(expr).unwrap_or_else(|| crate::sql::render_expr(expr, None)),
             ))),
             SelectItem::ExprWithAlias { alias, .. } => {
                 SelectItem::UnnamedExpr(Expr::Identifier(alias.clone()))
@@ -37,7 +38,7 @@ fn is_passant_filter_projection(item: &SelectItem) -> bool {
 }
 
 fn auto_alias_for_expression(expr: &Expr) -> String {
-    sanitize_projection_alias(&expr.to_string())
+    sanitize_projection_alias(&crate::sql::render_expr(expr, None))
 }
 
 pub(crate) fn ensure_projection_aliases(select: &mut Select) {
@@ -95,14 +96,14 @@ pub(crate) fn group_by_join_specs(select: &Select) -> Result<Vec<(String, Expr)>
 
     let mut specs = Vec::new();
     for group_expr in group_exprs {
-        let group_sql = group_expr.to_string();
+        let group_key = ExprKey::from_expr(group_expr);
         let mut matched = None;
         for item in &select.projection {
             let Some((expr, alias)) = projection_expr_and_name(item) else {
                 continue;
             };
-            if expr.to_string() == group_sql {
-                let key = alias.unwrap_or_else(|| expr.to_string());
+            if ExprKey::from_expr(expr) == group_key {
+                let key = alias.unwrap_or_else(|| crate::sql::render_expr(expr, None));
                 matched = Some((key, expr.clone()));
                 break;
             }
@@ -157,7 +158,11 @@ pub(crate) fn extract_policy_comparison_from_expr(
             ));
         }
     };
-    Ok((left.to_string(), right.to_string(), op_str))
+    Ok((
+        crate::sql::render_expr(left, None),
+        crate::sql::render_expr(right, None),
+        op_str,
+    ))
 }
 
 pub(crate) fn extract_policy_comparison_for_policy(

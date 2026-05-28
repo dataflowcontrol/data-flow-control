@@ -1,4 +1,4 @@
-//! Ports of high-value `sql_rewriter` behaviors not yet covered in Rust.
+//! Rewrite API parity tests ported from legacy `sql_rewriter` behaviors.
 
 use passant_core::{PolicyIr, Resolution, TableCatalog};
 
@@ -6,7 +6,7 @@ use crate::common::{assert_rewrite, dfc_policy, dfc_policy_kill, rewrite, rewrit
 
 #[test]
 fn scan_count_if_transforms_to_case_when() {
-    let policy = PolicyIr::CompatDfc {
+    let policy = PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -27,7 +27,7 @@ fn scan_count_if_transforms_to_case_when() {
 fn scan_array_agg_non_distributive_uses_partial_push() {
     let sql = rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -55,7 +55,7 @@ fn aggregation_kill_wraps_having_clause() {
 fn scan_count_distinct_equality_expands_to_row_predicate() {
     assert_rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -73,7 +73,7 @@ fn scan_count_distinct_equality_expands_to_row_predicate() {
 fn scan_avg_non_distributive_uses_partial_push() {
     let sql = rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -93,7 +93,7 @@ fn scan_avg_non_distributive_uses_partial_push() {
 fn scan_min_max_preserve_full_expression() {
     assert_rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -111,7 +111,7 @@ fn scan_min_max_preserve_full_expression() {
 fn dimension_table_constraint_references_external_context() {
     assert_rewrite(
         "SELECT foo.id FROM foo JOIN regions ON foo.region_id = regions.id",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: vec!["regions.code".to_string()],
@@ -129,7 +129,7 @@ fn dimension_table_constraint_references_external_context() {
 fn insert_without_column_list_expands_from_catalog() {
     let mut catalog = TableCatalog::new();
     catalog.register_table("reports", vec!["id".to_string(), "amount".to_string()]);
-    let policy = PolicyIr::CompatDfc {
+    let policy = PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),

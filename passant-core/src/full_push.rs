@@ -37,7 +37,7 @@ impl RewriteEngine for FullPushEngine {
         let mut statement = request.statement.clone();
         rewriter.rewrite_statement_full_push(&mut statement, request.options.collect_stats)?;
         let format_start = Instant::now();
-        let rewritten = statement.to_string();
+        let rewritten = crate::sql::render_statement(&statement, None);
         if request.options.collect_stats {
             rewriter.stats.add_elapsed_format(format_start.elapsed());
         }

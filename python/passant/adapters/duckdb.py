@@ -26,12 +26,7 @@ def quote_sql_identifier(name: str) -> str:
 
 class DuckDBAdapter:
     dialect = "duckdb"
-    capabilities = Capabilities(
-        exception_udf=True,
-        update_from=True,
-        aggregate_filter=True,
-        cte_in_insert=True,
-    )
+    capabilities = Capabilities(exception_udf=True)
 
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self._conn = conn

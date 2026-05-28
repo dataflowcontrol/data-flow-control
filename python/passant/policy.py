@@ -52,9 +52,9 @@ class Policy:
     @classmethod
     def from_policy_str(cls, policy_str: str) -> Policy:
         parsed = parse_policy_to_json(policy_str)
-        if "CompatDfc" not in parsed:
+        if "Dfc" not in parsed:
             raise ValueError("Policy text did not parse as a Policy")
-        spec = parsed["CompatDfc"]
+        spec = parsed["Dfc"]
         return cls(
             constraint=spec["constraint"],
             on_fail=Resolution(resolution_to_python(spec["on_fail"])),
@@ -62,44 +62,6 @@ class Policy:
             required_sources=spec.get("required_sources", []),
             sink=spec.get("sink"),
             sink_alias=spec.get("sink_alias"),
-            description=spec.get("description"),
-            dimensions=spec.get("dimensions", []),
-        )
-
-
-@dataclass(eq=True)
-class AggregatePolicy:
-    constraint: str
-    on_fail: Resolution
-    sources: list[str]
-    sink: str | None = None
-    description: str | None = None
-    dimensions: list[str] | None = None
-
-    def __post_init__(self) -> None:
-        self.sources = normalize_policy_sources(self.sources)
-        self.dimensions = _normalize_optional_dimensions(self.dimensions)
-        if not isinstance(self.on_fail, Resolution):
-            self.on_fail = Resolution(str(self.on_fail).upper())
-        if self.on_fail != Resolution.REMOVE:
-            raise ValueError("AggregatePolicy requires REMOVE resolution")
-        if not self.sources and self.sink is None:
-            raise ValueError("Either sources or sink must be provided")
-        validate_constraint_expression(self.constraint, "constraint")
-        for dimension in self.dimensions:
-            validate_constraint_expression(dimension, "dimension")
-
-    @classmethod
-    def from_policy_str(cls, policy_str: str) -> AggregatePolicy:
-        parsed = parse_policy_to_json(policy_str)
-        if "CompatAggregate" not in parsed:
-            raise ValueError("Policy text did not parse as an AggregatePolicy")
-        spec = parsed["CompatAggregate"]
-        return cls(
-            constraint=spec["constraint"],
-            on_fail=Resolution.REMOVE,
-            sources=spec["sources"],
-            sink=spec.get("sink"),
             description=spec.get("description"),
             dimensions=spec.get("dimensions", []),
         )

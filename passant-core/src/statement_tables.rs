@@ -6,6 +6,7 @@ use crate::identifiers::TableKey;
 use crate::source_sets::{
     set_expr_source_tables, table_factor_source_tables, table_with_joins_source_tables,
 };
+use crate::sql::render_object_name;
 
 /// Collect normalized base-table keys referenced by a parsed statement.
 pub fn statement_table_keys(statement: &Statement) -> HashSet<TableKey> {
@@ -13,7 +14,7 @@ pub fn statement_table_keys(statement: &Statement) -> HashSet<TableKey> {
         Statement::Query(query) => query_table_keys(query),
         Statement::Insert(insert) => {
             let mut keys = HashSet::new();
-            keys.insert(TableKey::new(&insert.table_name.to_string()));
+            keys.insert(TableKey::new(&render_object_name(&insert.table_name, None)));
             if let Some(source) = &insert.source {
                 keys.extend(query_table_keys(source));
             }
@@ -38,7 +39,9 @@ pub fn statement_table_keys(statement: &Statement) -> HashSet<TableKey> {
 /// Normalized sink table key for write statements, if present.
 pub fn statement_sink_key(statement: &Statement) -> Option<TableKey> {
     match statement {
-        Statement::Insert(insert) => Some(TableKey::new(&insert.table_name.to_string())),
+        Statement::Insert(insert) => {
+            Some(TableKey::new(&render_object_name(&insert.table_name, None)))
+        }
         Statement::Update { table, .. } => table_with_joins_source_tables(table).into_iter().next(),
         Statement::Merge { table, .. } => table_factor_source_tables(table).into_iter().next(),
         _ => None,

@@ -16,9 +16,7 @@ mod types;
 
 pub(crate) use scope::TableScope;
 pub(crate) use types::RewriteContext;
-pub use types::{FinalizeQuery, PassantRewriter, RewriteOptions};
-
-mod finalize;
+pub use types::{PassantRewriter, RewriteOptions};
 
 mod aggregates;
 mod columns;
@@ -188,14 +186,6 @@ impl PassantRewriter {
             .collect()
     }
 
-    pub fn aggregate_policies(&self) -> Vec<PolicyIr> {
-        self.store
-            .aggregate_policy_indices()
-            .into_iter()
-            .filter_map(|index| self.store.policy(index).cloned())
-            .collect()
-    }
-
     pub fn pgn_policies(&self) -> Vec<PolicyIr> {
         self.store
             .pgn_policy_indices()
@@ -204,13 +194,10 @@ impl PassantRewriter {
             .collect()
     }
 
-    pub fn has_compat_policies(&self) -> bool {
-        self.store.iter_active().any(|(_, policy)| {
-            matches!(
-                policy,
-                PolicyIr::CompatDfc { .. } | PolicyIr::CompatAggregate(_)
-            )
-        })
+    pub fn has_dfc_policies(&self) -> bool {
+        self.store
+            .iter_active()
+            .any(|(_, policy)| matches!(policy, PolicyIr::Dfc { .. }))
     }
 
     pub fn has_registered_policies(&self) -> bool {

@@ -4,9 +4,6 @@ mod common;
 #[path = "../common/duckdb.rs"]
 mod duckdb;
 
-#[path = "aggregate_finalize.rs"]
-mod aggregate_finalize;
-#[path = "insert.rs"]
 mod insert;
 #[path = "kill.rs"]
 mod kill;

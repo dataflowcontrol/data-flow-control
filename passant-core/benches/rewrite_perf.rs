@@ -8,7 +8,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
 fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -21,7 +21,7 @@ fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
 }
 
 fn sink_only_policy(sink: &str) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -34,7 +34,7 @@ fn sink_only_policy(sink: &str) -> PolicyIr {
 }
 
 fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::CompatDfc {
+    PolicyIr::Dfc {
         sources: vec![hot.to_string(), other.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -44,16 +44,6 @@ fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
         on_fail: Resolution::Remove,
         description: None,
     }
-}
-
-fn aggregate_policy(source: &str, sink: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::CompatAggregate(passant_core::policy::AggregateDfcPolicy {
-        sources: vec![source.to_string()],
-        dimensions: Vec::new(),
-        sink: Some(sink.to_string()),
-        constraint: format!("max({source}.amount) > {threshold}"),
-        description: None,
-    })
 }
 
 fn generate_policies(target_table: &str, unrelated_count: usize) -> Vec<PolicyIr> {
@@ -205,30 +195,6 @@ fn bench_join_with_unrelated_policies(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_aggregate_registry(c: &mut Criterion) {
-    let mut group = c.benchmark_group("rewrite_aggregate_registry");
-    let mut policies = vec![dfc_policy("orders", 1)];
-    for index in 0..2_000_usize {
-        policies.push(aggregate_policy(
-            "orders",
-            "reports",
-            i64::try_from(index).unwrap_or(0),
-        ));
-    }
-    group.bench_function("2000_aggregate_policies", |bencher| {
-        let mut rewriter = PassantRewriter::new();
-        register_policies(&mut rewriter, &policies);
-        bencher.iter(|| {
-            black_box(
-                rewriter
-                    .rewrite(simple_scan_query())
-                    .expect("rewrite should succeed"),
-            );
-        });
-    });
-    group.finish();
-}
-
 fn bench_policy_registration(c: &mut Criterion) {
     let mut group = c.benchmark_group("policy_registration");
     for policy_count in [1_000_usize, 10_000, 100_000] {
@@ -305,7 +271,6 @@ criterion_group!(
     bench_sink_only_registry,
     bench_partial_push,
     bench_join_with_unrelated_policies,
-    bench_aggregate_registry,
     bench_policy_registration,
     bench_rewrite_with_stats,
     bench_rewrite_cte_chain

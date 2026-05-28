@@ -6,7 +6,7 @@ use crate::common::{assert_rewrite, dfc_policy, rewriter_with_policies};
 
 #[test]
 fn cross_source_outer_join_rewrites_with_source_sets() {
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -25,7 +25,7 @@ fn cross_source_outer_join_rewrites_with_source_sets() {
 
 #[test]
 fn cross_source_union_all_passes_through_when_branch_split_unavailable() {
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -79,26 +79,20 @@ fn copy_select_fails_closed_with_registered_policies() {
 }
 
 #[test]
-fn aggregate_policy_rejects_invalidate_resolution_at_parse() {
+fn aggregate_policy_text_is_rejected() {
     let err = parse_policy_text(
-        "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL INVALIDATE",
+        "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
     )
-    .expect_err("INVALIDATE resolution is not supported");
-    assert!(err.to_string().contains("invalid resolution: INVALIDATE"));
-}
-
-#[test]
-fn aggregate_policy_requires_remove_resolution_at_parse() {
-    let err = parse_policy_text(
-        "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL KILL",
-    )
-    .expect_err("aggregate policies require ON FAIL REMOVE");
-    assert!(err.to_string().contains("require ON FAIL REMOVE"));
+    .expect_err("AGGREGATE policies should be rejected");
+    assert!(
+        err.to_string()
+            .contains("aggregate policies are not supported")
+    );
 }
 
 #[test]
 fn anti_join_probe_side_policy_rewrites_with_source_sets() {
-    let policies = vec![PolicyIr::CompatDfc {
+    let policies = vec![PolicyIr::Dfc {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -117,7 +111,7 @@ fn anti_join_probe_side_policy_rewrites_with_source_sets() {
 
 #[test]
 fn insert_without_required_source_rewrites_to_false() {
-    let policy = PolicyIr::CompatDfc {
+    let policy = PolicyIr::Dfc {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
         dimensions: Vec::new(),

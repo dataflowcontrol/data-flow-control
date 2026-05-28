@@ -22,7 +22,7 @@ fn reports_catalog() -> TableCatalog {
 fn sink_only_remove_policy_on_insert_select() {
     let sql = rewrite_with_catalog(
         "INSERT INTO reports SELECT id, status FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec![],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
@@ -44,7 +44,7 @@ fn sink_only_remove_policy_on_insert_select() {
 fn sink_only_kill_policy_on_insert_select() {
     let sql = rewrite_with_catalog(
         "INSERT INTO reports SELECT id, status FROM foo",
-        &[PolicyIr::CompatDfc {
+        &[PolicyIr::Dfc {
             sources: vec![],
             required_sources: Vec::new(),
             dimensions: Vec::new(),

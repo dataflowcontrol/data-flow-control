@@ -41,7 +41,7 @@ class _DisabledKillAdapter:
 
 def test_connection_rejects_kill_when_adapter_lacks_exception_udf():
     db = Connection(_DisabledKillAdapter(), planner=Planner(dialect="test"))
-    with pytest.raises(ValueError, match="exception UDF"):
+    with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
         )

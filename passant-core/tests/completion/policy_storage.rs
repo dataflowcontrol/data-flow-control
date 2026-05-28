@@ -1,8 +1,6 @@
-use passant_core::{AggregateDfcPolicy, PassantRewriter, PolicyIr, Resolution};
+use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
-use crate::common::{
-    aggregate_policy, dfc_policy, dfc_policy_sink, dfc_policy_with, rewriter_with_policies,
-};
+use crate::common::{dfc_policy, dfc_policy_sink, dfc_policy_with, rewriter_with_policies};
 
 #[test]
 fn delete_policy_matches_sources_and_constraint() {
@@ -38,7 +36,7 @@ fn delete_policy_returns_false_when_no_match() {
 
 #[test]
 fn delete_policy_can_match_sink_and_on_fail() {
-    let mut rewriter = rewriter_with_policies(&[PolicyIr::CompatDfc {
+    let mut rewriter = rewriter_with_policies(&[PolicyIr::Dfc {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
@@ -60,49 +58,24 @@ fn delete_policy_can_match_sink_and_on_fail() {
 }
 
 #[test]
-fn delete_aggregate_policy_by_sink() {
-    let mut rewriter = rewriter_with_policies(&[aggregate_policy(
-        &["foo"],
-        "reports",
-        "sum(reports.total) > 100",
-    )]);
-    let removed = rewriter.delete_policy(
-        None,
-        Some("reports"),
-        Some("sum(reports.total) > 100"),
-        None,
-        None,
-    );
-    assert!(removed);
-    assert!(rewriter.aggregate_policies().is_empty());
-}
-
-#[test]
 fn dfc_policies_json_roundtrip_filters_policy_type() {
     let rewriter = rewriter_with_policies(&[
         dfc_policy(&["foo"], "max(foo.id) > 1"),
-        aggregate_policy(&["foo"], "reports", "sum(reports.total) > 100"),
+        dfc_policy_sink(&["foo"], "reports", "sum(reports.total) > 100"),
     ]);
-    assert_eq!(rewriter.dfc_policies().len(), 1);
-    assert_eq!(rewriter.aggregate_policies().len(), 1);
-    assert!(matches!(
-        rewriter.dfc_policies()[0],
-        PolicyIr::CompatDfc { .. }
-    ));
-    assert!(matches!(
-        rewriter.aggregate_policies()[0],
-        PolicyIr::CompatAggregate(_)
-    ));
+    assert_eq!(rewriter.dfc_policies().len(), 2);
+    assert!(matches!(rewriter.dfc_policies()[0], PolicyIr::Dfc { .. }));
+    assert!(matches!(rewriter.dfc_policies()[1], PolicyIr::Dfc { .. }));
 }
 
 #[test]
 fn has_registered_policies_tracks_all_policy_types() {
     let empty = PassantRewriter::new();
     assert!(!empty.has_registered_policies());
-    assert!(!empty.has_compat_policies());
+    assert!(!empty.has_dfc_policies());
     let dfc = rewriter_with_policies(&[dfc_policy(&["foo"], "max(foo.id) > 1")]);
     assert!(dfc.has_registered_policies());
-    assert!(dfc.has_compat_policies());
+    assert!(dfc.has_dfc_policies());
 }
 
 #[test]
@@ -114,7 +87,7 @@ fn pgn_policies_json_roundtrip_preserves_source_text() {
         .expect("pgn policy text should register");
     assert_eq!(rewriter.pgn_policies().len(), 1);
     assert!(rewriter.has_registered_policies());
-    assert!(!rewriter.has_compat_policies());
+    assert!(!rewriter.has_dfc_policies());
     let pgn_policies = rewriter.pgn_policies();
     let stored = match &pgn_policies[0] {
         PolicyIr::NativePgn(pgn) => pgn,
@@ -145,18 +118,4 @@ fn register_policy_text_roundtrip() {
         .rewrite("SELECT id FROM foo")
         .expect("registered policy should rewrite");
     assert_eq!(sql, "SELECT id FROM foo WHERE foo.id > 1");
-}
-
-#[test]
-fn aggregate_policy_storage_preserves_dimensions() {
-    let policy = PolicyIr::CompatAggregate(AggregateDfcPolicy {
-        sources: vec!["foo".to_string()],
-        dimensions: vec!["reports.region".to_string()],
-        sink: Some("reports".to_string()),
-        constraint: "sum(reports.total) > 100".to_string(),
-        description: None,
-    });
-    let rewriter = rewriter_with_policies(&[policy]);
-    let stored = &rewriter.aggregate_policies()[0];
-    assert_eq!(stored.dimensions(), &["reports.region".to_string()]);
 }

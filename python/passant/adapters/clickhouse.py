@@ -28,12 +28,7 @@ class _ClickHouseCursor:
 
 class ClickHouseAdapter:
     dialect = "clickhouse"
-    capabilities = Capabilities(
-        exception_udf=False,
-        update_from=False,
-        aggregate_filter=True,
-        cte_in_insert=False,
-    )
+    capabilities = Capabilities(exception_udf=False)
 
     def __init__(self, client) -> None:
         if clickhouse_connect is None:
