@@ -1,6 +1,6 @@
 """DIMENSION policy relations: parsing, catalog validation, rewrite, and execution."""
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 
 
 def test_policy_accepts_dimension_tables_and_aliases():

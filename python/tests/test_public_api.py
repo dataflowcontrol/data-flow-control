@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import passant
+import data_flow_control
 
 
 def test_public_exports():
@@ -14,7 +14,7 @@ def test_public_exports():
         "RewriteOptions",
         "PassantRewriteError",
     }
-    assert set(passant.__all__) == expected
+    assert set(data_flow_control.__all__) == expected
 
 
 def test_legacy_names_not_exported():
@@ -33,5 +33,5 @@ def test_legacy_names_not_exported():
         "Planner",
         "SUPPORTED_DIALECTS",
     }
-    exported = set(dir(passant))
+    exported = set(dir(data_flow_control))
     assert legacy.isdisjoint(exported)

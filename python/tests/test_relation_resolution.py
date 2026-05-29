@@ -5,8 +5,8 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, dfc
-from passant.adapters.kill import KILL_MESSAGE
+from data_flow_control import Policy, Resolution, dfc
+from data_flow_control.adapters.kill import KILL_MESSAGE
 
 
 def _abort_on_violation(any_violation: bool) -> bool:

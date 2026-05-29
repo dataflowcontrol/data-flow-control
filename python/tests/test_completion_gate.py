@@ -12,7 +12,7 @@ pytestmark = pytest.mark.completion
 
 def test_count_if_scan_rewrites_to_case_when():
     """COUNT_IF scan rewrite (completion gate)."""
-    from passant import Policy, Resolution, dfc
+    from data_flow_control import Policy, Resolution, dfc
 
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
@@ -28,7 +28,7 @@ def test_count_if_scan_rewrites_to_case_when():
 
 
 def test_delete_policy_removes_registered_policy():
-    from passant import Policy, Resolution, dfc
+    from data_flow_control import Policy, Resolution, dfc
 
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
@@ -48,7 +48,7 @@ def test_delete_policy_removes_registered_policy():
 
 
 def test_pgn_policy_text_parses():
-    from passant import Policy
+    from data_flow_control import Policy
 
     policy = Policy.from_pgn(
         "SOURCE foo SINK reports CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE"

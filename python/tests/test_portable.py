@@ -7,9 +7,9 @@ import json
 import duckdb
 import pytest
 
-from passant import Dialect, Policy, Resolution, dfc
-from passant.adapters import create_adapter, sniff_dialect
-from passant.catalog import build_catalog_snapshot
+from data_flow_control import Dialect, Policy, Resolution, dfc
+from data_flow_control.adapters import create_adapter, sniff_dialect
+from data_flow_control.catalog import build_catalog_snapshot
 
 
 def test_build_catalog_snapshot_includes_dialect_and_tables():
@@ -74,7 +74,7 @@ def test_sqlite_kill_conformance():
 
 def test_clickhouse_adapter_factory():
     pytest.importorskip("clickhouse_connect")
-    from passant.adapters.clickhouse import ClickHouseAdapter
+    from data_flow_control.adapters.clickhouse import ClickHouseAdapter
 
     class _Client:
         database = "default"

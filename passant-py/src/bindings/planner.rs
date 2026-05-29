@@ -9,7 +9,7 @@ use super::errors::map_rewrite_error;
 use super::policy::parse_resolution;
 use super::stats::{PyRewriteStats, PyStatementRewriteSummary};
 
-#[pyclass(module = "passant._passant")]
+#[pyclass(module = "data_flow_control._passant")]
 pub struct PyPlanner {
     pub rewriter: PassantRewriter,
 }

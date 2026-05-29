@@ -1,6 +1,6 @@
 """End-to-end Python API tests: policy registration, rewrite, and DuckDB execution."""
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 import json
 import duckdb
 import pytest
@@ -289,17 +289,21 @@ def test_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
     assert rewriter.fetchall("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id") == []
 
 
-def test_rejects_mixed_row_and_non_distributive_aggregate_policy():
+def test_mixed_row_and_non_distributive_aggregate_policy_uses_partial_push():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    with pytest.raises(ValueError, match="must be aggregated"):
-        rewriter.register_policy(
-            Policy(
-                sources=["foo"],
-                constraint="foo.id > 0 AND avg(foo.id) > 1",
-                on_fail=Resolution.REMOVE,
-            )
+    rewriter.register_policy(
+        Policy(
+            sources=["foo"],
+            constraint="foo.id > 0 AND avg(foo.id) > 1",
+            on_fail=Resolution.REMOVE,
         )
+    )
+
+    transformed = rewriter.transform_query("SELECT id FROM foo")
+    assert transformed.startswith("WITH base_query AS (")
+    assert "foo.id > 0" in transformed
+    assert "avg(foo.id) > 1" in transformed
 
 
 def test_explain_rewrite_reports_unsupported_rewrite_error():
@@ -960,7 +964,7 @@ def test_transform_query_collect_stats():
             )
         )
 
-    from passant import RewriteOptions
+    from data_flow_control import RewriteOptions
 
     rewriter.transform_query("SELECT id FROM foo", options=RewriteOptions(collect_stats=True))
     stats = rewriter.last_rewrite_stats()

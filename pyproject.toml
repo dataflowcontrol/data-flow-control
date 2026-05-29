@@ -38,7 +38,7 @@ build-backend = "maturin"
 [tool.maturin]
 manifest-path = "passant-py/Cargo.toml"
 python-source = "python"
-module-name = "passant._passant"
+module-name = "data_flow_control._passant"
 features = ["extension-module"]
 
 [tool.pytest.ini_options]

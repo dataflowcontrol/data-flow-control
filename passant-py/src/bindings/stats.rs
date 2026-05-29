@@ -1,7 +1,7 @@
 use passant_core::{RewriteStats, RewriteStatsTimings, StatementRewriteSummary};
 use pyo3::prelude::*;
 
-#[pyclass(module = "passant._passant")]
+#[pyclass(module = "data_flow_control._passant")]
 #[derive(Clone, Copy)]
 pub struct PyRewriteStatsTimings {
     #[pyo3(get)]
@@ -34,7 +34,7 @@ impl From<RewriteStatsTimings> for PyRewriteStatsTimings {
     }
 }
 
-#[pyclass(module = "passant._passant")]
+#[pyclass(module = "data_flow_control._passant")]
 #[derive(Clone)]
 pub struct PyRewriteStats {
     #[pyo3(get)]
@@ -77,7 +77,7 @@ impl From<RewriteStats> for PyRewriteStats {
     }
 }
 
-#[pyclass(module = "passant._passant")]
+#[pyclass(module = "data_flow_control._passant")]
 #[derive(Clone)]
 pub struct PyStatementRewriteSummary {
     #[pyo3(get)]

@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from passant import Policy, PassantRewriteError, Resolution, dfc
+from data_flow_control import Policy, PassantRewriteError, Resolution, dfc
 
 
 def test_rewrite_error_exposes_kind_for_unsupported_statement():

@@ -15,8 +15,8 @@ import pathlib
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, dfc
-from passant.connection import Connection
+from data_flow_control import Policy, Resolution, dfc
+from data_flow_control.connection import Connection
 
 lineitem_policy = Policy(
     sources=["lineitem"],

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from passant import Policy, Resolution
-from passant.adapters.kill import kill_exc_match
+from data_flow_control import Policy, Resolution
+from data_flow_control.adapters.kill import kill_exc_match
 
 
 def kill_scan_conformance(

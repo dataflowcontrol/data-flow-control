@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import duckdb
 
-from passant import Policy, Resolution, dfc
-from passant.catalog import build_catalog_snapshot
+from data_flow_control import Policy, Resolution, dfc
+from data_flow_control.catalog import build_catalog_snapshot
 
 
 def test_policy_from_pgn_expands_unique_constraint():

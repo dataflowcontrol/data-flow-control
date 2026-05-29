@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from passant import Policy, Resolution
+from data_flow_control import Policy, Resolution
 
 
 class TestJoinTypes:

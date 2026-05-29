@@ -8,11 +8,11 @@ from typing import Any
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, dfc
-from passant.adapters.base import Capabilities
-from passant.catalog import build_catalog_snapshot
-from passant.connection import Connection
-from passant.planner import Planner
+from data_flow_control import Policy, Resolution, dfc
+from data_flow_control.adapters.base import Capabilities
+from data_flow_control.catalog import build_catalog_snapshot
+from data_flow_control.connection import Connection
+from data_flow_control.planner import Planner
 
 
 @dataclass

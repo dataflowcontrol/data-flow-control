@@ -904,7 +904,7 @@ mod tests {
             sink: None,
             sink_alias: None,
             source_aliases: HashMap::new(),
-            constraint: "foo.id > 0 AND avg(foo.id) > 1".into(),
+            constraint: "foo.id IS NOT NULL".into(),
             on_fail: Resolution::Remove,
             description: None,
         };

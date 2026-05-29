@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import duckdb
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 
 from paper_helpers import make_conn, register_pgn
 

@@ -3,7 +3,7 @@
 ## Connection and policies
 
 ```python
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 
 conn = dfc(duckdb.connect())
 conn.register_policy(Policy.from_pgn("""

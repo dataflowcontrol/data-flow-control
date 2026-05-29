@@ -14,7 +14,7 @@ relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutio
 - `passant-core`: parser, IR, planner, optimizer, SQL rewriter, and explain output.
 - `passant-cli`: CLI for rewrite, explain, plan, and policy parsing.
 - `passant-py`: PyO3 extension module used by the Python package.
-- `python/passant`: Python API (`dfc`, `Connection`, `Policy`, adapters).
+- `python/data_flow_control`: Python API (`dfc`, `Connection`, `Policy`, adapters).
 
 ## Backend support
 
@@ -55,7 +55,7 @@ Basic DuckDB usage:
 
 ```python
 import duckdb
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 
 raw = duckdb.connect()
 raw.execute("CREATE TABLE orders (id INTEGER, region TEXT, amount INTEGER)")
@@ -78,7 +78,7 @@ Apply DFC to an existing database connection:
 
 ```python
 import duckdb
-from passant import dfc
+from data_flow_control import dfc
 
 conn = dfc(duckdb.connect())
 ```
@@ -91,7 +91,7 @@ for raw psycopg connections because psycopg connections are treated as Postgres.
 Policy construction:
 
 ```python
-from passant import Policy, Resolution
+from data_flow_control import Policy, Resolution
 
 remove_policy = Policy(
     sources=["orders"],
@@ -140,7 +140,7 @@ set (not required for Passant).
 To use data flow control (DFC), write PGN policies that are enforced by the Passant rewriter:
 
 ```python
-from passant import Policy
+from data_flow_control import Policy
 
 policy = Policy.from_pgn("""
 SOURCE orders
@@ -176,7 +176,7 @@ one = conn.fetchone("SELECT COUNT(*) FROM orders")
 Rewrite options:
 
 ```python
-from passant import RewriteOptions
+from data_flow_control import RewriteOptions
 
 rewritten = conn.transform_query(
     "SELECT region, COUNT(*) FROM orders GROUP BY region",
@@ -189,7 +189,7 @@ summary = conn.last_statement_rewrite_summary()
 Available public imports:
 
 ```python
-from passant import (
+from data_flow_control import (
     Dialect,
     PassantRewriteError,
     Policy,

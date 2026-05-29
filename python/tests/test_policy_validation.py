@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 
 
 def test_policy_with_source_only_accepts_aggregated():
@@ -97,7 +97,7 @@ def test_register_policy_rejects_unaggregated_source_column():
         rewriter.register_policy(
             Policy(
                 sources=["users"],
-                constraint="users.age >= 18",
+                constraint="users.age IS NOT NULL",
                 on_fail=Resolution.REMOVE,
             )
         )

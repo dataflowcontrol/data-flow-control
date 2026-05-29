@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import duckdb
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 
 
 def test_raw_connection_exposes_duckdb_connection():

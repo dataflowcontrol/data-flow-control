@@ -5,7 +5,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from passant import dfc
+from data_flow_control import dfc
 from flock_support import flock_available, load_flock
 
 

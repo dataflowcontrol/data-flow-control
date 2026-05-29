@@ -2,7 +2,7 @@
 
 import duckdb
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 
 
 def test_catalog_sync_schema_qualified_table():

@@ -2,7 +2,7 @@ target/
 .venv/
 .ruff_cache/
 .pytest_cache/
-python/passant/__pycache__/
+python/data_flow_control/__pycache__/
 python/tests/__pycache__/
 *.so
 *.dylib

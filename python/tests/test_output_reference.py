@@ -3,7 +3,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, PassantRewriteError, dfc
+from data_flow_control import Policy, Resolution, PassantRewriteError, dfc
 
 
 def test_select_output_marker_policy_maps_projected_columns():

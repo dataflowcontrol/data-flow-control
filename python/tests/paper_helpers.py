@@ -6,8 +6,8 @@ from typing import Any
 import duckdb
 import pytest
 
-from passant import Policy, dfc
-from passant.adapters.kill import KILL_MESSAGE, kill_exc_match
+from data_flow_control import Policy, dfc
+from data_flow_control.adapters.kill import KILL_MESSAGE, kill_exc_match
 
 
 def make_conn() -> Any:

@@ -8,11 +8,11 @@ from typing import Any
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, dfc
-from passant.planner import Planner
-from passant.adapters.base import Capabilities
-from passant.catalog import build_catalog_snapshot
-from passant.connection import Connection
+from data_flow_control import Policy, Resolution, dfc
+from data_flow_control.planner import Planner
+from data_flow_control.adapters.base import Capabilities
+from data_flow_control.catalog import build_catalog_snapshot
+from data_flow_control.connection import Connection
 
 
 def test_planner_rewrite_without_policies_passthrough():
@@ -45,7 +45,7 @@ def test_planner_rewrite_options_dialect_override():
     planner.register_policy(
         Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.REMOVE)
     )
-    from passant.options import RewriteOptions
+    from data_flow_control.options import RewriteOptions
 
     rewritten = planner.rewrite(
         "SELECT id FROM foo",

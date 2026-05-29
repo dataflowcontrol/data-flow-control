@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from passant import Policy, Resolution
-from passant._rust import parse_policy_to_json
+from data_flow_control import Policy, Resolution
+from data_flow_control._rust import parse_policy_to_json
 
 
 def test_source_alias_without_as():

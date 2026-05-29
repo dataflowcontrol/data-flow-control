@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import duckdb
 
 if TYPE_CHECKING:
-    from passant.connection import Connection
+    from data_flow_control.connection import Connection
 
 _FLOCK_LOADED = False
 

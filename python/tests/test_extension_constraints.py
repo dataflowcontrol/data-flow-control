@@ -5,7 +5,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 from flock_support import (
     configure_flock_openai_secret,
     ensure_flock_connection,

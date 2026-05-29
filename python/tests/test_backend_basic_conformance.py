@@ -7,7 +7,7 @@ import sqlite3
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, dfc
+from data_flow_control import Policy, Resolution, dfc
 from kill_conformance import kill_scan_conformance
 
 

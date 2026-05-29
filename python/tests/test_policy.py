@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from passant import Policy
+from data_flow_control import Policy
 
 
 def test_aggregate_keyword_rejected_by_rust_parser():
