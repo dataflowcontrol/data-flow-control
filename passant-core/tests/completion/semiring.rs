@@ -105,7 +105,7 @@ fn distributive_sum_decomposition_across_sources() {
 }
 
 #[test]
-fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
+fn decomposable_avg_uses_full_push_with_semiring_reason() {
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
@@ -116,6 +116,37 @@ fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.amount) > 100".to_string(),
+        on_fail: Resolution::Remove,
+        description: None,
+    }];
+    let result = plan_query(
+        "SELECT foo.id FROM foo INNER JOIN bar ON foo.id = bar.id",
+        &policies,
+    );
+    assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
+    assert!(
+        result
+            .chosen
+            .strategy_reasons
+            .iter()
+            .any(|reason| reason.contains("semiring")),
+        "expected semiring reason, got {:?}",
+        result.chosen.strategy_reasons
+    );
+}
+
+#[test]
+fn string_agg_keeps_partial_push_with_explicit_reason() {
+    let policies = vec![PolicyIr::Pgn {
+        sources: vec!["foo".to_string()],
+        required_sources: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
+        sink: None,
+        sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
+        constraint: "string_agg(foo.name, ',') = 'x'".to_string(),
         on_fail: Resolution::Remove,
         description: None,
     }];

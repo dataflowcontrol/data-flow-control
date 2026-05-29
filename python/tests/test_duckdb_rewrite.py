@@ -193,7 +193,7 @@ def test_explain_rewrite_reports_full_push_strategy_for_join():
     assert explanation["scope"]["visible_tables"] == ["foo", "bar"]
 
 
-def test_explain_rewrite_reports_non_distributive_policy_aggregate():
+def test_explain_rewrite_reports_decomposable_avg_as_semiring():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -206,13 +206,13 @@ def test_explain_rewrite_reports_non_distributive_policy_aggregate():
     )
 
     explanation = rewriter.explain("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-    assert explanation["chosen"]["strategy"] == "PartialPush"
+    assert explanation["chosen"]["strategy"] == "FullPush"
     assert explanation["scope"]["policy_aggregate_count"] == 1
-    assert explanation["scope"]["policy_aggregates_distributive"] is False
-    assert explanation["scope"]["non_distributive_policy_aggregates"] == ["avg(foo.id)"]
+    assert explanation["scope"]["policy_aggregates_distributive"] is True
+    assert explanation["scope"]["non_distributive_policy_aggregates"] == []
 
 
-def test_non_distributive_scan_policy_uses_partial_push():
+def test_decomposable_avg_scan_policy_uses_full_push():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
@@ -225,13 +225,13 @@ def test_non_distributive_scan_policy_uses_partial_push():
     )
 
     transformed = rewriter.transform_query("SELECT id FROM foo")
-    assert transformed.startswith("WITH base_query AS (")
-    assert "policy_eval AS (" in transformed
-    assert "CROSS JOIN policy_eval" in transformed
+    assert transformed == (
+        "SELECT id FROM foo WHERE (SELECT sum(foo.id) / count(foo.id) > 1 FROM foo)"
+    )
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (3,)]
 
 
-def test_non_distributive_partial_push_handles_aliases():
+def test_decomposable_avg_full_push_handles_aliases():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
@@ -244,13 +244,13 @@ def test_non_distributive_partial_push_handles_aliases():
     )
 
     transformed = rewriter.transform_query("SELECT f.id FROM foo AS f")
-    assert transformed.startswith("WITH base_query AS (")
-    assert "policy_eval AS (" in transformed
-    assert "avg(f.id) > 1" in transformed
+    assert transformed == (
+        "SELECT f.id FROM foo AS f WHERE (SELECT sum(foo.id) / count(foo.id) > 1 FROM foo)"
+    )
     assert rewriter.fetchall("SELECT f.id FROM foo AS f ORDER BY f.id") == [(1,), (3,)]
 
 
-def test_non_distributive_scalar_fallback_splits_source_local_predicates():
+def test_decomposable_avg_splits_source_local_predicates():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -264,12 +264,21 @@ def test_non_distributive_scalar_fallback_splits_source_local_predicates():
         )
     )
 
+    transformed = rewriter.transform_query(
+        "SELECT foo.id FROM foo JOIN bar ON foo.id < bar.id ORDER BY foo.id"
+    )
+    assert transformed == (
+        "SELECT foo.id FROM foo JOIN bar ON foo.id < bar.id "
+        "WHERE (SELECT sum(foo.id) / count(foo.id) > 1 FROM foo) "
+        "AND (SELECT sum(bar.id) / count(bar.id) > 10 FROM bar) "
+        "ORDER BY foo.id"
+    )
     assert rewriter.fetchall(
         "SELECT foo.id FROM foo JOIN bar ON foo.id < bar.id ORDER BY foo.id"
     ) == [(1,), (1,), (3,), (3,)]
 
 
-def test_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
+def test_cross_source_decomposable_avg_comparison_uses_full_push():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -284,12 +293,15 @@ def test_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
     )
 
     transformed = rewriter.transform_query("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-    assert transformed.startswith("WITH base_query AS (")
-    assert "avg(foo.id) > avg(bar.id)" in transformed
+    assert transformed == (
+        "SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id "
+        "WHERE (SELECT sum(foo.id) / count(foo.id) FROM foo) > "
+        "(SELECT sum(bar.id) / count(bar.id) FROM bar)"
+    )
     assert rewriter.fetchall("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id") == []
 
 
-def test_mixed_row_and_non_distributive_aggregate_policy_uses_partial_push():
+def test_mixed_row_and_decomposable_avg_policy_uses_full_push():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
@@ -301,9 +313,9 @@ def test_mixed_row_and_non_distributive_aggregate_policy_uses_partial_push():
     )
 
     transformed = rewriter.transform_query("SELECT id FROM foo")
-    assert transformed.startswith("WITH base_query AS (")
-    assert "foo.id > 0" in transformed
-    assert "avg(foo.id) > 1" in transformed
+    assert transformed == (
+        "SELECT id FROM foo WHERE foo.id > 0 AND (SELECT sum(foo.id) / count(foo.id) > 1 FROM foo)"
+    )
 
 
 def test_explain_rewrite_reports_unsupported_rewrite_error():

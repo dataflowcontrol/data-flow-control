@@ -32,7 +32,7 @@ fn explain_selects_full_push_for_distributive_scan() {
 }
 
 #[test]
-fn explain_selects_partial_push_for_non_distributive_policy() {
+fn explain_selects_full_push_for_decomposable_avg_policy() {
     let strategy = explain_strategy(
         "SELECT id FROM foo",
         &[PolicyIr::Pgn {
@@ -49,7 +49,7 @@ fn explain_selects_partial_push_for_non_distributive_policy() {
             description: None,
         }],
     );
-    assert_eq!(strategy, RewriteStrategy::PartialPush);
+    assert_eq!(strategy, RewriteStrategy::FullPush);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn explain_partial_push_includes_non_distributive_reason() {
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
-        constraint: "avg(foo.id) > 1".to_string(),
+        constraint: "string_agg(foo.name, ',') = 'x'".to_string(),
         on_fail: Resolution::Remove,
         description: None,
     }];

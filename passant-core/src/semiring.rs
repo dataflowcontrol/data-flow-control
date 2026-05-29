@@ -63,7 +63,7 @@ fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
         Expr::Function(function) => {
             let function_name = function.name.to_string();
             if is_known_aggregate(&function_name) {
-                let distributive = is_distributive_aggregate(&function_name);
+                let distributive = is_semiring_distributive_aggregate(&function_name);
                 aggregates.push(AggregateAnalysis {
                     function_name,
                     expression: crate::sql::render_expr(expr, None),
@@ -159,11 +159,22 @@ fn is_known_aggregate(name: &str) -> bool {
     )
 }
 
-fn is_distributive_aggregate(name: &str) -> bool {
+/// Native semiring aggregates (decompose across joins without a second pass).
+fn is_native_distributive_aggregate(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "count" | "sum" | "min" | "max" | "bool_and" | "bool_or"
     )
+}
+
+/// Aggregates treated as semiring-distributive via sum/count (or similar) decomposition.
+fn is_decomposable_aggregate(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "avg")
+}
+
+/// Whether Full-Push may inline this aggregate using distributive semiring laws.
+pub fn is_semiring_distributive_aggregate(name: &str) -> bool {
+    is_native_distributive_aggregate(name) || is_decomposable_aggregate(name)
 }
 
 #[cfg(test)]
@@ -184,7 +195,7 @@ mod tests {
                 .distributive
         );
         assert!(
-            !aggregates
+            aggregates
                 .iter()
                 .find(|a| a.function_name == "avg")
                 .unwrap()

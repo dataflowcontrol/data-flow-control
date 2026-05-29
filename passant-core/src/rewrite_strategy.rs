@@ -259,7 +259,7 @@ mod tests {
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
-            constraint: "avg(foo.amount) > 1".to_string(),
+            constraint: "string_agg(foo.name, ',') = 'x'".to_string(),
             on_fail: Resolution::Remove,
             description: None,
         }

@@ -558,6 +558,28 @@ fn scalar_policy_subquery_expr(expr: Expr, sources: &[String]) -> Result<Expr, R
         ));
     }
 
+    if let Expr::BinaryOp { left, op, right } = &expr
+        && matches!(
+            op,
+            BinaryOperator::Eq
+                | BinaryOperator::NotEq
+                | BinaryOperator::Gt
+                | BinaryOperator::Lt
+                | BinaryOperator::GtEq
+                | BinaryOperator::LtEq
+        )
+    {
+        let left_sources = referenced_source_tables(left, sources);
+        let right_sources = referenced_source_tables(right, sources);
+        if left_sources.len() == 1 && right_sources.len() == 1 {
+            return Ok(Expr::BinaryOp {
+                left: Box::new(scalar_subquery(*left.clone(), &left_sources[0])),
+                op: op.clone(),
+                right: Box::new(scalar_subquery(*right.clone(), &right_sources[0])),
+            });
+        }
+    }
+
     let referenced_sources = referenced_source_tables(&expr, sources);
     let source = if referenced_sources.len() == 1 {
         referenced_sources[0].clone()

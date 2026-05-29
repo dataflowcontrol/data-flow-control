@@ -7,7 +7,7 @@ use sqlparser::ast::Expr;
 use super::PolicyStore;
 use crate::identifiers::{ColumnKey, TableKey};
 use crate::policy::{PolicyIr, Resolution};
-use crate::rewriter::preprocess_policy_constraint;
+use crate::rewriter::{decompose_composed_aggregates, preprocess_policy_constraint};
 use crate::semiring::{AggregateAnalysis, SemiringAnalysis, analyze_constraint};
 use crate::source_sets::{
     compile_constraint_referenced_source_keys, compile_source_local_conjuncts,
@@ -61,7 +61,7 @@ impl PolicyStore {
             .ok()
             .map(|ast| CompiledExpr {
                 source_sql: constraint_sql.clone(),
-                ast,
+                ast: decompose_composed_aggregates(ast),
             });
         let semiring = semiring_for_constraint(constraint_sql.as_ref());
         let source_keys = policy

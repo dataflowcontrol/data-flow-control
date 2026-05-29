@@ -307,6 +307,9 @@ fn plan_join_policy_pushdown(
                 continue;
             }
             let mut transformed = transform_scan_aggregates(expr.clone())?;
+            if super::super::expr::expr_contains_aggregate(&transformed) {
+                continue;
+            }
             rewrite_column_qualifiers(&mut transformed, &table_scope.alias_by_base);
             plan.multi_source_join_pushes
                 .push(MultiSourceJoinPushAction {

@@ -181,6 +181,9 @@ fn partial_push_enforcement_lookup_uses_overlap_for_multi_source() {
     }
     let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-        .expect("partial-push rewrite should succeed");
-    assert!(sql.contains("WITH base_query AS ("));
+        .expect("full-push rewrite should succeed");
+    assert!(
+        sql.contains("(SELECT sum(foo.id) / count(foo.id)")
+            && sql.contains("(SELECT sum(bar.id) / count(bar.id)")
+    );
 }

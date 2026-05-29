@@ -19,6 +19,7 @@ pub(crate) use types::RewriteContext;
 pub use types::{PassantRewriter, RewriteOptions};
 
 mod aggregates;
+pub(crate) use aggregates::decompose_composed_aggregates;
 mod columns;
 pub(crate) mod constraint_preprocess;
 pub(crate) use constraint_preprocess::preprocess_policy_constraint;

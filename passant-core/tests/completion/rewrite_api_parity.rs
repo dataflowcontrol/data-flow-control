@@ -84,7 +84,7 @@ fn scan_count_distinct_equality_uses_global_cardinality_subquery() {
 }
 
 #[test]
-fn scan_avg_non_distributive_uses_partial_push() {
+fn scan_avg_decomposes_to_sum_count_for_full_push() {
     let sql = rewrite(
         "SELECT id FROM foo",
         &[PolicyIr::Pgn {
@@ -101,9 +101,8 @@ fn scan_avg_non_distributive_uses_partial_push() {
             description: None,
         }],
     );
-    assert!(sql.contains("WITH base_query AS ("));
-    assert!(sql.contains("policy_eval AS ("));
-    assert!(sql.contains("avg(foo.amount) > 100"));
+    assert!(!sql.contains("WITH base_query AS ("));
+    assert!(sql.contains("sum(foo.amount) / count(foo.amount) > 100"));
 }
 
 #[test]

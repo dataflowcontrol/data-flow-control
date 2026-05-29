@@ -73,5 +73,8 @@ fn planner_applies_dominance_before_rewrite() {
     let result = plan_query("SELECT id FROM foo", &policies);
     assert_eq!(result.applicable_policies.len(), 1);
     let sql = rewrite("SELECT id FROM foo", &policies);
-    assert_eq!(sql, "SELECT id FROM foo WHERE foo.id IS NOT NULL");
+    assert_eq!(
+        sql,
+        "SELECT id FROM foo WHERE (SELECT count(DISTINCT foo.id) = 1 FROM foo)"
+    );
 }

@@ -60,13 +60,13 @@ fn semiring_analysis_classifies_policy_aggregates() {
 
     assert_eq!(aggregates.len(), 3);
     assert!(aggregates[0].distributive);
-    assert!(!aggregates[1].distributive);
+    assert!(aggregates[1].distributive);
     assert_eq!(aggregates[1].expression, "avg(bar.amount)");
     assert!(aggregates[2].distributive);
 }
 
 #[test]
-fn planner_uses_partial_push_for_non_distributive_policy_aggregate() {
+fn planner_uses_full_push_for_decomposable_avg_policy_aggregate() {
     let ir = parse_query_to_ir("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
         .expect("query should parse");
     let policies = vec![PolicyIr::Pgn {
@@ -84,17 +84,14 @@ fn planner_uses_partial_push_for_non_distributive_policy_aggregate() {
     }];
 
     let result = PassantPlanner::new().plan_query(&ir, &policies);
-    assert_eq!(result.chosen.strategy, RewriteStrategy::PartialPush);
+    assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert_eq!(result.scope.policy_aggregate_count, 1);
-    assert!(!result.scope.policy_aggregates_distributive);
-    assert_eq!(
-        result.scope.non_distributive_policy_aggregates,
-        vec!["avg(foo.id)".to_string()]
-    );
+    assert!(result.scope.policy_aggregates_distributive);
+    assert!(result.scope.non_distributive_policy_aggregates.is_empty());
 }
 
 #[test]
-fn rewriter_uses_partial_push_for_aggregate_only_non_distributive_policy() {
+fn rewriter_uses_full_push_for_decomposable_avg_scan_policy() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
@@ -112,13 +109,15 @@ fn rewriter_uses_partial_push_for_aggregate_only_non_distributive_policy() {
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
-        .expect("avg scan policy should rewrite via partial-push");
-    assert!(sql.contains("WITH base_query AS ("));
-    assert!(sql.contains("policy_eval AS ("));
+        .expect("avg scan policy should rewrite via full-push sum/count");
+    assert_eq!(
+        sql,
+        "SELECT id FROM foo WHERE (SELECT sum(foo.id) / count(foo.id) > 1 FROM foo)"
+    );
 }
 
 #[test]
-fn rewriter_splits_source_local_non_distributive_policies_via_partial_push() {
+fn rewriter_splits_source_local_decomposable_avg_policies_via_full_push() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
@@ -136,14 +135,17 @@ fn rewriter_splits_source_local_non_distributive_policies_via_partial_push() {
 
     let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-        .expect("source-local non-distributive predicates should partial-push");
-    assert!(sql.contains("WITH base_query AS ("));
-    assert!(sql.contains("avg(foo.id) > 1"));
-    assert!(sql.contains("avg(bar.id) > 10"));
+        .expect("source-local avg predicates should full-push");
+    assert!(!sql.contains("WITH base_query AS ("));
+    assert!(
+        sql.contains("(SELECT sum(foo.id) / count(foo.id) > 1 FROM foo)")
+            && sql.contains("(SELECT sum(bar.id) / count(bar.id) > 10 FROM bar)"),
+        "expected per-source scalar subqueries: {sql}"
+    );
 }
 
 #[test]
-fn rewriter_uses_partial_push_for_alias_non_distributive_policy() {
+fn rewriter_uses_full_push_for_alias_decomposable_avg_policy() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
@@ -161,13 +163,17 @@ fn rewriter_uses_partial_push_for_alias_non_distributive_policy() {
 
     let sql = rewriter
         .rewrite("SELECT f.id FROM foo AS f")
-        .expect("alias non-distributive policy should partial-push");
-    assert!(sql.contains("WITH base_query AS ("));
-    assert!(sql.contains("avg(foo.id) > 1") || sql.contains("avg(f.id) > 1"));
+        .expect("alias avg policy should full-push");
+    assert!(!sql.contains("WITH base_query AS ("));
+    assert!(
+        sql.contains("sum(f.id) / count(f.id) > 1")
+            || sql.contains("sum(foo.id) / count(foo.id) > 1"),
+        "expected decomposed avg predicate: {sql}"
+    );
 }
 
 #[test]
-fn rewriter_partial_pushes_cross_source_non_distributive_aggregate_comparison() {
+fn rewriter_full_pushes_cross_source_decomposable_avg_comparison() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
@@ -185,12 +191,17 @@ fn rewriter_partial_pushes_cross_source_non_distributive_aggregate_comparison() 
 
     let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
-        .expect("cross-source non-distributive policy should partial-push");
-    assert!(sql.contains("WITH base_query AS ("));
+        .expect("cross-source avg comparison should full-push");
+    assert!(!sql.contains("WITH base_query AS ("));
+    assert!(
+        sql.contains("(SELECT sum(foo.id) / count(foo.id)")
+            && sql.contains("(SELECT sum(bar.id) / count(bar.id)"),
+        "expected scalar subqueries for decomposed avg comparison: {sql}"
+    );
 }
 
 #[test]
-fn rewriter_partial_pushes_mixed_row_and_non_distributive_aggregate_policy() {
+fn rewriter_full_pushes_mixed_row_and_decomposable_avg_policy() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
@@ -208,8 +219,10 @@ fn rewriter_partial_pushes_mixed_row_and_non_distributive_aggregate_policy() {
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
-        .expect("mixed row/non-distributive policy should partial-push");
-    assert!(sql.contains("WITH base_query AS ("));
+        .expect("mixed row/avg policy should full-push");
+    assert!(!sql.contains("WITH base_query AS ("));
+    assert!(sql.contains("foo.id > 0"));
+    assert!(sql.contains("sum(foo.id) / count(foo.id) > 1"));
 }
 
 #[test]
