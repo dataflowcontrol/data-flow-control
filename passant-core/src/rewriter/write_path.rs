@@ -15,7 +15,7 @@ use super::plan::{
 };
 use super::resolution::{combine_violation_exprs, wrap_query_with_relation_resolution};
 use super::scope::TableScope;
-use super::types::{PassantRewriter, RewriteContext};
+use super::types::{PassantRewriter, RewriteContext, RewriteOptions, UiResolutionMode};
 
 impl PassantRewriter {
     fn rewrite_merge(
@@ -58,16 +58,24 @@ impl PassantRewriter {
     pub(crate) fn rewrite_statement(
         &self,
         statement: &mut Statement,
-        collect_stats: bool,
+        options: &RewriteOptions,
     ) -> Result<(), RewriteError> {
+        let collect_stats = options.collect_stats;
         match statement {
             Statement::Query(query) => {
+                let ui_mode = if self.has_ui_policies() {
+                    UiResolutionMode::SelectResult
+                } else {
+                    UiResolutionMode::Disabled
+                };
                 let context = RewriteContext {
                     sink: None,
                     sink_expr_by_column: HashMap::new(),
                     ambiguous_output_columns: HashSet::new(),
                     allow_partial_source_visibility: false,
                     collect_stats,
+                    ui_mode,
+                    ui_stream_endpoint: options.ui_stream_endpoint.clone(),
                 };
                 self.rewrite_query_with_context(query, &context)
             }
@@ -84,6 +92,8 @@ impl PassantRewriter {
                     ambiguous_output_columns: output_mapping.ambiguous_columns,
                     allow_partial_source_visibility: false,
                     collect_stats,
+                    ui_mode: UiResolutionMode::InsertSelect,
+                    ui_stream_endpoint: options.ui_stream_endpoint.clone(),
                 };
                 if let Some(source) = insert.source.as_mut() {
                     self.rewrite_query_with_context(source, &context)?;
@@ -97,7 +107,7 @@ impl PassantRewriter {
                 from,
                 selection,
                 ..
-            } => self.rewrite_update(table, assignments, from.as_ref(), selection, collect_stats),
+            } => self.rewrite_update(table, assignments, from.as_ref(), selection, options),
             Statement::Merge {
                 table,
                 source,
@@ -182,8 +192,9 @@ impl PassantRewriter {
         assignments: &mut [Assignment],
         from: Option<&TableWithJoins>,
         selection: &mut Option<Expr>,
-        collect_stats: bool,
+        options: &RewriteOptions,
     ) -> Result<(), RewriteError> {
+        let collect_stats = options.collect_stats;
         let sink = update_target_name(table);
         let mut table_scope = TableScope::default();
         table_scope.add_table_with_joins(table);
@@ -191,12 +202,26 @@ impl PassantRewriter {
             table_scope.add_table_with_joins(from);
         }
         let output_mapping = update_output_column_mapping(table, assignments, &self.catalog)?;
+        let ui_mode = if self.has_ui_policies() {
+            match options.ui_update_mode {
+                crate::rewriter::types::UiUpdateMode::EditedRows => {
+                    UiResolutionMode::UpdateEditedRows
+                }
+                crate::rewriter::types::UiUpdateMode::ApprovalOnly => {
+                    UiResolutionMode::UpdateApprovalOnly
+                }
+            }
+        } else {
+            UiResolutionMode::Disabled
+        };
         let context = RewriteContext {
             sink: sink.clone(),
             sink_expr_by_column: output_mapping.expr_by_column,
             ambiguous_output_columns: output_mapping.ambiguous_columns,
             allow_partial_source_visibility: false,
             collect_stats,
+            ui_mode,
+            ui_stream_endpoint: options.ui_stream_endpoint.clone(),
         };
         let stats = context.collect_stats.then_some(&self.stats);
         let update_plan = plan_update_scope(
@@ -216,7 +241,18 @@ impl PassantRewriter {
                 update_plan.diagnostics.dominated_policies,
             );
         }
-        apply_update_scope_plan(&update_plan, assignments, selection)?;
+        let target_table = sink.clone().unwrap_or_default();
+        apply_update_scope_plan(
+            &update_plan,
+            assignments,
+            selection,
+            &context,
+            &self.store,
+            &table_scope,
+            &self.catalog,
+            &target_table,
+            &self.ui_followup,
+        )?;
         Ok(())
     }
 }

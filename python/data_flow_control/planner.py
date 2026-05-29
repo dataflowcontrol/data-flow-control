@@ -52,7 +52,12 @@ class Planner:
             opts.use_partial_push,
             opts.collect_stats,
             opts.dialect,
+            opts.ui_stream_endpoint,
+            opts.ui_update_mode.value,
         )
+
+    def last_ui_followup_sql(self) -> str | None:
+        return self._planner.last_ui_followup_sql()
 
     def explain(self, sql: str) -> str:
         if not self._planner.has_registered_policies():

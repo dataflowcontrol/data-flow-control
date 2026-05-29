@@ -11,6 +11,7 @@ class Capabilities:
     exception_udf: bool = False
     tuple_udf: bool = False
     relation_udf: bool = False
+    ui_resolution: bool = False
 
     @property
     def supports_kill(self) -> bool:

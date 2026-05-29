@@ -194,5 +194,12 @@ pub(crate) fn apply_policy_having(
         skip_indices,
         &HashSet::new(),
     )?;
-    apply_policy_resolution_actions(select, &actions, true)
+    apply_policy_resolution_actions(
+        select,
+        &actions,
+        true,
+        &context,
+        rewriter.policy_store(),
+        rewriter.catalog(),
+    )
 }

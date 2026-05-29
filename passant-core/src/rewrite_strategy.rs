@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use crate::optimizer::RewriteStrategy;
 use crate::parser::parse_query_with_dialect;
+use crate::policy::Resolution;
 use crate::policy_store::PolicyStore;
 use crate::query_analysis::StatementAnalysis;
 use crate::rewriter::{PassantRewriter, RewriteError, RewriteOptions};
@@ -167,10 +168,11 @@ impl RewritePipeline {
         let request = RewriteRequest::analyze_with_stats(
             sql,
             &statement,
-            options,
+            options.clone(),
             rewriter.policy_store(),
             stats,
         );
+        ensure_ui_statement_supported(rewriter.policy_store(), &request)?;
 
         let rewrite_start = Instant::now();
         for engine in &self.engines {
@@ -197,6 +199,31 @@ impl RewritePipeline {
             )));
         }
         Ok(sql.to_string())
+    }
+}
+
+fn store_has_ui_policies(store: &PolicyStore) -> bool {
+    store
+        .policies_vec()
+        .iter()
+        .any(|policy| policy.resolution() == Resolution::Ui)
+}
+
+fn ensure_ui_statement_supported(
+    store: &PolicyStore,
+    request: &RewriteRequest<'_>,
+) -> Result<(), RewriteError> {
+    if !store_has_ui_policies(store) {
+        return Ok(());
+    }
+    if request.options.use_partial_push {
+        return Err(RewriteError::unsupported_statement(
+            "UI resolution is not supported with partial-push rewrites yet",
+        ));
+    }
+    match request.kind {
+        StatementKind::Insert | StatementKind::SelectQuery | StatementKind::Update => Ok(()),
+        StatementKind::Merge | StatementKind::Delete | StatementKind::Passthrough => Ok(()),
     }
 }
 

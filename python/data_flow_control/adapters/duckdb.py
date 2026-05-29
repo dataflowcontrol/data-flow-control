@@ -31,6 +31,7 @@ class DuckDBAdapter:
         exception_udf=True,
         tuple_udf=True,
         relation_udf=True,
+        ui_resolution=True,
     )
 
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:

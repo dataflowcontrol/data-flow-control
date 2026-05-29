@@ -377,6 +377,9 @@ pub(crate) fn apply_select_rewrite_plan(
     select: &mut Select,
     plan: SelectRewritePlan,
     is_aggregation: bool,
+    context: &RewriteContext,
+    store: &PolicyStore,
+    catalog: &TableCatalog,
 ) -> Result<(), crate::diagnostics::RewriteError> {
     let mut grouped_table_filters: HashMap<TableFactorFilterTarget, Vec<Expr>> = HashMap::new();
     for action in plan.table_factor_filters {
@@ -433,7 +436,14 @@ pub(crate) fn apply_select_rewrite_plan(
         add_filter(select, expr, false)?;
     }
 
-    apply_policy_resolution_actions(select, &plan.policy_actions, is_aggregation)?;
+    apply_policy_resolution_actions(
+        select,
+        &plan.policy_actions,
+        is_aggregation,
+        context,
+        store,
+        catalog,
+    )?;
 
     Ok(())
 }

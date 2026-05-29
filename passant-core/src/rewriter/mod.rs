@@ -16,7 +16,7 @@ mod types;
 
 pub(crate) use scope::TableScope;
 pub(crate) use types::RewriteContext;
-pub use types::{PassantRewriter, RewriteOptions};
+pub use types::{PassantRewriter, RewriteOptions, UiFollowupCell, UiUpdateMode};
 
 mod aggregates;
 pub(crate) use aggregates::decompose_composed_aggregates;
@@ -70,6 +70,7 @@ impl PassantRewriter {
             parse_dialect: SqlDialect::default(),
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
+            ui_followup: UiFollowupCell::default(),
         }
     }
 
@@ -202,9 +203,22 @@ impl PassantRewriter {
         use crate::partial_push::PartialPushEngine;
         use crate::rewrite_strategy::RewritePipeline;
 
+        self.ui_followup.set(None);
         let pipeline =
             RewritePipeline::new(vec![Box::new(FullPushEngine), Box::new(PartialPushEngine)]);
         pipeline.rewrite(self, sql, options)
+    }
+
+    /// When the last rewrite was an edited UI UPDATE, returns the follow-up `UPDATE ... FROM` SQL.
+    pub fn last_ui_followup_sql(&self) -> Option<String> {
+        self.ui_followup.take()
+    }
+
+    pub(crate) fn has_ui_policies(&self) -> bool {
+        self.store
+            .policies_vec()
+            .iter()
+            .any(|policy| policy.resolution() == Resolution::Ui)
     }
 
     /// Counters from the most recent rewrite when `RewriteOptions::collect_stats` was enabled.
@@ -233,9 +247,9 @@ impl PassantRewriter {
     pub(crate) fn rewrite_statement_full_push(
         &self,
         statement: &mut Statement,
-        collect_stats: bool,
+        options: &RewriteOptions,
     ) -> Result<(), RewriteError> {
-        self.rewrite_statement(statement, collect_stats)
+        self.rewrite_statement(statement, options)
     }
 
     pub(crate) fn rewrite_exists_subqueries_as_joins(

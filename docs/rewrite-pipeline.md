@@ -7,6 +7,7 @@ Policies compile to one of:
 - **Filter** (`REMOVE`) — `WHERE` / `HAVING` predicate
 - **Tuple UDF** (`KILL`, `ON FAIL UDF <name>`) — CTE wrapper around the inner `SELECT`
 - **Relation UDF** (`ON FAIL RELATION UDF <name>`) — relation-level abort gate (see below)
+- **UI** (`ON FAIL UI`) — filter predicate with `address_violating_rows` (not the `t1`–`t4` tuple path)
 
 ## KILL (`passant_kill`)
 
@@ -71,6 +72,27 @@ appears in a source-table comparison.
 ## _OUTPUT_
 
 Maps `_OUTPUT_.col` to insert/update/select output columns for constraint evaluation.
+
+## UI resolution
+
+**INSERT … SELECT** and **SELECT**
+
+1. Add `CASE WHEN <pass> THEN TRUE ELSE address_violating_rows(...) END` to `WHERE` / `HAVING`
+2. Python UDF writes corrected rows to a TSV stream (source columns then output columns)
+3. `extended_duckdb` unions `filtered result UNION ALL external stream` at plan root
+
+**UPDATE approval**
+
+`CASE WHEN <pass> THEN TRUE ELSE passant_ui_approve(...) END` in the update `WHERE` clause.
+Handler return `None` rejects the row; any dict approves without stream writes.
+
+**UPDATE edited rows**
+
+Same stream UDF as insert/select on failing rows, plus a follow-up
+`UPDATE target SET ... FROM read_csv(stream) staged WHERE pk match` stored in
+`PassantRewriter::last_ui_followup_sql()` for the Python adapter to execute.
+
+Requires catalog unique/primary-key columns on the update target for edited mode.
 
 ## DELETE
 

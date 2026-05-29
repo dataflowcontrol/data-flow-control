@@ -12,7 +12,9 @@ def test_public_exports():
         "Policy",
         "Resolution",
         "RewriteOptions",
+        "UiUpdateMode",
         "PassantRewriteError",
+        "UiViolationEvent",
     }
     assert set(data_flow_control.__all__) == expected
 

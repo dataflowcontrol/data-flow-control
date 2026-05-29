@@ -11,6 +11,7 @@ pub enum Resolution {
     Kill,
     Udf(String),
     RelationUdf(String),
+    Ui,
 }
 
 impl Resolution {
@@ -22,6 +23,9 @@ impl Resolution {
         }
         if upper == "KILL" {
             return Ok(Self::Kill);
+        }
+        if upper == "UI" {
+            return Ok(Self::Ui);
         }
         if upper.starts_with("LLM") {
             return Err(PolicyParseError::InvalidResolution(trimmed.to_string()));
@@ -58,6 +62,7 @@ impl Resolution {
             Self::Kill => "KILL".to_string(),
             Self::Udf(name) => format!("UDF {name}"),
             Self::RelationUdf(name) => format!("RELATION UDF {name}"),
+            Self::Ui => "UI".to_string(),
         }
     }
 
@@ -67,6 +72,10 @@ impl Resolution {
 
     pub fn is_relation_resolution(&self) -> bool {
         matches!(self, Self::RelationUdf(_))
+    }
+
+    pub fn is_ui_resolution(&self) -> bool {
+        matches!(self, Self::Ui)
     }
 }
 
@@ -614,6 +623,10 @@ mod tests {
             Resolution::parse("RELATION UDF abort_batch").unwrap(),
             Resolution::RelationUdf("abort_batch".into())
         );
+        assert_eq!(Resolution::parse("UI").unwrap(), Resolution::Ui);
+        assert_eq!(Resolution::Ui.as_label(), "UI");
+        assert!(!Resolution::Ui.is_tuple_resolution());
+        assert!(Resolution::Ui.is_ui_resolution());
         assert!(Resolution::parse("LLM").is_err());
         assert!(Resolution::parse("INVALIDATE").is_err());
         assert!(Resolution::parse("UDF").is_err());

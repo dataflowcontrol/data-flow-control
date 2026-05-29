@@ -57,7 +57,7 @@ pub use rewrite_strategy::{
 };
 pub use rewriter::{
     PassantRewriter, RewriteOptions, ScopePlanDiagnostics, SelectRewritePlan,
-    StatementRewriteSummary, plan_statement_rewrite_summary,
+    StatementRewriteSummary, UiUpdateMode, plan_statement_rewrite_summary,
 };
 pub use semiring::{AggregateAnalysis, SemiringAnalysis, analyze_constraint};
 pub use source_sets::{

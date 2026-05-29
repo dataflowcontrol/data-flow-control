@@ -1,16 +1,26 @@
 //! Tuple- and relation-level resolution rewrites (CTE `t1`–`t4` pattern).
 
+use std::collections::{HashMap, HashSet};
+
 use sqlparser::ast::{
-    Expr, Ident, Query, Select, SelectItem, SetExpr, SetOperator, SetQuantifier, TableFactor,
-    TableWithJoins, WildcardAdditionalOptions,
+    Assignment, Expr, Ident, Query, Select, SelectItem, SetExpr, SetOperator, SetQuantifier,
+    TableFactor, TableWithJoins, WildcardAdditionalOptions,
 };
 
+use crate::catalog::TableCatalog;
 use crate::diagnostics::RewriteError;
+use crate::identifiers::{ColumnKey, TableKey};
+use crate::policy::PolicyIr;
+use crate::policy_store::PolicyStore;
 use crate::rewriter::expr::projected_column_name;
+use crate::rewriter::helpers::select_output_column_mapping;
 use crate::rewriter::projection::ensure_projection_aliases;
+use crate::rewriter::scope::TableScope;
+use crate::rewriter::types::RewriteContext;
 use crate::sql::{
-    alias_expr, bool_literal, cte, empty_select, function_call, grouped_select, is_not_null,
-    passant_kill_pass_filter, qualified_column, query_from_select, table_factor, with_ctes,
+    alias_expr, bool_literal, case_when, cte, empty_select, function_call, grouped_select,
+    is_not_null, passant_kill_pass_filter, qualified_column, query_from_select, string_literal,
+    table_factor, with_ctes,
 };
 
 pub(crate) const T1_CTE: &str = "t1";
@@ -21,6 +31,16 @@ pub(crate) const PASS_COLUMN: &str = "__passant_policy_pass";
 pub(crate) const RELATION_VIOLATION_COLUMN: &str = "__passant_relation_violation";
 pub(crate) const RELATION_INPUT_CTE: &str = "__passant_relation_input";
 pub(crate) const PASSANT_KILL_UDF: &str = "passant_kill";
+pub(crate) const UI_ADDRESS_VIOLATING_ROWS_UDF: &str = "address_violating_rows";
+pub(crate) const PASSANT_UI_APPROVE_UDF: &str = "passant_ui_approve";
+
+#[derive(Debug, Clone)]
+pub(crate) struct UiResolutionSpec {
+    pub constraint: String,
+    pub description: Option<String>,
+    pub sink: Option<String>,
+    pub policy_index: usize,
+}
 
 pub(crate) fn wrap_select_with_tuple_resolution(
     mut inner: Select,
@@ -270,6 +290,301 @@ pub(crate) fn combine_violation_exprs(exprs: Vec<Expr>) -> Expr {
         op: sqlparser::ast::UnaryOperator::Not,
         expr: Box::new(first),
     }
+}
+
+pub(crate) fn ui_pass_filter(
+    pass_expr: Expr,
+    select: &mut Select,
+    spec: &UiResolutionSpec,
+    store: &PolicyStore,
+    policy: &PolicyIr,
+    context: &RewriteContext,
+    table_scope: &TableScope,
+    catalog: &TableCatalog,
+) -> Result<Expr, RewriteError> {
+    ensure_projection_aliases(select);
+    let (column_names, column_exprs) = collect_ui_udf_columns(
+        select,
+        store,
+        spec.policy_index,
+        policy,
+        context,
+        table_scope,
+        catalog,
+    )?;
+    let column_names_json = serde_json::to_string(&column_names).map_err(|err| {
+        RewriteError::unsupported_statement(format!(
+            "UI resolution could not serialize column names: {err}"
+        ))
+    })?;
+    let description = spec.description.clone().unwrap_or_default();
+    let stream_endpoint = context.ui_stream_endpoint.clone().unwrap_or_default();
+
+    let mut udf_args = column_exprs;
+    udf_args.push(string_literal(&spec.constraint));
+    udf_args.push(string_literal(&description));
+    udf_args.push(string_literal(&column_names_json));
+    udf_args.push(string_literal(&stream_endpoint));
+
+    let udf_call = function_call(UI_ADDRESS_VIOLATING_ROWS_UDF, udf_args);
+    Ok(case_when(pass_expr, bool_literal(true), udf_call))
+}
+
+pub(crate) fn ui_approval_pass_filter_from_columns(
+    pass_expr: Expr,
+    column_names: &[String],
+    column_exprs: Vec<Expr>,
+    constraint: &str,
+    description: Option<&str>,
+) -> Result<Expr, RewriteError> {
+    let column_names_json = serde_json::to_string(column_names).map_err(|err| {
+        RewriteError::unsupported_statement(format!(
+            "UI resolution could not serialize column names: {err}"
+        ))
+    })?;
+    let description = description.unwrap_or("").to_string();
+    let mut udf_args = column_exprs;
+    udf_args.push(string_literal(constraint));
+    udf_args.push(string_literal(&description));
+    udf_args.push(string_literal(&column_names_json));
+    let udf_call = function_call(PASSANT_UI_APPROVE_UDF, udf_args);
+    Ok(case_when(pass_expr, bool_literal(true), udf_call))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_ui_update_udf_columns(
+    assignments: &[Assignment],
+    target_table: &str,
+    store: &PolicyStore,
+    policy_index: usize,
+    policy: &PolicyIr,
+    table_scope: &TableScope,
+    catalog: &TableCatalog,
+    identity_columns: &[String],
+) -> Result<(Vec<String>, Vec<Expr>), RewriteError> {
+    let mut select = empty_select();
+    for assignment in assignments {
+        let col = match &assignment.target {
+            sqlparser::ast::AssignmentTarget::ColumnName(name) => {
+                name.0.last().map(|i| i.value.clone())
+            }
+            _ => None,
+        };
+        if let Some(col) = col {
+            select
+                .projection
+                .push(alias_expr(qualified_column(target_table, &col), &col));
+        }
+    }
+    for col in identity_columns {
+        if !select
+            .projection
+            .iter()
+            .any(|item| projected_column_name_from_item(item).as_deref() == Some(col.as_str()))
+        {
+            select
+                .projection
+                .push(alias_expr(qualified_column(target_table, col), col));
+        }
+    }
+    let context = RewriteContext::default();
+    collect_ui_udf_columns(
+        &mut select,
+        store,
+        policy_index,
+        policy,
+        &context,
+        table_scope,
+        catalog,
+    )
+}
+
+fn projected_column_name_from_item(item: &SelectItem) -> Option<String> {
+    match item {
+        SelectItem::ExprWithAlias { alias, .. } => Some(alias.value.clone()),
+        SelectItem::UnnamedExpr(expr) => projected_column_name(expr),
+        _ => None,
+    }
+}
+
+/// Stream/read_csv column order for edited UPDATE: identity columns first, then SET targets.
+pub(crate) fn ui_edited_update_stream_column_names(
+    assignments: &[Assignment],
+    identity_columns: &[String],
+) -> Result<Vec<String>, RewriteError> {
+    if identity_columns.is_empty() {
+        return Err(RewriteError::unsupported_statement(
+            "UI edited UPDATE requires target row identity columns (primary key or register unique columns in catalog)",
+        ));
+    }
+    let mut stream_columns = identity_columns.to_vec();
+    for assignment in assignments {
+        let col = assignment_column_name(assignment)?;
+        if !stream_columns.contains(&col) {
+            stream_columns.push(col);
+        }
+    }
+    Ok(stream_columns)
+}
+
+fn assignment_column_name(assignment: &Assignment) -> Result<String, RewriteError> {
+    match &assignment.target {
+        sqlparser::ast::AssignmentTarget::ColumnName(name) => {
+            name.0.last().map(|i| i.value.clone()).ok_or_else(|| {
+                RewriteError::unsupported_statement(
+                    "UI edited UPDATE requires simple column assignment targets",
+                )
+            })
+        }
+        _ => Err(RewriteError::unsupported_statement(
+            "UI edited UPDATE requires simple column assignment targets",
+        )),
+    }
+}
+
+/// Build `UPDATE target SET ... FROM read_csv(stream) AS staged WHERE target.pk = staged.pk`.
+pub(crate) fn ui_edited_update_followup_sql(
+    target_table: &str,
+    assignments: &[Assignment],
+    identity_columns: &[String],
+    stream_endpoint: &str,
+) -> Result<String, RewriteError> {
+    if stream_endpoint.is_empty() {
+        return Err(RewriteError::unsupported_statement(
+            "UI edited UPDATE requires a configured stream endpoint",
+        ));
+    }
+    let stream_columns = ui_edited_update_stream_column_names(assignments, identity_columns)?;
+    let mut set_parts = Vec::new();
+    for assignment in assignments {
+        let col = assignment_column_name(assignment)?;
+        set_parts.push(format!("{col} = staged.{col}", col = col));
+    }
+    let join_cond = identity_columns
+        .iter()
+        .map(|col| {
+            format!(
+                "{target}.{col} = staged.{col}",
+                target = target_table,
+                col = col
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let endpoint_escaped = stream_endpoint.replace('\'', "''");
+    let names_list = stream_columns
+        .iter()
+        .map(|c| format!("'{c}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!(
+        "UPDATE {target} SET {set_clause} FROM (SELECT * FROM read_csv('{endpoint}', delim='\\t', header=false, names=[{names_list}])) staged WHERE {join_cond}",
+        target = target_table,
+        set_clause = set_parts.join(", "),
+        endpoint = endpoint_escaped,
+        names_list = names_list,
+    ))
+}
+
+fn collect_ui_udf_columns(
+    select: &Select,
+    store: &PolicyStore,
+    policy_index: usize,
+    policy: &PolicyIr,
+    _context: &RewriteContext,
+    table_scope: &TableScope,
+    catalog: &TableCatalog,
+) -> Result<(Vec<String>, Vec<Expr>), RewriteError> {
+    let PolicyIr::Pgn {
+        sources,
+        source_aliases,
+        ..
+    } = policy;
+    let source_keys: HashSet<TableKey> = sources.iter().map(|s| TableKey::new(s)).collect();
+
+    let compiled = store.compiled(policy_index).ok_or_else(|| {
+        RewriteError::unsupported_statement("UI resolution requires a compiled policy")
+    })?;
+
+    let mut source_names = Vec::new();
+    let mut source_exprs = Vec::new();
+    let mut seen_source = HashSet::new();
+
+    for (table_key, column_key) in &compiled.constraint_referenced_columns {
+        if !source_keys.contains(table_key) {
+            continue;
+        }
+        let (dotted, expr) =
+            resolve_policy_column_expr(table_key, column_key, source_aliases, table_scope)?;
+        if seen_source.insert(dotted.clone()) {
+            source_names.push(dotted);
+            source_exprs.push(expr);
+        }
+    }
+
+    let output_mapping = select_output_column_mapping(select, catalog)?;
+    if output_mapping.expr_by_column.is_empty() {
+        return Err(RewriteError::unsupported_statement(
+            "UI resolution requires a named SELECT projection (SELECT * without catalog expansion is not supported)",
+        ));
+    }
+    if !output_mapping.ambiguous_columns.is_empty() {
+        return Err(RewriteError::unsupported_statement(
+            "UI resolution requires unambiguous output column names",
+        ));
+    }
+
+    let mut column_names = source_names;
+    let mut column_exprs = source_exprs;
+    let source_name_set: HashSet<String> = column_names.iter().cloned().collect();
+
+    let output_names: Vec<String> = select
+        .projection
+        .iter()
+        .filter_map(|item| match item {
+            SelectItem::UnnamedExpr(expr) => projected_column_name(expr),
+            SelectItem::ExprWithAlias { alias, .. } => Some(alias.value.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for name in output_names {
+        let key = name.to_ascii_lowercase();
+        if source_name_set.contains(&name) {
+            continue;
+        }
+        let Some(expr) = output_mapping.expr_by_column.get(&key) else {
+            return Err(RewriteError::unsupported_statement(format!(
+                "UI resolution could not resolve output column {name}"
+            )));
+        };
+        column_names.push(name);
+        column_exprs.push(expr.clone());
+    }
+
+    if column_names.is_empty() {
+        return Err(RewriteError::unsupported_statement(
+            "UI resolution requires at least one source or output column",
+        ));
+    }
+
+    Ok((column_names, column_exprs))
+}
+
+fn resolve_policy_column_expr(
+    table_key: &TableKey,
+    column_key: &ColumnKey,
+    source_aliases: &HashMap<String, String>,
+    table_scope: &TableScope,
+) -> Result<(String, Expr), RewriteError> {
+    let table_base = table_key.as_str();
+    let dotted = format!("{table_base}.{}", column_key.as_str());
+    let qualifier = source_aliases
+        .get(table_base)
+        .map(String::as_str)
+        .or_else(|| table_scope.alias_by_base.get_by_table_key(table_base))
+        .unwrap_or(table_base);
+    Ok((dotted, qualified_column(qualifier, column_key.as_str())))
 }
 
 fn output_column_names(select: &Select) -> Vec<String> {

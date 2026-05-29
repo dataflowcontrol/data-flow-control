@@ -48,7 +48,11 @@ pub struct CompiledPolicy {
 pub(crate) fn is_enforcement_resolution(resolution: Resolution) -> bool {
     matches!(
         resolution,
-        Resolution::Remove | Resolution::Kill | Resolution::Udf(_) | Resolution::RelationUdf(_)
+        Resolution::Remove
+            | Resolution::Kill
+            | Resolution::Udf(_)
+            | Resolution::RelationUdf(_)
+            | Resolution::Ui
     )
 }
 

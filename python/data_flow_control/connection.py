@@ -1,20 +1,73 @@
 from __future__ import annotations
 
+import os
+import tempfile
+from dataclasses import replace
 from typing import Any
 
 from .adapters.base import Adapter
 from .adapters.duckdb import DuckDBAdapter
 from .adapters.datafusion import DataFusionAdapter
 from .adapters.registry import create_adapter, sniff_dialect
-from .options import RewriteOptions
+from .options import RewriteOptions, UiUpdateMode
 from .planner import Planner
 from .policy import Policy, Resolution
+from .ui import (
+    UiViolationHandler,
+    build_ui_approval_event,
+    build_ui_violation_event,
+    merge_handler_row,
+    write_ui_stream_row,
+)
 
 
 def strip_passant_comment(sql: str) -> str:
     if sql.startswith("-- passant:"):
         return "\n".join(sql.splitlines()[1:])
     return sql
+
+
+_UI_STREAM_EXTENSION = "external"
+
+
+def _duckdb_extension_loaded(conn: Any, extension_name: str) -> bool:
+    rows = conn.execute(
+        "SELECT 1 FROM duckdb_extensions() WHERE loaded AND extension_name = ?",
+        [extension_name],
+    ).fetchall()
+    return bool(rows)
+
+
+def _ui_stream_union_statement_kind(sql: str) -> str | None:
+    """Classify the outer statement for UI stream-union requirements."""
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        parsed = sqlglot.parse_one(sql.strip(), read="duckdb")
+    except Exception:
+        return None
+
+    node = parsed.this if isinstance(parsed, exp.With) else parsed
+
+    if isinstance(node, exp.Insert):
+        return "insert"
+    if isinstance(node, exp.Update):
+        return "update"
+    if isinstance(node, (exp.Select, exp.Union, exp.Intersect, exp.Except)):
+        return "select"
+    if isinstance(node, exp.Query):
+        return _ui_stream_union_statement_kind(node.sql(dialect="duckdb"))
+    return None
+
+
+def _statement_needs_ui_stream_union(sql: str) -> bool:
+    """True when rewritten SQL relies on extended_duckdb to union UI stream rows."""
+    executable = strip_passant_comment(sql)
+    if "address_violating_rows" not in executable:
+        return False
+    kind = _ui_stream_union_statement_kind(executable)
+    return kind in ("insert", "select")
 
 
 def dfc(conn: Any, dialect: str | None = None) -> Connection:
@@ -29,6 +82,10 @@ class Connection:
     def __init__(self, adapter: Adapter, planner: Planner | None = None) -> None:
         self.adapter = adapter
         self.planner = planner or Planner(dialect=adapter.dialect)
+        self._ui_handler: UiViolationHandler | None = None
+        self._ui_stream_endpoint: str | None = None
+        self._ui_update_mode: UiUpdateMode = UiUpdateMode.APPROVAL_ONLY
+        self._ui_stream_extension_ready = False
         if adapter.capabilities.exception_udf:
             adapter.register_kill_function()
 
@@ -87,8 +144,110 @@ class Connection:
                         f"Resolution {policy.on_fail_label} is not supported for dialect "
                         f"{self.adapter.dialect!r}: missing capability relation_udf"
                     )
+            elif policy.on_fail == Resolution.UI:
+                if not self.adapter.capabilities.ui_resolution:
+                    raise ValueError(
+                        f"Resolution {policy.on_fail.value} is not supported for dialect "
+                        f"{self.adapter.dialect!r}: missing capability ui_resolution"
+                    )
+                if self._ui_handler is None:
+                    raise ValueError(
+                        "Resolution UI requires configure_ui_resolution() before register_policy()"
+                    )
         self.refresh_catalog()
         self.planner.register_policy(policy)
+
+    def configure_ui_resolution(
+        self,
+        handler: UiViolationHandler,
+        *,
+        stream_endpoint: str | None = None,
+        extension_path: str | None = None,
+        polling_ms: int = 100,
+        update_mode: UiUpdateMode | str = UiUpdateMode.APPROVAL_ONLY,
+        max_wait_seconds: int = 60,
+    ) -> None:
+        if not self.adapter.capabilities.ui_resolution:
+            raise ValueError(f"UI resolution is not supported for dialect {self.adapter.dialect!r}")
+        if not isinstance(self.adapter, DuckDBAdapter):
+            raise ValueError("UI resolution is only supported for DuckDB connections")
+
+        if stream_endpoint is None:
+            fd, stream_endpoint = tempfile.mkstemp(suffix=".tsv", prefix="passant-ui-")
+            os.close(fd)
+        else:
+            parent = os.path.dirname(stream_endpoint)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        self._clear_ui_stream_file(stream_endpoint)
+
+        conn = self.adapter.connection
+        if isinstance(update_mode, str):
+            update_mode = UiUpdateMode(update_mode)
+        self._ui_update_mode = update_mode
+
+        extension_ready = False
+        if extension_path is not None:
+            conn.execute(f"LOAD {extension_path!r}")
+            extension_ready = True
+        elif _duckdb_extension_loaded(conn, _UI_STREAM_EXTENSION):
+            extension_ready = True
+
+        if extension_ready:
+            conn.execute(f"PRAGMA external_stream_endpoint({stream_endpoint!r})")
+            conn.execute(f"PRAGMA external_polling_ms({int(polling_ms)})")
+            conn.execute(f"PRAGMA external_max_wait_seconds({int(max_wait_seconds)})")
+        self._ui_stream_extension_ready = extension_ready
+
+        self._ui_handler = handler
+        self._ui_stream_endpoint = stream_endpoint
+
+        def address_violating_rows(*args: Any) -> bool:
+            event = build_ui_violation_event(args)
+            corrected = handler(event)
+            if corrected is None:
+                return False
+            endpoint = event.stream_endpoint or stream_endpoint
+            row_values = merge_handler_row(event, corrected)
+            write_ui_stream_row(endpoint, event.column_names, row_values)
+            return False
+
+        conn.create_function(
+            "address_violating_rows",
+            address_violating_rows,
+            null_handling="special",
+            return_type="BOOLEAN",
+            side_effects=True,
+        )
+
+        def passant_ui_approve(*args: Any) -> bool:
+            event = build_ui_approval_event(args)
+            corrected = handler(event)
+            return corrected is not None
+
+        conn.create_function(
+            "passant_ui_approve",
+            passant_ui_approve,
+            null_handling="special",
+            return_type="BOOLEAN",
+            side_effects=True,
+        )
+
+    def reset_ui_stream(self) -> None:
+        if self._ui_stream_endpoint is not None:
+            self._clear_ui_stream_file(self._ui_stream_endpoint)
+
+    def _clear_ui_stream_file(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8"):
+            pass
+
+    def _effective_rewrite_options(self, options: RewriteOptions | None) -> RewriteOptions:
+        opts = options or RewriteOptions()
+        if self._ui_stream_endpoint is not None and opts.ui_stream_endpoint is None:
+            opts = replace(opts, ui_stream_endpoint=self._ui_stream_endpoint)
+        if self._ui_handler is not None:
+            opts = replace(opts, ui_update_mode=self._ui_update_mode)
+        return opts
 
     def delete_policy(
         self,
@@ -107,7 +266,7 @@ class Connection:
         )
 
     def transform_query(self, sql: str, *, options: RewriteOptions | None = None) -> str:
-        return self.planner.rewrite(sql, options=options)
+        return self.planner.rewrite(sql, options=self._effective_rewrite_options(options))
 
     def explain(self, query: str) -> dict:
         return self.planner.explain_dict(query)
@@ -121,10 +280,35 @@ class Connection:
     def policies(self) -> list[Policy]:
         return self.planner.policies()
 
+    def _ensure_ui_stream_extension_for_execute(self, executable: str) -> None:
+        if not _statement_needs_ui_stream_union(executable):
+            return
+        if self._ui_stream_extension_ready:
+            return
+        if not isinstance(self.adapter, DuckDBAdapter):
+            return
+        conn = self.adapter.connection
+        if _duckdb_extension_loaded(conn, _UI_STREAM_EXTENSION):
+            self._ui_stream_extension_ready = True
+            return
+        raise ValueError(
+            "UI resolution for INSERT and SELECT requires the extended_duckdb "
+            f"'{_UI_STREAM_EXTENSION}' extension so corrected rows can be unioned into "
+            "results. Call configure_ui_resolution(..., extension_path=...) or LOAD the "
+            "extension before execute()."
+        )
+
     def execute(self, query: str, *, params=None, options: RewriteOptions | None = None):
+        if self._ui_stream_endpoint is not None:
+            self.reset_ui_stream()
         rewritten = self.transform_query(query, options=options)
         executable = strip_passant_comment(rewritten)
-        return self.adapter.execute(executable, params)
+        self._ensure_ui_stream_extension_for_execute(executable)
+        result = self.adapter.execute(executable, params)
+        followup = self.planner.last_ui_followup_sql()
+        if followup:
+            self.adapter.execute(followup, params)
+        return result
 
     def fetchall(self, query: str, *, params=None, options: RewriteOptions | None = None):
         result = self.execute(query, params=params, options=options)

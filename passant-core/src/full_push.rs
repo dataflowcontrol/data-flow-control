@@ -35,7 +35,7 @@ impl RewriteEngine for FullPushEngine {
         request: &RewriteRequest<'_>,
     ) -> Result<RewriteAttempt, RewriteError> {
         let mut statement = request.statement.clone();
-        rewriter.rewrite_statement_full_push(&mut statement, request.options.collect_stats)?;
+        rewriter.rewrite_statement_full_push(&mut statement, &request.options)?;
         let format_start = Instant::now();
         let rewritten = crate::sql::render_statement(&statement, None);
         if request.options.collect_stats {

@@ -7,7 +7,35 @@ use crate::policy_store::PolicyStore;
 use crate::rewrite_stats::RewriteStatsCell;
 use crate::sql::SqlDialect;
 
+use std::sync::Mutex;
+
 use super::plan::StatementRewriteSummaryCell;
+
+/// Optional second statement produced by UI edited UPDATE rewrites.
+#[derive(Debug, Default)]
+pub struct UiFollowupCell(pub(crate) Mutex<Option<String>>);
+
+impl UiFollowupCell {
+    pub fn set(&self, sql: Option<String>) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = sql;
+        }
+    }
+
+    pub fn take(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|mut guard| guard.take())
+    }
+}
+
+/// How UI resolution applies to UPDATE statements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiUpdateMode {
+    /// Approve or reject failing rows; no corrected values written to the stream.
+    #[default]
+    ApprovalOnly,
+    /// Write corrected assignment values to the stream and apply via `UPDATE ... FROM`.
+    EditedRows,
+}
 
 /// Rewrite options passed through the pipeline.
 #[derive(Debug, Default, Clone)]
@@ -18,6 +46,21 @@ pub struct RewriteOptions {
     pub collect_stats: bool,
     /// Optional parse dialect override; catalog snapshot dialect is used when unset.
     pub parse_dialect: Option<SqlDialect>,
+    /// Stream file path for `address_violating_rows` UI resolution (last UDF argument when set).
+    pub ui_stream_endpoint: Option<String>,
+    /// UPDATE-specific UI semantics when policies use `ON FAIL UI`.
+    pub ui_update_mode: UiUpdateMode,
+}
+
+/// Statement-shape context for UI resolution rewrites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum UiResolutionMode {
+    #[default]
+    Disabled,
+    InsertSelect,
+    SelectResult,
+    UpdateApprovalOnly,
+    UpdateEditedRows,
 }
 
 impl RewriteOptions {
@@ -34,6 +77,7 @@ pub struct PassantRewriter {
     pub(crate) parse_dialect: crate::sql::SqlDialect,
     pub(crate) stats: RewriteStatsCell,
     pub(crate) statement_summary: StatementRewriteSummaryCell,
+    pub(crate) ui_followup: UiFollowupCell,
 }
 
 impl Clone for PassantRewriter {
@@ -44,6 +88,7 @@ impl Clone for PassantRewriter {
             parse_dialect: self.parse_dialect,
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
+            ui_followup: UiFollowupCell::default(),
         }
     }
 }
@@ -66,6 +111,8 @@ pub(crate) struct RewriteContext {
     pub(crate) ambiguous_output_columns: HashSet<String>,
     pub(crate) allow_partial_source_visibility: bool,
     pub(crate) collect_stats: bool,
+    pub(crate) ui_mode: UiResolutionMode,
+    pub(crate) ui_stream_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

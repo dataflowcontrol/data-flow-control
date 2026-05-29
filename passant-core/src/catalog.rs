@@ -153,6 +153,21 @@ impl TableCatalog {
             .contains(&(TableKey::new(table), ColumnName::new(column).key()))
     }
 
+    /// Column names registered as unique/primary-key for `table` (for UI edited UPDATE identity).
+    pub fn unique_column_names(&self, table: &str) -> Vec<String> {
+        let key = TableKey::new(table);
+        let mut columns: Vec<String> = self
+            .unique_columns
+            .iter()
+            .filter_map(|(table_key, column_key)| {
+                (table_key == &key).then(|| column_key.as_str().to_string())
+            })
+            .collect();
+        columns.sort();
+        columns.dedup();
+        columns
+    }
+
     pub fn validate_policy(&self, policy: &PolicyIr) -> Result<(), RewriteError> {
         if !self.loaded {
             return Ok(());

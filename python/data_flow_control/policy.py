@@ -20,6 +20,7 @@ class Resolution(Enum):
     KILL = "KILL"
     UDF = "UDF"
     RELATION_UDF = "RELATION UDF"
+    UI = "UI"
 
     @classmethod
     def from_label(cls, label: str) -> Resolution:
@@ -28,6 +29,8 @@ class Resolution(Enum):
             return cls.REMOVE
         if upper == "KILL":
             return cls.KILL
+        if upper == "UI":
+            return cls.UI
         if upper.startswith("UDF "):
             return cls.UDF
         if upper.startswith("RELATION UDF "):

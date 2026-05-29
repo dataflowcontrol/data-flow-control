@@ -178,7 +178,14 @@ impl PassantRewriter {
         }
 
         let is_aggregation = select_analysis.is_aggregation;
-        apply_select_rewrite_plan(select, plan, is_aggregation)?;
+        apply_select_rewrite_plan(
+            select,
+            plan,
+            is_aggregation,
+            &plan_context,
+            &self.store,
+            &self.catalog,
+        )?;
         Ok(())
     }
 

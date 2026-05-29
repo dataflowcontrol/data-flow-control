@@ -50,6 +50,7 @@ markers = [
     "clickhouse: requires clickhouse-connect and Passant docker clickhouse service",
     "umbra: requires psycopg and Passant docker umbra service",
     "flock: optional Flock DuckDB extension tests (see passant/scripts/setup_flock.sh)",
+    "ui_extension: optional extended_duckdb UI stream union tests",
 ]
 
 [tool.ruff]

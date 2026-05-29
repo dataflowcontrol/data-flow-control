@@ -15,9 +15,11 @@ use crate::rewriter::expr::{add_filter, and_expr};
 use crate::rewriter::policy_expr::{
     ConstraintExprCtx, build_pgn_filter_expr, unique_column_guard_from_constraint,
 };
-use crate::rewriter::resolution::{PASSANT_KILL_UDF, wrap_select_with_tuple_resolution};
+use crate::rewriter::resolution::{
+    PASSANT_KILL_UDF, UiResolutionSpec, ui_pass_filter, wrap_select_with_tuple_resolution,
+};
 use crate::rewriter::scope::TableScope;
-use crate::rewriter::types::{PolicyApplicability, RewriteContext};
+use crate::rewriter::types::{PolicyApplicability, RewriteContext, UiResolutionMode};
 
 use super::applicability::{ScopePlanDiagnostics, resolve_scope_policies};
 
@@ -41,12 +43,19 @@ pub(crate) enum PolicyResolutionAction {
         #[allow(dead_code)]
         description: Option<String>,
     },
+    Ui {
+        filter: Expr,
+        spec: UiResolutionSpec,
+        policy: PolicyIr,
+    },
 }
 
 pub(crate) fn action_for_resolution(
     filter: Expr,
     on_fail: &Resolution,
     description: Option<String>,
+    policy: &PolicyIr,
+    policy_index: usize,
 ) -> Result<PolicyResolutionAction, crate::diagnostics::RewriteError> {
     match on_fail {
         Resolution::Remove => Ok(PolicyResolutionAction::Filter {
@@ -68,6 +77,16 @@ pub(crate) fn action_for_resolution(
             udf_name: name.clone(),
             description,
         }),
+        Resolution::Ui => Ok(PolicyResolutionAction::Ui {
+            filter,
+            spec: UiResolutionSpec {
+                constraint: policy.constraint().to_string(),
+                description,
+                sink: policy.sink().map(str::to_string),
+                policy_index,
+            },
+            policy: policy.clone(),
+        }),
     }
 }
 
@@ -82,6 +101,16 @@ pub(crate) fn build_policy_resolution_actions(
     applicable: Vec<(usize, &PolicyIr, PolicyApplicability)>,
     diagnostics: &mut ScopePlanDiagnostics,
 ) -> Result<Vec<PolicyResolutionAction>, crate::diagnostics::RewriteError> {
+    if is_aggregation
+        && applicable
+            .iter()
+            .any(|(_, policy, _)| policy.resolution() == Resolution::Ui)
+    {
+        return Err(crate::diagnostics::RewriteError::unsupported_statement(
+            "UI resolution for aggregate INSERT ... SELECT is not supported yet",
+        ));
+    }
+
     let mut actions = Vec::new();
     for (index, policy, applicability) in applicable {
         let skipped_dimensions =
@@ -127,7 +156,13 @@ pub(crate) fn build_policy_resolution_actions(
         {
             expr = and_expr(guard, expr);
         }
-        actions.push(action_for_resolution(expr, on_fail, description.clone())?);
+        actions.push(action_for_resolution(
+            expr,
+            on_fail,
+            description.clone(),
+            policy,
+            index,
+        )?);
     }
     Ok(actions)
 }
@@ -174,7 +209,20 @@ pub(crate) fn apply_policy_resolution_actions(
     select: &mut Select,
     actions: &[PolicyResolutionAction],
     is_aggregation: bool,
+    context: &RewriteContext,
+    store: &PolicyStore,
+    catalog: &TableCatalog,
 ) -> Result<(), crate::diagnostics::RewriteError> {
+    let ui_count = actions
+        .iter()
+        .filter(|action| matches!(action, PolicyResolutionAction::Ui { .. }))
+        .count();
+    if ui_count > 1 {
+        return Err(crate::diagnostics::RewriteError::unsupported_statement(
+            "multiple UI resolution policies in one SELECT scope are not supported yet",
+        ));
+    }
+
     for action in actions {
         match action {
             PolicyResolutionAction::Filter { filter, .. } => {
@@ -187,9 +235,74 @@ pub(crate) fn apply_policy_resolution_actions(
                 *select = wrap_select_with_tuple_resolution(inner, filter.clone(), udf_name)?;
             }
             PolicyResolutionAction::RelationUdf { .. } => {}
+            PolicyResolutionAction::Ui {
+                filter,
+                spec,
+                policy,
+            } => {
+                validate_ui_resolution_context(context, spec.sink.as_deref())?;
+                let table_scope = TableScope::from_select(select);
+                let ui_filter = ui_pass_filter(
+                    filter.clone(),
+                    select,
+                    spec,
+                    store,
+                    policy,
+                    context,
+                    &table_scope,
+                    catalog,
+                )?;
+                add_filter(select, ui_filter, is_aggregation)?;
+            }
         }
     }
     Ok(())
+}
+
+fn validate_ui_resolution_context(
+    context: &RewriteContext,
+    policy_sink: Option<&str>,
+) -> Result<(), crate::diagnostics::RewriteError> {
+    match context.ui_mode {
+        UiResolutionMode::InsertSelect => {
+            let Some(insert_sink) = context.sink.as_deref() else {
+                return Err(crate::diagnostics::RewriteError::unsupported_statement(
+                    "UI resolution for INSERT ... SELECT requires an insert target",
+                ));
+            };
+            let Some(policy_sink) = policy_sink else {
+                return Err(crate::diagnostics::RewriteError::unsupported_statement(
+                    "UI resolution for INSERT ... SELECT requires a policy sink",
+                ));
+            };
+            if TableKey::new(insert_sink) != TableKey::new(policy_sink) {
+                return Err(crate::diagnostics::RewriteError::unsupported_statement(
+                    format!(
+                        "UI policy sink {policy_sink} does not match insert target {insert_sink}"
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        UiResolutionMode::SelectResult | UiResolutionMode::Disabled => Ok(()),
+        UiResolutionMode::UpdateApprovalOnly | UiResolutionMode::UpdateEditedRows => {
+            let Some(update_sink) = context.sink.as_deref() else {
+                return Err(crate::diagnostics::RewriteError::unsupported_statement(
+                    "UI resolution for UPDATE requires an update target table",
+                ));
+            };
+            if let Some(policy_sink) = policy_sink
+                && TableKey::new(update_sink) != TableKey::new(policy_sink)
+            {
+                return Err(crate::diagnostics::RewriteError::unsupported_statement(
+                    format!(
+                        "UI policy sink {policy_sink} does not match update target {update_sink}"
+                    ),
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 pub(crate) fn relation_violation_filters(actions: &[PolicyResolutionAction]) -> Vec<Expr> {

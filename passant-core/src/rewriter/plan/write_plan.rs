@@ -21,6 +21,7 @@ use super::applicability::{ScopePlanDiagnostics, resolve_scope_policies};
 #[derive(Debug, Clone)]
 pub enum UpdatePolicyAction {
     Pgn {
+        policy_index: usize,
         filter: Expr,
         on_fail: Resolution,
         description: Option<String>,
@@ -104,6 +105,7 @@ pub(crate) fn plan_update_scope(
             )?
         };
         plan.actions.push(UpdatePolicyAction::Pgn {
+            policy_index: index,
             filter,
             on_fail: on_fail.clone(),
             description: description.clone(),
@@ -117,20 +119,38 @@ pub(crate) fn apply_update_scope_plan(
     plan: &UpdateScopePlan,
     assignments: &mut [sqlparser::ast::Assignment],
     selection: &mut Option<Expr>,
+    context: &RewriteContext,
+    store: &PolicyStore,
+    table_scope: &TableScope,
+    catalog: &TableCatalog,
+    target_table: &str,
+    ui_followup: &crate::rewriter::types::UiFollowupCell,
 ) -> Result<(), crate::diagnostics::RewriteError> {
     use crate::rewriter::policy_expr::apply_update_resolution;
     for action in &plan.actions {
         let UpdatePolicyAction::Pgn {
+            policy_index,
             filter,
             on_fail,
             description,
         } = action;
+        let Some(policy) = store.policy(*policy_index) else {
+            continue;
+        };
         apply_update_resolution(
             assignments,
             selection,
             filter.clone(),
             on_fail.clone(),
             description.as_deref(),
+            context,
+            store,
+            *policy_index,
+            policy,
+            table_scope,
+            catalog,
+            target_table,
+            ui_followup,
         )?;
     }
     Ok(())

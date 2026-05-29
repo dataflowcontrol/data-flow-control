@@ -73,7 +73,7 @@ fn partial_push_remove_filters_rows_when_aggregate_policy_fails() {
         .expect("rewrite");
     let actual = db.fetchall_i64(&rewritten);
 
-    assert_eq!(actual, vec![]);
+    assert_eq!(actual, Vec::<i64>::new());
 }
 
 #[test]

@@ -79,7 +79,7 @@ impl RewriteEngine for PartialPushEngine {
 
         if request.kind != StatementKind::SelectQuery {
             let mut statement = request.statement.clone();
-            rewriter.rewrite_statement_full_push(&mut statement, request.options.collect_stats)?;
+            rewriter.rewrite_statement_full_push(&mut statement, &request.options)?;
             return Ok(RewriteAttempt::Applied(crate::sql::render_statement(
                 &statement, None,
             )));
@@ -403,6 +403,11 @@ fn partial_push_limit_scan(
                 tuple_udf_actions.push((filter.clone(), udf_name.clone()));
             }
             PolicyResolutionAction::RelationUdf { .. } => {}
+            PolicyResolutionAction::Ui { .. } => {
+                return Err(RewriteError::unsupported_statement(
+                    "UI resolution is not supported with partial-push rewrites yet",
+                ));
+            }
         }
     }
 

@@ -83,13 +83,15 @@ impl PyPlanner {
         ))
     }
 
-    #[pyo3(signature = (query, use_partial_push=false, collect_stats=false, dialect=None))]
+    #[pyo3(signature = (query, use_partial_push=false, collect_stats=false, dialect=None, ui_stream_endpoint=None, ui_update_mode=None))]
     fn transform_registered(
         &self,
         query: String,
         use_partial_push: bool,
         collect_stats: bool,
         dialect: Option<String>,
+        ui_stream_endpoint: Option<String>,
+        ui_update_mode: Option<String>,
     ) -> PyResult<String> {
         let parse_dialect = dialect
             .as_deref()
@@ -98,6 +100,8 @@ impl PyPlanner {
             use_partial_push,
             collect_stats,
             parse_dialect,
+            ui_stream_endpoint,
+            ui_update_mode: parse_ui_update_mode(ui_update_mode.as_deref())?,
         };
         self.rewriter
             .rewrite_with_options(&query, options)
@@ -106,6 +110,10 @@ impl PyPlanner {
 
     fn last_rewrite_stats(&self) -> PyRewriteStats {
         self.rewriter.last_rewrite_stats().into()
+    }
+
+    fn last_ui_followup_sql(&self) -> Option<String> {
+        self.rewriter.last_ui_followup_sql()
     }
 
     fn last_statement_rewrite_summary(&self) -> PyStatementRewriteSummary {
@@ -170,6 +178,20 @@ pub fn parse_policy_specs(policies_json: &str) -> PyResult<Vec<PolicyIr>> {
         policies.push(policy_ir_from_spec(&spec)?);
     }
     Ok(policies)
+}
+
+fn parse_ui_update_mode(value: Option<&str>) -> PyResult<passant_core::UiUpdateMode> {
+    match value
+        .unwrap_or("approval_only")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "approval_only" | "approval" => Ok(passant_core::UiUpdateMode::ApprovalOnly),
+        "edited_rows" | "edited" => Ok(passant_core::UiUpdateMode::EditedRows),
+        other => Err(PyValueError::new_err(format!(
+            "invalid ui_update_mode {other:?}: expected 'approval_only' or 'edited_rows'"
+        ))),
+    }
 }
 
 fn policy_ir_from_spec(spec: &PolicySpec) -> PyResult<PolicyIr> {

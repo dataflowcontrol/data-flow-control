@@ -849,11 +849,19 @@ pub(crate) fn update_tuple_udf_pass_filter(
 }
 
 pub(crate) fn apply_update_resolution(
-    _assignments: &mut [Assignment],
+    assignments: &mut [Assignment],
     selection: &mut Option<Expr>,
     expr: Expr,
     on_fail: Resolution,
-    _description: Option<&str>,
+    description: Option<&str>,
+    context: &RewriteContext,
+    store: &PolicyStore,
+    policy_index: usize,
+    policy: &PolicyIr,
+    table_scope: &TableScope,
+    catalog: &TableCatalog,
+    target_table: &str,
+    ui_followup: &crate::rewriter::types::UiFollowupCell,
 ) -> Result<(), RewriteError> {
     match on_fail {
         Resolution::Remove => {
@@ -880,6 +888,80 @@ pub(crate) fn apply_update_resolution(
             return Err(RewriteError::unsupported_statement(
                 "relation UDF resolution on UPDATE is not supported yet",
             ));
+        }
+        Resolution::Ui => {
+            let spec = crate::rewriter::resolution::UiResolutionSpec {
+                constraint: policy.constraint().to_string(),
+                description: description.map(str::to_string),
+                sink: policy.sink().map(str::to_string),
+                policy_index,
+            };
+            let identity_columns = catalog.unique_column_names(target_table);
+            let filter = match context.ui_mode {
+                crate::rewriter::types::UiResolutionMode::UpdateApprovalOnly => {
+                    let (names, exprs) =
+                        crate::rewriter::resolution::collect_ui_update_udf_columns(
+                            assignments,
+                            target_table,
+                            store,
+                            policy_index,
+                            policy,
+                            table_scope,
+                            catalog,
+                            &identity_columns,
+                        )?;
+                    crate::rewriter::resolution::ui_approval_pass_filter_from_columns(
+                        expr,
+                        &names,
+                        exprs,
+                        &spec.constraint,
+                        spec.description.as_deref(),
+                    )?
+                }
+                crate::rewriter::types::UiResolutionMode::UpdateEditedRows => {
+                    let stream_columns =
+                        crate::rewriter::resolution::ui_edited_update_stream_column_names(
+                            assignments,
+                            &identity_columns,
+                        )?;
+                    let mut select = crate::sql::empty_select();
+                    for col in &stream_columns {
+                        select.projection.push(crate::sql::alias_expr(
+                            crate::sql::qualified_column(target_table, col),
+                            col,
+                        ));
+                    }
+                    crate::rewriter::resolution::ui_pass_filter(
+                        expr,
+                        &mut select,
+                        &spec,
+                        store,
+                        policy,
+                        context,
+                        table_scope,
+                        catalog,
+                    )?
+                }
+                _ => {
+                    return Err(RewriteError::unsupported_statement(
+                        "UI resolution for UPDATE requires update-specific rewrite mode",
+                    ));
+                }
+            };
+            *selection = Some(match selection.take() {
+                Some(existing) => and_expr(existing, filter),
+                None => filter,
+            });
+            if context.ui_mode == crate::rewriter::types::UiResolutionMode::UpdateEditedRows {
+                let endpoint = context.ui_stream_endpoint.clone().unwrap_or_default();
+                let followup = crate::rewriter::resolution::ui_edited_update_followup_sql(
+                    target_table,
+                    assignments,
+                    &identity_columns,
+                    &endpoint,
+                )?;
+                ui_followup.set(Some(followup));
+            }
         }
     }
     Ok(())
