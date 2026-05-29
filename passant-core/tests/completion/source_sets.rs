@@ -5,12 +5,13 @@ use passant_core::{PolicyIr, Resolution};
 use crate::common::{assert_rewrite, rewrite};
 
 fn cross_source_policy() -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > max(foo.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -39,12 +40,13 @@ fn full_outer_join_cross_source_policy_with_source_sets() {
 fn union_all_cross_source_policy_with_source_sets() {
     assert_rewrite(
         "SELECT id FROM foo UNION ALL SELECT id FROM bar",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > max(bar.id)".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -87,12 +89,13 @@ fn scope_flags_require_source_sets_for_cross_source_outer_join() {
 fn insert_sink_write_applies_per_tuple_source_sets() {
     assert_rewrite(
         "INSERT INTO reports SELECT bar.id, foo.amount FROM bar LEFT JOIN foo ON bar.id = foo.id",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["bar".to_string(), "foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(bar.id) > max(foo.amount)".to_string(),
             on_fail: Resolution::Remove,
             description: None,

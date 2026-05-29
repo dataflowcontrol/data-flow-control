@@ -15,7 +15,8 @@ import pathlib
 import duckdb
 import pytest
 
-from passant import Connection, Policy, Resolution, wrap
+from passant import Policy, Resolution, dfc
+from passant.connection import Connection
 
 lineitem_policy = Policy(
     sources=["lineitem"],
@@ -28,7 +29,7 @@ TPCH_QUERIES = (1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 19)
 
 @pytest.fixture
 def tpch_rewriter():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("INSTALL tpch")
     rewriter.execute("LOAD tpch")
     rewriter.execute("CALL dbgen(sf=0.1)")

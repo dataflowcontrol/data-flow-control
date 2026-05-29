@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import duckdb
 import pytest
 
-from passant import Policy, Planner, Resolution, wrap
+from passant import Policy, Resolution, dfc
+from passant.planner import Planner
+from passant.adapters.base import Capabilities
 from passant.catalog import build_catalog_snapshot
+from passant.connection import Connection
 
 
 def test_planner_rewrite_without_policies_passthrough():
@@ -49,7 +54,7 @@ def test_planner_rewrite_options_dialect_override():
 
 
 def test_planner_explain_dict_shape():
-    db = wrap(duckdb.connect(), dialect="duckdb")
+    db = dfc(duckdb.connect(), dialect="duckdb")
     db.execute("CREATE TABLE foo (id INTEGER)")
     db.register_policy(
         Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.REMOVE)
@@ -59,32 +64,31 @@ def test_planner_explain_dict_shape():
     db.close()
 
 
-def test_clickhouse_kill_registration_fails():
-    import pytest
-
-    pytest.importorskip("clickhouse_connect")
-    from passant.adapters.clickhouse import ClickHouseAdapter
-
-    class _Client:
-        database = "default"
-
-        def query(self, *_args, **_kwargs):
-            return type("R", (), {"result_rows": []})()
-
-        def close(self):
-            pass
-
-    db = wrap(ClickHouseAdapter(_Client()), dialect="clickhouse")
-    with pytest.raises(ValueError, match="exception_udf"):
-        db.register_policy(
-            Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
-        )
-
-
 def test_umbra_kill_registration_fails():
-    from passant.adapters.umbra import UmbraAdapter
+    @dataclass
+    class _UmbraAdapterLike:
+        dialect: str = "umbra"
+        capabilities: Capabilities = Capabilities(exception_udf=False)
 
-    db = wrap(UmbraAdapter(object()), dialect="umbra")
+        def execute(self, sql: str, params=None):
+            raise AssertionError("execute should not be called")
+
+        def introspect_catalog(self) -> dict:
+            return build_catalog_snapshot(
+                dialect=self.dialect,
+                tables={"foo": {"columns": ["id"], "types": {"id": "INTEGER"}}},
+            )
+
+        def quote_identifier(self, name: str) -> str:
+            return name
+
+        def register_kill_function(self) -> None:
+            raise AssertionError("register_kill_function should not be called")
+
+        def close(self) -> None:
+            return
+
+    db = Connection(_UmbraAdapterLike(), planner=Planner(dialect="umbra"))
     with pytest.raises(ValueError, match="exception_udf"):
         db.register_policy(
             Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)

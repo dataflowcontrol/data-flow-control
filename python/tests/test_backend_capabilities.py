@@ -8,7 +8,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, connect
+from passant import Policy, Resolution, dfc
 from passant.adapters.base import Capabilities
 from passant.catalog import build_catalog_snapshot
 from passant.connection import Connection
@@ -48,8 +48,9 @@ def test_connection_rejects_kill_when_adapter_lacks_exception_udf():
 
 
 @pytest.mark.umbra
-def test_connect_umbra_url(passant_docker):
-    db = connect(passant_docker.umbra_url.replace("postgresql://", "umbra://"))
+def test_dfc_umbra_connection(passant_docker):
+    psycopg = pytest.importorskip("psycopg")
+    db = dfc(psycopg.connect(passant_docker.umbra_url), dialect="umbra")
     db.execute("CREATE TABLE passant_umbra_smoke (id INTEGER)")
     db.adapter.execute("DROP TABLE IF EXISTS passant_umbra_smoke")
     db.close()

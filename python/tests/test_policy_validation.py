@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, wrap
+from passant import Policy, Resolution, dfc
 
 
 def test_policy_with_source_only_accepts_aggregated():
@@ -91,7 +91,7 @@ def test_policy_required_sources_must_be_subset():
 
 
 def test_register_policy_rejects_unaggregated_source_column():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE users (age INTEGER)")
     with pytest.raises(ValueError, match="aggregated"):
         rewriter.register_policy(

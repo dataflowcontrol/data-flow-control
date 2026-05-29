@@ -3,7 +3,7 @@ use passant_core::{PolicyIr, parse_policy_text};
 
 fn state_transition_policy() -> PolicyIr {
     parse_policy_text(
-        "SOURCE t AS t1 SINK t AS t2 CONSTRAINT count(distinct t.id) = 1 AND max(t.id) = t2.id AND case when max(t.state) = 'A' then t2.state = 'B' when max(t.state) = 'B' then t2.state in ('A', 'C') when max(t.state) = 'C' then false end ON FAIL REMOVE",
+        "SOURCE t AS t1 SINK t AS t2 CONSTRAINT count(distinct t1.id) = 1 AND max(t1.id) = t2.id AND case when max(t1.state) = 'A' then t2.state = 'B' when max(t1.state) = 'B' then t2.state in ('A', 'C') when max(t1.state) = 'C' then false end ON FAIL REMOVE",
     )
     .expect("state transition policy should parse")
 }

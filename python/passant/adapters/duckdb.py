@@ -6,6 +6,7 @@ import duckdb
 
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
+from .kill import python_kill
 
 
 def quote_sql_identifier(name: str) -> str:
@@ -44,12 +45,9 @@ class DuckDBAdapter:
         return quote_sql_identifier(name)
 
     def register_kill_function(self) -> None:
-        def _kill() -> bool:
-            raise ValueError("KILLing due to dfc policy violation")
-
         for name in ("kill", "passant_kill"):
             try:
-                self._conn.create_function(name, _kill, [], "BOOLEAN")
+                self._conn.create_function(name, python_kill, [], "BOOLEAN")
             except duckdb.Error:
                 pass
 

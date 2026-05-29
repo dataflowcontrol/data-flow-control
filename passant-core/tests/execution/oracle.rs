@@ -2,7 +2,7 @@
 
 use passant_core::{PolicyIr, Resolution};
 
-use crate::common::dfc_policy;
+use crate::common::pgn_policy;
 use crate::duckdb::TestDb;
 
 #[test]
@@ -10,7 +10,7 @@ fn full_push_remove_matches_naive_row_filter_oracle() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER, amount INTEGER)");
     db.exec("INSERT INTO foo VALUES (1, 10), (2, 20), (3, 5)");
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) > 1"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) > 1"));
 
     let rewritten = db
         .rewrite("SELECT id FROM foo ORDER BY id")
@@ -27,12 +27,13 @@ fn partial_push_remove_preserves_rows_when_policy_passes() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (3)");
-    db.register_policy(PolicyIr::Dfc {
+    db.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -51,12 +52,13 @@ fn partial_push_remove_filters_rows_when_aggregate_policy_fails() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (2), (3)");
-    db.register_policy(PolicyIr::Dfc {
+    db.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > 2".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -77,12 +79,13 @@ fn outer_join_cross_source_remove_execution_matches_naive_filter() {
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO bar VALUES (1), (3)");
     db.exec("INSERT INTO foo VALUES (2), (4)");
-    db.register_policy(PolicyIr::Dfc {
+    db.register_policy(PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > max(foo.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -108,7 +111,7 @@ fn full_push_remove_with_limit_matches_naive_oracle() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (2), (3), (4)");
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) > 1"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) > 1"));
 
     let rewritten = db
         .rewrite("SELECT id FROM foo ORDER BY id LIMIT 2")
@@ -126,7 +129,7 @@ fn union_all_remove_matches_naive_oracle() {
     db.exec("CREATE TABLE bar (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (2), (3)");
     db.exec("INSERT INTO bar VALUES (10), (20)");
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) > 1"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) > 1"));
 
     let query = "SELECT id FROM foo UNION ALL SELECT id FROM bar ORDER BY id";
     let rewritten = db.rewrite(query).expect("rewrite");
@@ -145,7 +148,7 @@ fn correlated_exists_remove_matches_naive_oracle() {
     db.exec("CREATE TABLE baz (x INTEGER)");
     db.exec("INSERT INTO foo VALUES (1), (2), (3), (4)");
     db.exec("INSERT INTO baz VALUES (2), (3), (5)");
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) > 1"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) > 1"));
 
     let query =
         "SELECT id FROM foo WHERE EXISTS (SELECT 1 FROM baz WHERE baz.x = foo.id) ORDER BY id";

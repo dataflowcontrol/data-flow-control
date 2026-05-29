@@ -2,11 +2,11 @@
 
 import duckdb
 
-from passant import Policy, Resolution, wrap
+from passant import Policy, Resolution, dfc
 
 
 def test_catalog_sync_schema_qualified_table():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE SCHEMA IF NOT EXISTS s")
     rewriter.execute("CREATE OR REPLACE TABLE s.foo (id INTEGER)")
     policy = Policy(
@@ -19,7 +19,7 @@ def test_catalog_sync_schema_qualified_table():
 
 
 def test_catalog_sync_quoted_table_name():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute('CREATE OR REPLACE TABLE "Order" (id INTEGER)')
     policy = Policy(
         sources=["Order"],

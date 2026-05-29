@@ -218,7 +218,7 @@ impl PassantRewriter {
                 .iter()
                 .find_map(|index| {
                     let policy = self.store.policy(index)?;
-                    let PolicyIr::Dfc {
+                    let PolicyIr::Pgn {
                         sources,
                         constraint,
                         on_fail: Resolution::Remove,
@@ -355,7 +355,7 @@ impl PassantRewriter {
                 .iter()
                 .find_map(|index| {
                     let policy = self.store.policy(index)?;
-                    let PolicyIr::Dfc {
+                    let PolicyIr::Pgn {
                         sources,
                         on_fail: Resolution::Remove,
                         ..
@@ -385,7 +385,7 @@ impl PassantRewriter {
                 continue;
             };
 
-            let Some(PolicyIr::Dfc { constraint, .. }) = self.store.policy(policy_index) else {
+            let Some(PolicyIr::Pgn { constraint, .. }) = self.store.policy(policy_index) else {
                 remaining.push(conjunct);
                 continue;
             };

@@ -67,12 +67,13 @@ mod tests {
     fn set_operation_detects_cross_source_policy() {
         let left = set_expr_from_sql("SELECT id FROM foo");
         let right = set_expr_from_sql("SELECT id FROM bar");
-        let policy = PolicyIr::Dfc {
+        let policy = PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > max(bar.id)".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -86,12 +87,13 @@ mod tests {
 
     #[test]
     fn split_policy_by_source_local_conjuncts_for_outer_join() {
-        let policy = PolicyIr::Dfc {
+        let policy = PolicyIr::Pgn {
             sources: vec!["bar".to_string(), "foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(bar.id) > 1 AND max(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -115,12 +117,13 @@ mod tests {
     fn split_set_operation_policies_into_branch_local_policies() {
         let left = set_expr_from_sql("SELECT id FROM foo");
         let right = set_expr_from_sql("SELECT id FROM bar");
-        let policy = PolicyIr::Dfc {
+        let policy = PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1 AND max(bar.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,

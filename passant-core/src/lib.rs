@@ -42,8 +42,8 @@ pub use parser::{
 };
 pub use planner::{ChosenPlan, PassantPlanner, PlanQueryResult, ScopeInfo};
 pub use policy::{
-    PgnPolicy, PgnPolicyKind, PolicyIr, PolicyParseError, PolicyScope, Resolution,
-    normalize_policy_dimensions, normalize_policy_sources, parse_policy_text,
+    PolicyIr, PolicyParseError, Resolution, normalize_policy_dimensions,
+    normalize_policy_source_aliases, normalize_policy_sources, parse_policy_text,
 };
 pub use policy_store::{
     CompiledExpr, CompiledPolicy, MultiSourceLookupMode, PolicyStore, PolicyStoreMemoryUsage,

@@ -1,12 +1,13 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
-fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::Dfc {
+fn pgn_policy(source: &str, threshold: i64) -> PolicyIr {
+    PolicyIr::Pgn {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({source}.amount) > {threshold}"),
         on_fail: Resolution::Remove,
         description: None,
@@ -14,12 +15,13 @@ fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
 }
 
 fn sink_only_remove_policy(sink: &str) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: Some(sink.to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({sink}.amount) <= 0"),
         on_fail: Resolution::Remove,
         description: None,
@@ -29,9 +31,9 @@ fn sink_only_remove_policy(sink: &str) -> PolicyIr {
 #[test]
 fn rewrite_scales_with_indexed_candidates_not_total_registry() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(dfc_policy("orders", 1));
+    rewriter.register_policy(pgn_policy("orders", 1));
     for index in 0..5_000_usize {
-        rewriter.register_policy(dfc_policy(
+        rewriter.register_policy(pgn_policy(
             &format!("other_{index:05}"),
             i64::try_from(index).unwrap_or(0),
         ));
@@ -70,9 +72,9 @@ fn insert_sink_policy_lookup_uses_sink_index() {
 #[ignore = "manual: 1M-policy registry rewrite smoke test"]
 fn rewrite_1m_policies_smoke() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(dfc_policy("orders", 1));
+    rewriter.register_policy(pgn_policy("orders", 1));
     for index in 0..1_000_000_usize {
-        rewriter.register_policy(dfc_policy(
+        rewriter.register_policy(pgn_policy(
             &format!("other_{index:07}"),
             i64::try_from(index).unwrap_or(0),
         ));

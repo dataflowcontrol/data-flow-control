@@ -43,8 +43,7 @@ pub(crate) fn rebuild_and(conjuncts: Vec<Expr>) -> Option<Expr> {
 
 pub(crate) fn policy_description(policy: &PolicyIr) -> Option<&str> {
     match policy {
-        PolicyIr::Dfc { description, .. } => description.as_deref(),
-        PolicyIr::NativePgn(policy) => policy.description.as_deref(),
+        PolicyIr::Pgn { description, .. } => description.as_deref(),
     }
 }
 

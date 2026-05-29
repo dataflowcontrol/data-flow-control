@@ -6,12 +6,13 @@ use crate::common::{plan_query, rewrite};
 
 #[test]
 fn self_join_three_aliases_applies_policy_once_per_occurrence_not_factorial() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -34,12 +35,13 @@ fn self_join_three_aliases_applies_policy_once_per_occurrence_not_factorial() {
 fn explain_does_not_expand_policy_permutations_for_self_join() {
     use passant_core::PassantPlanner;
 
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -65,12 +67,13 @@ fn self_join_execution_remove_filters_each_alias() {
 
     let sql = rewrite(
         "SELECT a.id FROM foo AS a JOIN foo AS b ON a.id = b.id",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -82,12 +85,13 @@ fn self_join_execution_remove_filters_each_alias() {
 
 #[test]
 fn self_join_sink_write_preserves_alias_symmetry() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,

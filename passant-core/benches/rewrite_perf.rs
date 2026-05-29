@@ -7,13 +7,14 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
-fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::Dfc {
+fn pgn_policy(source: &str, threshold: i64) -> PolicyIr {
+    PolicyIr::Pgn {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({source}.amount) > {threshold}"),
         on_fail: Resolution::Remove,
         description: None,
@@ -21,12 +22,13 @@ fn dfc_policy(source: &str, threshold: i64) -> PolicyIr {
 }
 
 fn sink_only_policy(sink: &str) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: Some(sink.to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({sink}.amount) <= 0"),
         on_fail: Resolution::Remove,
         description: None,
@@ -34,12 +36,13 @@ fn sink_only_policy(sink: &str) -> PolicyIr {
 }
 
 fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![hot.to_string(), other.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("avg({hot}.amount) > avg({other}.amount) + {threshold}"),
         on_fail: Resolution::Remove,
         description: None,
@@ -47,9 +50,9 @@ fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
 }
 
 fn generate_policies(target_table: &str, unrelated_count: usize) -> Vec<PolicyIr> {
-    let mut policies = vec![dfc_policy(target_table, 1)];
+    let mut policies = vec![pgn_policy(target_table, 1)];
     for index in 0..unrelated_count {
-        policies.push(dfc_policy(
+        policies.push(pgn_policy(
             &format!("other_{index:06}"),
             i64::try_from(index).unwrap_or(0),
         ));
@@ -58,7 +61,7 @@ fn generate_policies(target_table: &str, unrelated_count: usize) -> Vec<PolicyIr
 }
 
 fn generate_hot_multi_source_registry(hot: &str, multi_count: usize) -> Vec<PolicyIr> {
-    let mut policies = vec![dfc_policy(hot, 1)];
+    let mut policies = vec![pgn_policy(hot, 1)];
     for index in 0..multi_count {
         policies.push(multi_source_policy(
             hot,
@@ -142,7 +145,7 @@ fn bench_hot_multi_source_subset(c: &mut Criterion) {
 
 fn bench_sink_only_registry(c: &mut Criterion) {
     let mut group = c.benchmark_group("rewrite_sink_only_registry");
-    let mut policies = vec![dfc_policy("orders", 1)];
+    let mut policies = vec![pgn_policy("orders", 1)];
     for index in 0..5_000_usize {
         policies.push(sink_only_policy(&format!("sink_{index:04}")));
     }
@@ -180,7 +183,7 @@ fn bench_partial_push(c: &mut Criterion) {
 fn bench_join_with_unrelated_policies(c: &mut Criterion) {
     let mut group = c.benchmark_group("rewrite_join_unrelated");
     let mut policies = generate_policies("orders", 9_999);
-    policies.push(dfc_policy("customers", 2));
+    policies.push(pgn_policy("customers", 2));
     group.bench_function("10k_unrelated_join", |bencher| {
         let mut rewriter = PassantRewriter::new();
         register_policies(&mut rewriter, &policies);

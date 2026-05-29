@@ -373,14 +373,11 @@ fn partial_push_limit_scan(
     )?;
 
     for action in actions {
-        let PolicyResolutionAction::Dfc {
+        let PolicyResolutionAction::Pgn {
             filter: mut expr,
             on_fail,
             ..
-        } = action
-        else {
-            continue;
-        };
+        } = action;
         if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
             continue;
         }

@@ -23,12 +23,13 @@ fn quoted_catalog() -> TableCatalog {
 #[test]
 fn catalog_validates_quoted_column_references() {
     let catalog = quoted_catalog();
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["MySchema.MyTable".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(\"MySchema\".\"MyTable\".\"OrderID\") > 0".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -41,12 +42,13 @@ fn catalog_validates_quoted_column_references() {
 #[test]
 fn catalog_rejects_unknown_quoted_column() {
     let catalog = quoted_catalog();
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["MySchema.MyTable".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(\"MySchema\".\"MyTable\".\"MissingCol\") > 0".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -61,12 +63,13 @@ fn catalog_rejects_unknown_quoted_column() {
 fn schema_qualified_table_rewrites_with_full_push() {
     let mut rewriter = PassantRewriter::with_catalog(quoted_catalog());
     rewriter
-        .register_validated_policy(PolicyIr::Dfc {
+        .register_validated_policy(PolicyIr::Pgn {
             sources: vec!["MySchema.MyTable".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(\"MySchema\".\"MyTable\".\"OrderID\") > 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -86,12 +89,13 @@ fn table_alias_does_not_break_policy_registration() {
     catalog.register_table("foo", vec!["id".into(), "secret".into()]);
     let mut rewriter = PassantRewriter::with_catalog(catalog);
     rewriter
-        .register_validated_policy(PolicyIr::Dfc {
+        .register_validated_policy(PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -108,12 +112,13 @@ fn table_alias_does_not_break_policy_registration() {
 fn substring_column_name_does_not_corrupt_replace() {
     let sql = rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id_value) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -126,12 +131,13 @@ fn substring_column_name_does_not_corrupt_replace() {
 fn reserved_word_column_rewrites_with_full_push() {
     let sql = rewrite(
         "SELECT \"order\" FROM items",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["items".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(items.\"order\") > 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -145,12 +151,13 @@ fn reserved_word_column_rewrites_with_full_push() {
 fn nested_cte_scan_applies_policy_filter() {
     let sql = rewrite(
         "WITH inner_cte AS (SELECT id FROM foo) SELECT id FROM inner_cte",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,

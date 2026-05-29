@@ -5,13 +5,13 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from passant import wrap
+from passant import dfc
 
 
 @pytest.fixture
 def rewriter():
     """Create a Passant connection with standard test tables."""
-    db = wrap(duckdb.connect())
+    db = dfc(duckdb.connect())
 
     db.execute("CREATE TABLE foo (id INTEGER, name VARCHAR)")
     db.execute("INSERT INTO foo VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")

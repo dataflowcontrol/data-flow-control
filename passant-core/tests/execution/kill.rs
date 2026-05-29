@@ -1,4 +1,4 @@
-use crate::common::dfc_policy_with;
+use crate::common::pgn_policy_with;
 use crate::duckdb::TestDb;
 use passant_core::Resolution;
 
@@ -7,7 +7,7 @@ fn kill_aborts_query_when_constraint_fails() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (1)");
-    db.register_policy(dfc_policy_with(
+    db.register_policy(pgn_policy_with(
         &["foo"],
         "max(foo.id) > 10",
         Resolution::Kill,
@@ -22,7 +22,7 @@ fn kill_allows_query_when_constraint_passes() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (id INTEGER)");
     db.exec("INSERT INTO foo VALUES (20)");
-    db.register_policy(dfc_policy_with(
+    db.register_policy(pgn_policy_with(
         &["foo"],
         "max(foo.id) > 10",
         Resolution::Kill,
@@ -34,7 +34,7 @@ fn kill_allows_query_when_constraint_passes() {
 #[test]
 fn kill_rewrite_emits_kill_call_in_sql() {
     let mut db = TestDb::new();
-    db.register_policy(dfc_policy_with(
+    db.register_policy(pgn_policy_with(
         &["foo"],
         "max(foo.id) > 10",
         Resolution::Kill,

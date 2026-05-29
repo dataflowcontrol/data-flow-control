@@ -4,7 +4,7 @@ mod common;
 #[path = "common/duckdb.rs"]
 mod duckdb;
 
-use common::{assert_rewrite, dfc_policy, dfc_policy_with};
+use common::{assert_rewrite, pgn_policy, pgn_policy_with};
 use duckdb::TestDb;
 use passant_core::{PassantRewriter, Resolution, parse_policy_text};
 
@@ -38,7 +38,7 @@ fn tax_agent_law_abiding_policy_rewrites_insert() {
 
 #[test]
 fn tax_agent_privacy_policy_rewrites_scan() {
-    let policy = dfc_policy(&["Receipts"], "count(distinct Receipts.uid) > 1");
+    let policy = pgn_policy(&["Receipts"], "count(distinct Receipts.uid) > 1");
 
     assert_rewrite(
         "SELECT uid FROM Receipts",
@@ -50,15 +50,15 @@ fn tax_agent_privacy_policy_rewrites_scan() {
 #[test]
 fn k_anonymity_template_dominance_collapses_to_max_k() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(dfc_policy(
+    rewriter.register_policy(pgn_policy(
         &["Receipts"],
         "count(distinct Receipts.uid) > 2",
     ));
-    rewriter.register_policy(dfc_policy(
+    rewriter.register_policy(pgn_policy(
         &["Receipts"],
         "count(distinct Receipts.uid) > 5",
     ));
-    rewriter.register_policy(dfc_policy(
+    rewriter.register_policy(pgn_policy(
         &["Receipts"],
         "count(distinct Receipts.uid) > 3",
     ));
@@ -75,7 +75,7 @@ fn state_machine_update_policy_execution() {
     db.exec("CREATE TABLE t (id INTEGER, state VARCHAR)");
     db.exec("INSERT INTO t VALUES (1, 'A')");
     db.register_policy(parse_policy_text(
-        "SOURCE t AS t1 SINK t AS t2 CONSTRAINT count(distinct t.id) = 1 AND max(t.id) = t2.id AND case when max(t.state) = 'A' then t2.state = 'B' when max(t.state) = 'B' then t2.state in ('A', 'C') when max(t.state) = 'C' then false end ON FAIL REMOVE",
+        "SOURCE t AS t1 SINK t AS t2 CONSTRAINT count(distinct t1.id) = 1 AND max(t1.id) = t2.id AND case when max(t1.state) = 'A' then t2.state = 'B' when max(t1.state) = 'B' then t2.state in ('A', 'C') when max(t1.state) = 'C' then false end ON FAIL REMOVE",
     ).expect("state machine policy should parse"));
 
     db.rewrite_exec("UPDATE t AS t2 SET state = 'B' FROM t WHERE t.id = t2.id AND t.id = 1");
@@ -91,7 +91,7 @@ fn tax_agent_grounding_execution_aborts_hallucinated_insert() {
     db.exec("CREATE TABLE Receipts (id INTEGER, item VARCHAR)");
     db.exec("CREATE TABLE Expenses (id INTEGER, item VARCHAR)");
     db.exec("INSERT INTO Receipts VALUES (1, 'coffee')");
-    db.register_policy(dfc_policy_with(
+    db.register_policy(pgn_policy_with(
         &["Receipts"],
         "Receipts.id = Expenses.id",
         Resolution::Kill,

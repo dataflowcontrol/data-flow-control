@@ -43,22 +43,24 @@ fn planner_applies_dominance_before_rewrite() {
     use crate::common::{plan_query, rewrite};
 
     let policies = vec![
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "count(distinct foo.id) = 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
         },
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "count(distinct foo.id) = 3".to_string(),
             on_fail: Resolution::Remove,
             description: None,

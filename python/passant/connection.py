@@ -5,11 +5,10 @@ from typing import Any
 from .adapters.base import Adapter
 from .adapters.duckdb import DuckDBAdapter
 from .adapters.datafusion import DataFusionAdapter
-from .adapters.registry import connect as open_connection
-from .adapters.registry import create_adapter
+from .adapters.registry import create_adapter, sniff_dialect
 from .options import RewriteOptions
 from .planner import Planner
-from .policy import PgnPolicy, Policy, Resolution
+from .policy import Policy, Resolution
 
 
 def strip_passant_comment(sql: str) -> str:
@@ -18,14 +17,10 @@ def strip_passant_comment(sql: str) -> str:
     return sql
 
 
-def wrap(conn: Any, dialect: str = "duckdb") -> Connection:
-    adapter = create_adapter(conn, dialect)
+def dfc(conn: Any, dialect: str | None = None) -> Connection:
+    resolved = dialect if dialect is not None else sniff_dialect(conn)
+    adapter = create_adapter(conn, resolved)
     return Connection(adapter)
-
-
-def connect(url: str, *, dialect: str | None = None) -> Connection:
-    conn, resolved = open_connection(url, dialect=dialect)
-    return wrap(conn, dialect=resolved)
 
 
 class Connection:
@@ -52,7 +47,7 @@ class Connection:
     def refresh_catalog(self) -> None:
         self.planner.sync_catalog(self.adapter.introspect_catalog())
 
-    def register_policy(self, policy: Policy | PgnPolicy) -> None:
+    def register_policy(self, policy: Policy) -> None:
         if isinstance(policy, Policy) and policy.on_fail == Resolution.KILL:
             if not self.adapter.capabilities.exception_udf:
                 raise ValueError(
@@ -92,9 +87,6 @@ class Connection:
 
     def policies(self) -> list[Policy]:
         return self.planner.policies()
-
-    def pgn_policies(self) -> list[PgnPolicy]:
-        return self.planner.pgn_policies()
 
     def execute(self, query: str, *, params=None, options: RewriteOptions | None = None):
         rewritten = self.transform_query(query, options=options)

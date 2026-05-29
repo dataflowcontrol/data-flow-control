@@ -201,12 +201,13 @@ mod tests {
 
     #[test]
     fn analyze_policies_marks_unparseable_constraints_non_distributive() {
-        let policies = vec![PolicyIr::Dfc {
+        let policies = vec![PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) >".to_string(),
             on_fail: Resolution::Remove,
             description: None,

@@ -14,12 +14,13 @@ fn explain_strategy(sql: &str, policies: &[PolicyIr]) -> RewriteStrategy {
 fn explain_selects_full_push_for_distributive_scan() {
     let strategy = explain_strategy(
         "SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -32,12 +33,13 @@ fn explain_selects_full_push_for_distributive_scan() {
 fn explain_selects_partial_push_for_non_distributive_policy() {
     let strategy = explain_strategy(
         "SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "avg(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -50,12 +52,13 @@ fn explain_selects_partial_push_for_non_distributive_policy() {
 fn explain_selects_full_push_for_non_monotonic_set_operation() {
     let strategy = explain_strategy(
         "SELECT id FROM bar EXCEPT SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -67,12 +70,13 @@ fn explain_selects_full_push_for_non_monotonic_set_operation() {
 #[test]
 fn explain_includes_strategy_reasons_for_distributive_scan() {
     let ir = parse_query_to_ir("SELECT id FROM foo").expect("parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -93,12 +97,13 @@ fn explain_includes_strategy_reasons_for_distributive_scan() {
 #[test]
 fn explain_partial_push_includes_non_distributive_reason() {
     let ir = parse_query_to_ir("SELECT id FROM foo").expect("parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -119,12 +124,13 @@ fn explain_partial_push_includes_non_distributive_reason() {
 #[test]
 fn explain_records_rewrite_error_for_delete_with_policies() {
     let ir = parse_query_to_ir("DELETE FROM foo WHERE id = 1").expect("parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -140,12 +146,13 @@ fn explain_records_rewrite_error_for_delete_with_policies() {
 fn explain_records_source_set_scope_for_outer_join() {
     let ir = parse_query_to_ir("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
         .expect("parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > max(foo.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,

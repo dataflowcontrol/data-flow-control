@@ -5,12 +5,13 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 #[test]
 fn subquery_missing_policy_column_is_propagated_to_select_list() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -28,12 +29,13 @@ fn subquery_missing_policy_column_is_propagated_to_select_list() {
 #[test]
 fn multi_source_subquery_join_propagates_both_policy_columns() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "baz".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) >= 2 AND max(baz.x) <= 20".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -53,12 +55,13 @@ fn multi_source_subquery_join_propagates_both_policy_columns() {
 #[test]
 fn cte_missing_policy_column_is_propagated_to_select_list() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,

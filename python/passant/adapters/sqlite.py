@@ -6,11 +6,12 @@ from typing import Any
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
 from .duckdb import quote_sql_identifier
+from .kill import python_kill
 
 
 class SQLiteAdapter:
     dialect = "sqlite"
-    capabilities = Capabilities(exception_udf=False)
+    capabilities = Capabilities(exception_udf=True)
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -28,7 +29,7 @@ class SQLiteAdapter:
         return quote_sql_identifier(name)
 
     def register_kill_function(self) -> None:
-        return
+        self._conn.create_function("kill", 0, python_kill)
 
     def introspect_catalog(self) -> dict:
         tables: dict[str, dict] = {}

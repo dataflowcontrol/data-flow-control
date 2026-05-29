@@ -197,12 +197,8 @@ impl PolicyStore {
         self.multi_source.active_policy_ids(self).collect()
     }
 
-    pub fn dfc_policy_indices(&self) -> Vec<usize> {
-        self.active_ids(&self.dfc_policies).collect()
-    }
-
-    pub fn pgn_policy_indices(&self) -> Vec<usize> {
-        self.active_ids(&self.pgn_policies).collect()
+    pub fn policy_indices(&self) -> Vec<usize> {
+        self.active_ids(&self.policy_indices).collect()
     }
 
     pub fn scan_ready_expr(&self, index: usize) -> Option<Expr> {
@@ -399,9 +395,8 @@ impl PolicyStore {
                 .or_default()
                 .push_id(index);
         }
-        match &entry.policy {
-            PolicyIr::Dfc { .. } => self.dfc_policies.push(index),
-            PolicyIr::NativePgn(_) => self.pgn_policies.push(index),
+        if matches!(&entry.policy, PolicyIr::Pgn { .. }) {
+            self.policy_indices.push(index);
         }
         if entry.policy.resolution() == Resolution::Remove {
             self.remove_policy_count += 1;

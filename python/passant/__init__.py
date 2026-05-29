@@ -1,24 +1,14 @@
-try:
-    from ._passant import PassantRewriteError
-except ImportError:  # pragma: no cover
-    PassantRewriteError = None  # type: ignore[misc, assignment]
-
-from .adapters import IMPLEMENTED_DIALECTS, SUPPORTED_DIALECTS
-from .connection import Connection, connect, wrap
+from ._passant import PassantRewriteError
+from .connection import dfc
+from .dialect import Dialect
 from .options import RewriteOptions
-from .planner import Planner
-from .policy import PgnPolicy, Policy, Resolution
+from .policy import Policy, Resolution
 
 __all__ = [
-    "Connection",
-    "IMPLEMENTED_DIALECTS",
-    "PassantRewriteError",
-    "Planner",
-    "PgnPolicy",
+    "dfc",
+    "Dialect",
     "Policy",
     "Resolution",
     "RewriteOptions",
-    "SUPPORTED_DIALECTS",
-    "connect",
-    "wrap",
+    "PassantRewriteError",
 ]

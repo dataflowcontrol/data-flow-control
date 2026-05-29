@@ -5,6 +5,7 @@ from enum import Enum
 
 from ._rust import (
     normalize_policy_dimensions,
+    normalize_policy_source_aliases,
     normalize_policy_sources,
     parse_policy_to_json,
     validate_constraint_expression,
@@ -24,12 +25,22 @@ class Policy:
     sources: list[str]
     sink: str | None = None
     sink_alias: str | None = None
+    source_aliases: dict[str, str] | None = None
     description: str | None = None
     required_sources: list[str] | None = None
     dimensions: list[str] | None = None
 
     def __post_init__(self) -> None:
-        self.sources = normalize_policy_sources(self.sources)
+        if self.sources is None:
+            raise ValueError("Sources must be provided (use an empty list for no sources)")
+        if not isinstance(self.sources, list):
+            raise ValueError("Sources must be provided as a list of table names")
+        raw_sources = list(self.sources)
+        if self.source_aliases is None:
+            self.source_aliases = normalize_policy_source_aliases(raw_sources)
+        else:
+            self.source_aliases = dict(self.source_aliases)
+        self.sources = normalize_policy_sources(raw_sources)
         self.required_sources = _normalize_optional_sources(self.required_sources)
         self.dimensions = _normalize_optional_dimensions(self.dimensions)
         source_keys = {source.lower() for source in self.sources}
@@ -50,11 +61,11 @@ class Policy:
             validate_constraint_expression(dimension, "dimension")
 
     @classmethod
-    def from_policy_str(cls, policy_str: str) -> Policy:
+    def from_pgn(cls, policy_str: str) -> Policy:
         parsed = parse_policy_to_json(policy_str)
-        if "Dfc" not in parsed:
-            raise ValueError("Policy text did not parse as a Policy")
-        spec = parsed["Dfc"]
+        if "Pgn" not in parsed:
+            raise ValueError("Policy text did not parse as a PGN policy")
+        spec = parsed["Pgn"]
         return cls(
             constraint=spec["constraint"],
             on_fail=Resolution(resolution_to_python(spec["on_fail"])),
@@ -62,18 +73,10 @@ class Policy:
             required_sources=spec.get("required_sources", []),
             sink=spec.get("sink"),
             sink_alias=spec.get("sink_alias"),
+            source_aliases=spec.get("source_aliases", {}),
             description=spec.get("description"),
             dimensions=spec.get("dimensions", []),
         )
-
-
-@dataclass(eq=True)
-class PgnPolicy:
-    text: str
-
-    @classmethod
-    def from_text(cls, text: str) -> PgnPolicy:
-        return cls(text=text)
 
 
 def _normalize_optional_sources(sources: list[str] | None) -> list[str]:

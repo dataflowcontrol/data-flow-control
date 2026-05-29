@@ -4,13 +4,12 @@ use sqlparser::ast::{Expr, Select};
 
 use crate::catalog::TableCatalog;
 use crate::identifiers::TableKey;
-use crate::policy::{PgnPolicyKind, PolicyIr, Resolution};
+use crate::policy::{PolicyIr, Resolution};
 use crate::policy_store::PolicyStore;
 use crate::rewrite_stats::RewriteStatsCell;
 use crate::rewriter::expr::{and_expr, apply_resolution};
 use crate::rewriter::policy_expr::{
-    ConstraintExprCtx, build_dfc_filter_expr, build_pgn_over_filter_expr,
-    unique_column_guard_from_constraint,
+    ConstraintExprCtx, build_pgn_filter_expr, unique_column_guard_from_constraint,
 };
 use crate::rewriter::scope::TableScope;
 use crate::rewriter::types::{PolicyApplicability, RewriteContext};
@@ -20,12 +19,7 @@ use super::applicability::{ScopePlanDiagnostics, resolve_scope_policies};
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum PolicyResolutionAction {
-    Dfc {
-        filter: Expr,
-        on_fail: Resolution,
-        description: Option<String>,
-    },
-    PgnOver {
+    Pgn {
         filter: Expr,
         on_fail: Resolution,
         description: Option<String>,
@@ -48,54 +42,36 @@ pub(crate) fn build_policy_resolution_actions(
             index,
             stats,
         };
-        match policy {
-            PolicyIr::Dfc {
-                sources,
-                constraint,
-                on_fail,
-                sink_alias,
-                description,
-                ..
-            } => {
-                let mut expr = build_dfc_filter_expr(
-                    sources,
-                    constraint,
-                    sink_alias,
-                    applicability,
-                    context,
-                    table_scope,
-                    is_aggregation,
-                    &constraint_ctx,
-                )?;
-                if let Some(guard) =
-                    unique_column_guard_from_constraint(constraint, catalog, &constraint_ctx)
-                {
-                    expr = and_expr(guard, expr);
-                }
-                actions.push(PolicyResolutionAction::Dfc {
-                    filter: expr,
-                    on_fail: *on_fail,
-                    description: description.clone(),
-                });
-            }
-            PolicyIr::NativePgn(pgn) if pgn.kind == PgnPolicyKind::Over => {
-                let expr = build_pgn_over_filter_expr(
-                    &pgn.scope.sources,
-                    &pgn.constraint,
-                    &pgn.scope.sink_alias,
-                    applicability,
-                    context,
-                    table_scope,
-                    &constraint_ctx,
-                )?;
-                actions.push(PolicyResolutionAction::PgnOver {
-                    filter: expr,
-                    on_fail: pgn.on_fail,
-                    description: pgn.description.clone(),
-                });
-            }
-            PolicyIr::NativePgn(_) => {}
+        let PolicyIr::Pgn {
+            sources,
+            constraint,
+            on_fail,
+            sink_alias,
+            source_aliases,
+            description,
+            ..
+        } = policy;
+        let mut expr = build_pgn_filter_expr(
+            sources,
+            constraint,
+            sink_alias,
+            source_aliases,
+            applicability,
+            context,
+            table_scope,
+            is_aggregation,
+            &constraint_ctx,
+        )?;
+        if let Some(guard) =
+            unique_column_guard_from_constraint(constraint, catalog, &constraint_ctx)
+        {
+            expr = and_expr(guard, expr);
         }
+        actions.push(PolicyResolutionAction::Pgn {
+            filter: expr,
+            on_fail: *on_fail,
+            description: description.clone(),
+        });
     }
     Ok(actions)
 }
@@ -143,34 +119,18 @@ pub(crate) fn apply_policy_resolution_actions(
     is_aggregation: bool,
 ) -> Result<(), crate::diagnostics::RewriteError> {
     for action in actions {
-        match action {
-            PolicyResolutionAction::Dfc {
-                filter,
-                on_fail,
-                description,
-            } => {
-                apply_resolution(
-                    select,
-                    filter.clone(),
-                    *on_fail,
-                    description.as_deref(),
-                    is_aggregation,
-                )?;
-            }
-            PolicyResolutionAction::PgnOver {
-                filter,
-                on_fail,
-                description,
-            } => {
-                apply_resolution(
-                    select,
-                    filter.clone(),
-                    *on_fail,
-                    description.as_deref(),
-                    is_aggregation,
-                )?;
-            }
-        }
+        let PolicyResolutionAction::Pgn {
+            filter,
+            on_fail,
+            description,
+        } = action;
+        apply_resolution(
+            select,
+            filter.clone(),
+            *on_fail,
+            description.as_deref(),
+            is_aggregation,
+        )?;
     }
     Ok(())
 }

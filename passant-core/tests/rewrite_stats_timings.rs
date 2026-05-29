@@ -1,12 +1,13 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
 fn remove_policy(source: &str) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({source}.amount) > 1"),
         on_fail: Resolution::Remove,
         description: None,

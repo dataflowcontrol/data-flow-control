@@ -134,12 +134,13 @@ mod tests {
     }
 
     fn sample_policy() -> PolicyIr {
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,

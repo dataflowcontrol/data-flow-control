@@ -72,7 +72,7 @@ impl PolicyStore {
         let threshold = threshold_predicate_from_policy(&policy);
         let join_pushdown_eligible = matches!(
             &policy,
-            PolicyIr::Dfc {
+            PolicyIr::Pgn {
                 sources,
                 required_sources,
                 sink: None,

@@ -152,12 +152,13 @@ mod scan_ready_tests {
     use crate::policy_store::PolicyStore;
 
     fn remove_policy(source: &str, constraint: &str) -> PolicyIr {
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec![source.to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: constraint.to_string(),
             on_fail: Resolution::Remove,
             description: None,

@@ -3,14 +3,11 @@
 import duckdb
 import pytest
 
-from passant import Policy, PassantRewriteError, Resolution, wrap
+from passant import Policy, PassantRewriteError, Resolution, dfc
 
 
 def test_rewrite_error_exposes_kind_for_unsupported_statement():
-    if PassantRewriteError is None:
-        pytest.skip("Passant extension not built")
-
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
         Policy(

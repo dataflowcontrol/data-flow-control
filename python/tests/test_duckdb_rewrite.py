@@ -1,13 +1,13 @@
 """End-to-end Python API tests: policy registration, rewrite, and DuckDB execution."""
 
-from passant import Policy, Resolution, wrap
+from passant import Policy, Resolution, dfc
 import json
 import duckdb
 import pytest
 
 
 def test_rewriter_preserves_policy_registration():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     policy = Policy(
         sources=["foo"],
@@ -16,11 +16,11 @@ def test_rewriter_preserves_policy_registration():
     )
     rewriter.register_policy(policy)
     assert rewriter.policies() == [policy]
-    assert json.loads(rewriter.planner.inner.dfc_policies_json())[0]["Dfc"]["sources"] == ["foo"]
+    assert json.loads(rewriter.planner.inner.policies_json())[0]["Pgn"]["sources"] == ["foo"]
 
 
 def test_delete_policy_updates_rust_storage():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
     policy = Policy(
@@ -39,22 +39,19 @@ def test_delete_policy_updates_rust_storage():
     assert rewriter.fetchall("SELECT id FROM foo") == [(1,)]
 
 
-def test_get_pgn_policies_roundtrip():
-    from passant import PgnPolicy
-
-    rewriter = wrap(duckdb.connect())
-    text = (
-        "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) "
-        "CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE"
-    )
-    rewriter.register_policy(PgnPolicy.from_text(text))
-    assert rewriter.pgn_policies() == [PgnPolicy(text=text)]
+def test_pgn_policy_from_text_roundtrip():
+    rewriter = dfc(duckdb.connect())
+    rewriter.execute("CREATE TABLE foo (amount DOUBLE)")
+    rewriter.execute("CREATE TABLE reports (amount DOUBLE)")
+    text = "SOURCE foo SINK reports CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE"
+    policy = Policy.from_pgn(text)
+    rewriter.register_policy(policy)
+    assert rewriter.policies() == [policy]
     assert rewriter.planner.inner.has_registered_policies()
-    assert rewriter.policies() == []
 
 
-def test_dfc_policy_from_policy_str_uses_rust_parser():
-    policy = Policy.from_policy_str(
+def test_pgn_policy_from_pgn_uses_rust_parser():
+    policy = Policy.from_pgn(
         "SOURCE foo SINK reports CONSTRAINT max(foo.id) > 1 ON FAIL KILL DESCRIPTION stop bad rows"
     )
     assert policy == Policy(
@@ -66,8 +63,8 @@ def test_dfc_policy_from_policy_str_uses_rust_parser():
     )
 
 
-def test_dfc_policy_from_policy_str_preserves_required_sources():
-    policy = Policy.from_policy_str(
+def test_pgn_policy_from_pgn_preserves_required_sources():
+    policy = Policy.from_pgn(
         "SOURCE REQUIRED receipts SINK reports CONSTRAINT reports.id > 0 ON FAIL REMOVE"
     )
     assert policy == Policy(
@@ -79,8 +76,8 @@ def test_dfc_policy_from_policy_str_preserves_required_sources():
     )
 
 
-def test_dfc_policy_from_policy_str_preserves_sink_alias():
-    policy = Policy.from_policy_str(
+def test_pgn_policy_from_pgn_preserves_sink_alias():
+    policy = Policy.from_pgn(
         "SOURCE foo SINK reports AS r CONSTRAINT r.status = 'approved' ON FAIL REMOVE"
     )
     assert policy == Policy(
@@ -92,28 +89,28 @@ def test_dfc_policy_from_policy_str_preserves_sink_alias():
     )
 
 
-def test_dfc_policy_from_policy_str_normalizes_source_alias():
-    policy = Policy.from_policy_str(
-        "SOURCE foo AS f SINK reports CONSTRAINT max(f.id) > 1 ON FAIL REMOVE"
-    )
+def test_pgn_policy_from_pgn_preserves_source_alias():
+    policy = Policy.from_pgn("SOURCE foo AS f SINK reports CONSTRAINT max(f.id) > 1 ON FAIL REMOVE")
     assert policy == Policy(
         sources=["foo"],
         sink="reports",
-        constraint="max(foo.id) > 1",
+        source_aliases={"f": "foo"},
+        constraint="max(f.id) > 1",
         on_fail=Resolution.REMOVE,
     )
 
 
-def test_dfc_policy_from_policy_str_preserves_dimensions():
-    policy = Policy.from_policy_str(
+def test_pgn_policy_from_pgn_preserves_dimensions():
+    policy = Policy.from_pgn(
         "SOURCE foo AS f SINK reports DIMENSION f.region, reports.department "
         "CONSTRAINT max(f.id) > 1 ON FAIL REMOVE"
     )
     assert policy == Policy(
         sources=["foo"],
         sink="reports",
-        dimensions=["foo.region", "reports.department"],
-        constraint="max(foo.id) > 1",
+        source_aliases={"f": "foo"},
+        dimensions=["f.region", "reports.department"],
+        constraint="max(f.id) > 1",
         on_fail=Resolution.REMOVE,
     )
 
@@ -146,7 +143,7 @@ def test_policy_requires_qualified_constraint_columns_at_construction():
 
 
 def test_transform_query_enforces_registered_policy():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     policy = Policy(
         sources=["foo"],
@@ -158,7 +155,7 @@ def test_transform_query_enforces_registered_policy():
 
 
 def test_transform_query_collapses_dominated_thresholds():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
         Policy(
@@ -179,7 +176,7 @@ def test_transform_query_collapses_dominated_thresholds():
 
 
 def test_explain_rewrite_uses_registered_policies():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
         Policy(
@@ -191,11 +188,11 @@ def test_explain_rewrite_uses_registered_policies():
 
     explanation = rewriter.explain("SELECT id FROM foo")
     assert explanation["chosen"]["rewritten_sql"] == "SELECT id FROM foo WHERE foo.id > 1"
-    assert explanation["applicable_policies"][0]["Dfc"]["sources"] == ["foo"]
+    assert explanation["applicable_policies"][0]["Pgn"]["sources"] == ["foo"]
 
 
 def test_explain_rewrite_reports_full_push_strategy_for_join():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -212,7 +209,7 @@ def test_explain_rewrite_reports_full_push_strategy_for_join():
 
 
 def test_explain_rewrite_reports_non_distributive_policy_aggregate():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -231,7 +228,7 @@ def test_explain_rewrite_reports_non_distributive_policy_aggregate():
 
 
 def test_non_distributive_scan_policy_uses_partial_push():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
     rewriter.register_policy(
@@ -250,7 +247,7 @@ def test_non_distributive_scan_policy_uses_partial_push():
 
 
 def test_non_distributive_partial_push_handles_aliases():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
     rewriter.register_policy(
@@ -269,7 +266,7 @@ def test_non_distributive_partial_push_handles_aliases():
 
 
 def test_non_distributive_scalar_fallback_splits_source_local_predicates():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
@@ -288,7 +285,7 @@ def test_non_distributive_scalar_fallback_splits_source_local_predicates():
 
 
 def test_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (3)")
@@ -308,7 +305,7 @@ def test_cross_source_non_distributive_aggregate_comparison_uses_partial_push():
 
 
 def test_rejects_mixed_row_and_non_distributive_aggregate_policy():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     with pytest.raises(ValueError, match="must be aggregated"):
         rewriter.register_policy(
@@ -321,7 +318,7 @@ def test_rejects_mixed_row_and_non_distributive_aggregate_policy():
 
 
 def test_explain_rewrite_reports_unsupported_rewrite_error():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -341,7 +338,7 @@ def test_explain_rewrite_reports_unsupported_rewrite_error():
 
 
 def test_explain_rewrite_reports_source_set_error():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -361,14 +358,14 @@ def test_explain_rewrite_reports_source_set_error():
 
 
 def test_execute_round_trips_through_duckdb():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     assert rewriter.fetchall("SELECT id FROM foo ORDER BY id") == [(1,), (2,)]
 
 
 def test_insert_sink_policy_maps_output_columns():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
@@ -386,7 +383,7 @@ def test_insert_sink_policy_maps_output_columns():
 
 
 def test_insert_without_column_list_maps_sink_columns_from_catalog():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
@@ -404,7 +401,7 @@ def test_insert_without_column_list_maps_sink_columns_from_catalog():
 
 
 def test_insert_sink_alias_policy_maps_output_columns():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
@@ -423,7 +420,7 @@ def test_insert_sink_alias_policy_maps_output_columns():
 
 
 def test_insert_output_marker_policy_maps_output_columns():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
@@ -441,7 +438,7 @@ def test_insert_output_marker_policy_maps_output_columns():
 
 
 def test_required_source_missing_fails_closed_on_insert():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE other (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER)")
@@ -461,7 +458,7 @@ def test_required_source_missing_fails_closed_on_insert():
 
 
 def test_required_source_present_enforces_constraint_on_insert():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER)")
     rewriter.execute("INSERT INTO receipts VALUES (5), (20)")
@@ -480,7 +477,7 @@ def test_required_source_present_enforces_constraint_on_insert():
 
 
 def test_update_sink_policy_filters_assignments():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
@@ -500,7 +497,7 @@ def test_update_sink_policy_filters_assignments():
 
 
 def test_update_sink_alias_policy_filters_assignments():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
     rewriter.register_policy(
@@ -520,7 +517,7 @@ def test_update_sink_alias_policy_filters_assignments():
 
 
 def test_required_source_missing_fails_closed_on_update():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE receipts (id INTEGER)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'old')")
@@ -539,7 +536,7 @@ def test_required_source_missing_fails_closed_on_update():
 
 
 def test_update_from_source_policy_filters_assignments():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, status VARCHAR)")
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO foo VALUES (1, 'draft'), (2, 'approved')")
@@ -562,7 +559,7 @@ def test_update_from_source_policy_filters_assignments():
 
 def test_remove_policy_filters_before_limit_for_full_push():
     """Distributive policies use Full-Push: inline WHERE is applied before LIMIT."""
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
@@ -577,7 +574,7 @@ def test_remove_policy_filters_before_limit_for_full_push():
 
 
 def test_remove_policy_filters_before_offset_for_full_push():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
     rewriter.register_policy(
@@ -592,7 +589,7 @@ def test_remove_policy_filters_before_offset_for_full_push():
 
 
 def test_remove_policy_filters_before_limit_offset_for_full_push():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3), (4)")
     rewriter.register_policy(
@@ -607,7 +604,7 @@ def test_remove_policy_filters_before_limit_offset_for_full_push():
 
 
 def test_full_push_limit_filter_uses_inline_where():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, secret INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1, 0), (2, 10)")
     rewriter.register_policy(
@@ -622,7 +619,7 @@ def test_full_push_limit_filter_uses_inline_where():
 
 
 def test_policy_applies_inside_derived_subquery():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
@@ -637,7 +634,7 @@ def test_policy_applies_inside_derived_subquery():
 
 
 def test_policy_applies_inside_cte():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
@@ -654,7 +651,7 @@ def test_policy_applies_inside_cte():
 
 
 def test_policy_applies_to_matching_union_branch():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -674,7 +671,7 @@ def test_policy_applies_to_matching_union_branch():
 
 
 def test_policy_applies_to_matching_intersect_branch():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
@@ -693,7 +690,7 @@ def test_policy_applies_to_matching_intersect_branch():
 
 
 def test_policy_applies_to_joined_source_table():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -710,7 +707,7 @@ def test_policy_applies_to_joined_source_table():
 
 
 def test_policy_applies_to_each_inner_self_join_alias():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.register_policy(
@@ -727,7 +724,7 @@ def test_policy_applies_to_each_inner_self_join_alias():
 
 
 def test_left_join_policy_preserves_unmatched_left_rows():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -746,7 +743,7 @@ def test_left_join_policy_preserves_unmatched_left_rows():
 
 
 def test_right_join_policy_preserves_unmatched_right_rows():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -765,7 +762,7 @@ def test_right_join_policy_preserves_unmatched_right_rows():
 
 
 def test_rewrites_outer_join_policy_with_source_sets():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -782,7 +779,7 @@ def test_rewrites_outer_join_policy_with_source_sets():
 
 
 def test_splits_source_local_outer_join_policy_that_would_need_source_sets():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -801,7 +798,7 @@ def test_splits_source_local_outer_join_policy_that_would_need_source_sets():
 
 
 def test_cross_source_outer_join_policy_rewrites_with_source_sets():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -824,7 +821,7 @@ def test_cross_source_outer_join_policy_rewrites_with_source_sets():
 
 
 def test_splits_source_local_union_policy_that_would_need_source_sets():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -844,7 +841,7 @@ def test_splits_source_local_union_policy_that_would_need_source_sets():
 
 
 def test_splits_source_local_intersect_policy_that_would_need_source_sets():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
@@ -864,7 +861,7 @@ def test_splits_source_local_intersect_policy_that_would_need_source_sets():
 
 
 def test_cross_source_union_all_passes_through_when_branch_split_unavailable():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -879,7 +876,7 @@ def test_cross_source_union_all_passes_through_when_branch_split_unavailable():
 
 
 def test_policy_filters_full_join_source_before_join():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -899,7 +896,7 @@ def test_policy_filters_full_join_source_before_join():
 
 
 def test_cross_source_full_join_policy_rewrites_with_source_sets():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -918,7 +915,7 @@ def test_cross_source_full_join_policy_rewrites_with_source_sets():
 
 
 def test_policy_applies_to_semi_join_source():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -937,7 +934,7 @@ def test_policy_applies_to_semi_join_source():
 
 
 def test_policy_applies_to_right_semi_join_source():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(
@@ -955,7 +952,7 @@ def test_policy_applies_to_right_semi_join_source():
 
 
 def test_transform_query_collect_stats():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     for index in range(50):
@@ -988,7 +985,7 @@ def test_transform_query_collect_stats():
 
 
 def test_allows_anti_join_policy_on_preserved_source():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -1007,7 +1004,7 @@ def test_allows_anti_join_policy_on_preserved_source():
 
 
 def test_policy_filters_anti_join_probe_source_before_join():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -1026,7 +1023,7 @@ def test_policy_filters_anti_join_probe_source_before_join():
 
 
 def test_policy_applies_inside_exists_subquery():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
@@ -1043,7 +1040,7 @@ def test_policy_applies_inside_exists_subquery():
 
 
 def test_policy_applies_inside_not_exists_subquery():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
@@ -1060,7 +1057,7 @@ def test_policy_applies_inside_not_exists_subquery():
 
 
 def test_policy_applies_inside_not_in_subquery():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -1080,7 +1077,7 @@ def test_policy_applies_inside_not_in_subquery():
 
 
 def test_register_policy_rejects_missing_source_table():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     with pytest.raises(ValueError, match="Source table 'foo' does not exist"):
         rewriter.register_policy(
             Policy(
@@ -1092,7 +1089,7 @@ def test_register_policy_rejects_missing_source_table():
 
 
 def test_register_policy_rejects_missing_source_column():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     with pytest.raises(ValueError, match="foo.missing"):
         rewriter.register_policy(
@@ -1105,7 +1102,7 @@ def test_register_policy_rejects_missing_source_column():
 
 
 def test_register_policy_validates_dimension_columns():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     with pytest.raises(ValueError, match="foo.region"):
         rewriter.register_policy(
@@ -1119,7 +1116,7 @@ def test_register_policy_validates_dimension_columns():
 
 
 def test_rejects_delete_when_policy_registered():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
         Policy(
@@ -1133,7 +1130,7 @@ def test_rejects_delete_when_policy_registered():
 
 
 def test_rewrites_except_branch_when_policy_registered():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
     rewriter.register_policy(

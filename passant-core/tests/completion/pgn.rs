@@ -1,67 +1,42 @@
-//! PGN / NativePgn completion tests.
+//! PGN policy language completion tests.
 
-use passant_core::{
-    PgnPolicy, PgnPolicyKind, PolicyIr, PolicyScope, Resolution, parse_policy_text,
-};
+use passant_core::{PolicyIr, parse_policy_text};
 
-use crate::common::{assert_rewrite, rewriter_with_policies};
+use crate::common::{assert_rewrite, pgn_policy, pgn_policy_sink, rewriter_with_policies};
 
-fn sample_pgn_policy() -> PolicyIr {
-    PolicyIr::NativePgn(PgnPolicy {
-        kind: PgnPolicyKind::Over,
-        scope: PolicyScope {
-            sources: vec!["foo".to_string()],
-            sink: Some("reports".to_string()),
-            sink_alias: None,
-            dimensions: Vec::new(),
-        },
-        aggregations: vec!["sum(foo.amount)".to_string()],
-        constraint: "sum(foo.amount) <= 1000".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-        source_text: None,
-    })
+fn sample_sink_policy() -> PolicyIr {
+    pgn_policy_sink(&["foo"], "reports", "sum(foo.amount) <= 1000")
 }
 
 #[test]
-fn parse_pgn_policy_text_into_native_pgn() {
+fn parse_pgn_policy_text() {
     let policy = parse_policy_text(
-        "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE",
+        "SOURCE foo SINK reports CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE",
     )
     .expect("pgn policy text should parse");
-    assert!(matches!(policy, PolicyIr::NativePgn(_)));
+    assert!(matches!(policy, PolicyIr::Pgn { .. }));
+    assert_eq!(policy.constraint(), "sum(foo.amount) <= 1000");
 }
 
 #[test]
 fn pgn_policy_rewrites_insert_select() {
     assert_rewrite(
         "INSERT INTO reports SELECT id, amount FROM foo",
-        &[sample_pgn_policy()],
-        "INSERT INTO reports SELECT id, amount FROM foo WHERE sum(foo.amount) <= 1000",
+        &[sample_sink_policy()],
+        "INSERT INTO reports SELECT id, amount FROM foo WHERE foo.amount <= 1000",
     );
 }
 
 #[test]
-fn pgn_combined_with_dfc_policy() {
-    use passant_core::Resolution;
-
+fn pgn_combined_with_second_policy() {
     let policies = vec![
-        sample_pgn_policy(),
-        PolicyIr::Dfc {
-            sources: vec!["foo".to_string()],
-            required_sources: Vec::new(),
-            dimensions: Vec::new(),
-            sink: None,
-            sink_alias: None,
-            constraint: "max(foo.id) > 0".to_string(),
-            on_fail: Resolution::Remove,
-            description: None,
-        },
+        sample_sink_policy(),
+        pgn_policy(&["foo"], "max(foo.id) > 0"),
     ];
     assert_rewrite(
         "INSERT INTO reports SELECT id, amount FROM foo",
         &policies,
-        "INSERT INTO reports SELECT id, amount FROM foo WHERE sum(foo.amount) <= 1000 AND foo.id > 0",
+        "INSERT INTO reports SELECT id, amount FROM foo WHERE foo.amount <= 1000 AND foo.id > 0",
     );
 }
 
@@ -71,7 +46,7 @@ fn explain_includes_pgn_policy_type() {
 
     let ir = passant_core::parse_query_to_ir("INSERT INTO reports SELECT id FROM foo")
         .expect("query should parse");
-    let explanation = PassantPlanner::new().explain_rewrite(&ir, &[sample_pgn_policy()]);
+    let explanation = PassantPlanner::new().explain_rewrite(&ir, &[sample_sink_policy()]);
     assert!(
         explanation
             .applicable_policies
@@ -81,31 +56,18 @@ fn explain_includes_pgn_policy_type() {
 }
 
 #[test]
-fn pgn_update_policy_kind() {
-    let policy = PolicyIr::NativePgn(PgnPolicy {
-        kind: PgnPolicyKind::Update,
-        scope: PolicyScope {
-            sources: vec!["foo".to_string()],
-            sink: Some("reports".to_string()),
-            sink_alias: None,
-            dimensions: Vec::new(),
-        },
-        aggregations: vec!["sum(foo.amount)".to_string()],
-        constraint: "sum(foo.amount) <= 1000".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-        source_text: None,
-    });
+fn pgn_policy_rewrites_update() {
+    let policy = sample_sink_policy();
     let rewriter = rewriter_with_policies(&[policy]);
     let sql = rewriter
         .rewrite("UPDATE reports SET amount = 100 FROM foo WHERE reports.id = foo.id")
         .expect("pgn update rewrite should succeed");
-    assert!(sql.contains("sum(foo.amount) <= 1000"));
+    assert!(sql.contains("foo.amount <= 1000"));
 }
 
 #[test]
 fn pgn_storage_roundtrip_via_policy_ir() {
-    let rewriter = rewriter_with_policies(&[sample_pgn_policy()]);
+    let rewriter = rewriter_with_policies(&[sample_sink_policy()]);
     assert_eq!(rewriter.policies().len(), 1);
     assert_eq!(rewriter.policies()[0].name(), "pgn");
 }

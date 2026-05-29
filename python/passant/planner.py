@@ -1,18 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
 
-from ._rust import require_extension, resolution_to_python
+from . import _passant
+from ._rust import resolution_to_python
 from .options import RewriteOptions
-
-if TYPE_CHECKING:
-    from .policy import PgnPolicy, Policy
-
-try:
-    from . import _passant
-except ImportError:  # pragma: no cover
-    _passant = None
+from .policy import Policy
 
 
 class Planner:
@@ -20,7 +13,6 @@ class Planner:
 
     def __init__(self, dialect: str = "duckdb") -> None:
         self.dialect = dialect
-        require_extension()
         self._planner = _passant.PyPlanner()
 
     @property
@@ -30,12 +22,7 @@ class Planner:
     def sync_catalog(self, snapshot: dict) -> None:
         self._planner.sync_catalog(json.dumps(snapshot))
 
-    def register_policy(self, policy: Policy | PgnPolicy) -> None:
-        from .policy import PgnPolicy
-
-        if isinstance(policy, PgnPolicy):
-            self._planner.register_policy_text(policy.text)
-            return
+    def register_policy(self, policy: Policy) -> None:
         self._planner.register_policy_specs(_policy_specs_json([policy]))
 
     def delete_policy(
@@ -85,10 +72,7 @@ class Planner:
         return self._planner.has_registered_policies()
 
     def policies(self) -> list[Policy]:
-        return _dfc_policies_from_rust(self._planner.dfc_policies_json())
-
-    def pgn_policies(self) -> list[PgnPolicy]:
-        return _pgn_policies_from_rust(self._planner.pgn_policies_json())
+        return _policies_from_rust(self._planner.policies_json())
 
 
 def _policy_specs_json(policies: list[Policy]) -> str:
@@ -100,6 +84,7 @@ def _policy_specs_json(policies: list[Policy]) -> str:
                 "dimensions": policy.dimensions,
                 "sink": policy.sink,
                 "sink_alias": policy.sink_alias,
+                "source_aliases": policy.source_aliases,
                 "constraint": policy.constraint,
                 "on_fail": policy.on_fail.value,
                 "description": policy.description,
@@ -109,14 +94,14 @@ def _policy_specs_json(policies: list[Policy]) -> str:
     )
 
 
-def _dfc_policies_from_rust(policies_json: str) -> list[Policy]:
-    from .policy import Policy, Resolution
+def _policies_from_rust(policies_json: str) -> list[Policy]:
+    from .policy import Resolution
 
     policies: list[Policy] = []
     for entry in json.loads(policies_json):
-        if "Dfc" not in entry:
+        if "Pgn" not in entry:
             continue
-        spec = entry["Dfc"]
+        spec = entry["Pgn"]
         policies.append(
             Policy(
                 constraint=spec["constraint"],
@@ -125,23 +110,9 @@ def _dfc_policies_from_rust(policies_json: str) -> list[Policy]:
                 required_sources=spec.get("required_sources", []),
                 sink=spec.get("sink"),
                 sink_alias=spec.get("sink_alias"),
+                source_aliases=spec.get("source_aliases", {}),
                 description=spec.get("description"),
                 dimensions=spec.get("dimensions", []),
             )
         )
-    return policies
-
-
-def _pgn_policies_from_rust(policies_json: str) -> list[PgnPolicy]:
-    from .policy import PgnPolicy
-
-    policies: list[PgnPolicy] = []
-    for entry in json.loads(policies_json):
-        if "NativePgn" not in entry:
-            continue
-        spec = entry["NativePgn"]
-        text = spec.get("source_text")
-        if not text:
-            continue
-        policies.append(PgnPolicy(text=text))
     return policies

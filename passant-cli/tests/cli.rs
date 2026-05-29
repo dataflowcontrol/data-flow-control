@@ -59,7 +59,7 @@ fn parse_policy_text_subcommand_prints_policy_json() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"Dfc\""));
+        .stdout(predicate::str::contains("\"Pgn\""));
 }
 
 #[test]

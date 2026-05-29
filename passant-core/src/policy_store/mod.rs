@@ -40,8 +40,7 @@ pub struct PolicyStore {
     enforcement_multi_source: SourceSetPolicyIndex,
     /// Multi-source policies indexed by canonical source set.
     multi_source: SourceSetPolicyIndex,
-    dfc_policies: Vec<usize>,
-    pgn_policies: Vec<usize>,
+    policy_indices: Vec<usize>,
     remove_policy_count: usize,
     active_policy_count: usize,
     table_key_cache: HashMap<String, TableKey>,
@@ -163,13 +162,14 @@ mod tests {
     use super::*;
     use crate::policy::Resolution;
 
-    fn dfc_policy(source: &str, constraint: &str) -> PolicyIr {
-        PolicyIr::Dfc {
+    fn pgn_policy(source: &str, constraint: &str) -> PolicyIr {
+        PolicyIr::Pgn {
             sources: vec![source.to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: constraint.to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -179,9 +179,9 @@ mod tests {
     #[test]
     fn indexed_candidates_match_slow_scan() {
         let mut store = PolicyStore::default();
-        store.register(dfc_policy("orders", "max(orders.amount) > 1"));
-        store.register(dfc_policy("customers", "max(customers.id) > 0"));
-        store.register(dfc_policy("products", "max(products.id) > 0"));
+        store.register(pgn_policy("orders", "max(orders.amount) > 1"));
+        store.register(pgn_policy("customers", "max(customers.id) > 0"));
+        store.register(pgn_policy("products", "max(products.id) > 0"));
 
         let mut tables = HashSet::new();
         tables.insert(TableKey::new("orders"));
@@ -194,13 +194,14 @@ mod tests {
     #[test]
     fn join_pushdown_index_only_contains_eligible_policies() {
         let mut store = PolicyStore::default();
-        store.register(dfc_policy("foo", "max(foo.id) > 1"));
-        store.register(PolicyIr::Dfc {
+        store.register(pgn_policy("foo", "max(foo.id) > 1"));
+        store.register(PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) + max(bar.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -213,12 +214,13 @@ mod tests {
     #[test]
     fn sink_index_includes_sink_only_policies_for_scope_lookup() {
         let mut store = PolicyStore::default();
-        store.register(PolicyIr::Dfc {
+        store.register(PolicyIr::Pgn {
             sources: vec!["receipts".to_string()],
             required_sources: vec!["receipts".to_string()],
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "reports.id > 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -240,14 +242,15 @@ mod tests {
     fn remove_policy_count_tracks_active_remove_policies() {
         let mut store = PolicyStore::default();
         assert!(!store.has_any_remove_policies());
-        let remove_index = store.register(dfc_policy("foo", "foo.id > 1"));
+        let remove_index = store.register(pgn_policy("foo", "foo.id > 1"));
         assert!(store.has_any_remove_policies());
-        store.register(PolicyIr::Dfc {
+        store.register(PolicyIr::Pgn {
             sources: vec!["bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "bar.id > 1".to_string(),
             on_fail: Resolution::Kill,
             description: None,
@@ -261,24 +264,26 @@ mod tests {
     fn k_way_merge_matches_extend_sort_dedup() {
         let mut store = PolicyStore::default();
         for index in 0..6 {
-            store.register(dfc_policy(&format!("source_{index}"), "id > 0"));
+            store.register(pgn_policy(&format!("source_{index}"), "id > 0"));
         }
-        store.register(PolicyIr::Dfc {
+        store.register(PolicyIr::Pgn {
             sources: vec!["shared".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "shared.id > 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
         });
-        store.register(PolicyIr::Dfc {
+        store.register(PolicyIr::Pgn {
             sources: vec!["shared".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "shared.id > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -313,12 +318,13 @@ mod tests {
     #[test]
     fn multi_source_enforcement_policy_caches_source_local_conjuncts() {
         let mut store = PolicyStore::default();
-        let index = store.register(PolicyIr::Dfc {
+        let index = store.register(PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1 AND max(bar.id) > 10".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -354,7 +360,7 @@ mod tests {
     fn active_policy_count_tracks_register_and_deactivate() {
         let mut store = PolicyStore::default();
         assert_eq!(store.active_count(), 0);
-        let index = store.register(dfc_policy("foo", "foo.id > 1"));
+        let index = store.register(pgn_policy("foo", "foo.id > 1"));
         assert_eq!(store.active_count(), 1);
         assert!(store.deactivate(index));
         assert_eq!(store.active_count(), 0);
@@ -363,13 +369,14 @@ mod tests {
     #[test]
     fn sink_only_policies_are_excluded_from_select_scope_without_sink() {
         let mut store = PolicyStore::default();
-        store.register(dfc_policy("orders", "max(orders.amount) > 1"));
-        store.register(PolicyIr::Dfc {
+        store.register(pgn_policy("orders", "max(orders.amount) > 1"));
+        store.register(PolicyIr::Pgn {
             sources: vec![],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(reports.amount) <= 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -384,13 +391,14 @@ mod tests {
     #[test]
     fn multi_source_policy_index_tracks_policies_with_multiple_sources() {
         let mut store = PolicyStore::default();
-        store.register(dfc_policy("foo", "foo.id > 1"));
-        store.register(PolicyIr::Dfc {
+        store.register(pgn_policy("foo", "foo.id > 1"));
+        store.register(PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) + max(bar.id) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -410,12 +418,13 @@ mod tests {
     #[test]
     fn multi_source_enforcement_policies_are_indexed_for_partial_push() {
         let mut store = PolicyStore::default();
-        store.register(PolicyIr::Dfc {
+        store.register(PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "avg(foo.id) > 1 AND avg(bar.id) > 10".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -427,42 +436,29 @@ mod tests {
     }
 
     #[test]
-    fn dfc_and_pgn_policy_indices_track_policy_kinds() {
+    fn policy_indices_track_registered_pgn_policies() {
         let mut store = PolicyStore::default();
-        store.register(dfc_policy("foo", "foo.id > 1"));
-        store.register(PolicyIr::NativePgn(crate::policy::PgnPolicy {
-            scope: crate::policy::PolicyScope {
-                sources: vec!["foo".to_string()],
-                sink: None,
-                sink_alias: None,
-                dimensions: Vec::new(),
-            },
-            kind: crate::policy::PgnPolicyKind::Over,
-            aggregations: Vec::new(),
-            constraint: "foo.id > 0".to_string(),
-            on_fail: Resolution::Remove,
-            description: None,
-            source_text: None,
-        }));
+        store.register(pgn_policy("foo", "foo.id > 1"));
+        store.register(pgn_policy("bar", "bar.id > 1"));
 
-        assert_eq!(store.dfc_policy_indices(), vec![0]);
-        assert_eq!(store.pgn_policy_indices(), vec![1]);
+        assert_eq!(store.policy_indices(), vec![0, 1]);
     }
 
     #[test]
     fn delete_lookup_uses_source_and_sink_indexes() {
         let mut store = PolicyStore::default();
-        store.register(PolicyIr::Dfc {
+        store.register(PolicyIr::Pgn {
             sources: vec!["orders".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "reports.id > 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
         });
-        store.register(dfc_policy("other", "other.id > 1"));
+        store.register(pgn_policy("other", "other.id > 1"));
 
         let sink = TableKey::new("reports");
         let ids = store.candidate_ids_for_delete_lookup(Some(&["orders".to_string()]), Some(&sink));
@@ -472,15 +468,16 @@ mod tests {
     #[test]
     fn indexed_scope_lookup_matches_slow_scan_for_sink_and_sources() {
         let mut store = PolicyStore::default();
-        store.register(dfc_policy("foo", "max(foo.id) > 1"));
-        store.register(dfc_policy("bar", "max(bar.id) > 10"));
-        store.register(dfc_policy("other", "max(other.id) > 0"));
-        store.register(PolicyIr::Dfc {
+        store.register(pgn_policy("foo", "max(foo.id) > 1"));
+        store.register(pgn_policy("bar", "max(bar.id) > 10"));
+        store.register(pgn_policy("other", "max(other.id) > 0"));
+        store.register(PolicyIr::Pgn {
             sources: vec!["receipts".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "reports.id > 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -502,8 +499,8 @@ mod tests {
     #[test]
     fn table_keys_are_interned_across_policies_on_same_source() {
         let mut store = PolicyStore::default();
-        let first = store.register(dfc_policy("orders", "max(orders.amount) > 1"));
-        let second = store.register(dfc_policy("orders", "max(orders.amount) > 2"));
+        let first = store.register(pgn_policy("orders", "max(orders.amount) > 1"));
+        let second = store.register(pgn_policy("orders", "max(orders.amount) > 2"));
         let first_key = store.compiled(first).expect("policy").source_keys[0].clone();
         let second_key = store.compiled(second).expect("policy").source_keys[0].clone();
         assert!(first_key.same_allocation_as(&second_key));
@@ -512,23 +509,25 @@ mod tests {
     #[test]
     fn enforcement_index_only_tracks_remove_and_kill_policies() {
         let mut store = PolicyStore::default();
-        store.register(dfc_policy("foo", "max(foo.id) > 1"));
-        store.register(PolicyIr::Dfc {
+        store.register(pgn_policy("foo", "max(foo.id) > 1"));
+        store.register(PolicyIr::Pgn {
             sources: vec![],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(reports.amount) <= 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
         });
-        store.register(PolicyIr::Dfc {
+        store.register(PolicyIr::Pgn {
             sources: vec!["bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(bar.id) > 0".to_string(),
             on_fail: Resolution::Kill,
             description: None,
@@ -550,7 +549,7 @@ mod tests {
     fn dense_source_index_uses_bitmap_storage() {
         let mut store = PolicyStore::default();
         for index in 0..600usize {
-            store.register(dfc_policy(
+            store.register(pgn_policy(
                 "hot_source",
                 &format!("max(hot_source.amount) > {index}"),
             ));
@@ -568,8 +567,8 @@ mod tests {
     #[test]
     fn identical_constraints_share_interned_sql() {
         let mut store = PolicyStore::default();
-        let first = store.register(dfc_policy("orders", "max(orders.amount) > 1"));
-        let second = store.register(dfc_policy("customers", "max(orders.amount) > 1"));
+        let first = store.register(pgn_policy("orders", "max(orders.amount) > 1"));
+        let second = store.register(pgn_policy("customers", "max(orders.amount) > 1"));
         let first_sql = store
             .compiled(first)
             .and_then(|entry| entry.constraint.as_ref())
@@ -589,7 +588,7 @@ mod tests {
     fn memory_usage_tracks_registry_growth() {
         let mut store = PolicyStore::default();
         for index in 0..128usize {
-            store.register(dfc_policy(
+            store.register(pgn_policy(
                 &format!("source_{index:03}"),
                 "max(source.amount) > 1",
             ));
@@ -606,8 +605,8 @@ mod tests {
     #[test]
     fn identical_columns_share_interned_keys() {
         let mut store = PolicyStore::default();
-        let first = store.register(dfc_policy("orders", "max(orders.amount) > 1"));
-        let second = store.register(dfc_policy("customers", "max(customers.amount) > 1"));
+        let first = store.register(pgn_policy("orders", "max(orders.amount) > 1"));
+        let second = store.register(pgn_policy("customers", "max(customers.amount) > 1"));
         let first_col = store
             .compiled(first)
             .expect("policy")

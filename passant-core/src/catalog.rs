@@ -137,26 +137,26 @@ impl TableCatalog {
         if !self.loaded {
             return Ok(());
         }
-        match policy {
-            PolicyIr::Dfc {
-                sources,
-                dimensions,
-                sink,
-                sink_alias,
-                constraint,
-                on_fail,
-                ..
-            } => validate_dfc_policy(
-                self,
-                sources,
-                dimensions,
-                sink.as_deref(),
-                sink_alias.as_deref(),
-                constraint,
-                *on_fail,
-            ),
-            PolicyIr::NativePgn(_) => Ok(()),
-        }
+        let PolicyIr::Pgn {
+            sources,
+            dimensions,
+            sink,
+            sink_alias,
+            source_aliases,
+            constraint,
+            on_fail,
+            ..
+        } = policy;
+        validate_pgn_policy(
+            self,
+            sources,
+            dimensions,
+            sink.as_deref(),
+            sink_alias.as_deref(),
+            source_aliases,
+            constraint,
+            *on_fail,
+        )
     }
 }
 
@@ -167,12 +167,14 @@ pub fn validate_constraint_expression(sql: &str, label: &str) -> Result<(), Rewr
     validate_qualified_columns(sql, label)
 }
 
-fn validate_dfc_policy(
+#[allow(clippy::too_many_arguments)]
+fn validate_pgn_policy(
     catalog: &TableCatalog,
     sources: &[String],
     dimensions: &[String],
     sink: Option<&str>,
     sink_alias: Option<&str>,
+    source_aliases: &HashMap<String, String>,
     constraint: &str,
     _on_fail: Resolution,
 ) -> Result<(), RewriteError> {
@@ -234,8 +236,19 @@ fn validate_dfc_policy(
         .iter()
         .map(|source| TableKey::new(source))
         .collect::<HashSet<_>>();
+    let mut source_qualifier_names = source_names.clone();
+    for alias in source_aliases.keys() {
+        source_qualifier_names.insert(TableKey::new(alias));
+    }
+    let sink_overlaps_source = sink.is_some_and(|sink_name| {
+        sources
+            .iter()
+            .any(|source| source.eq_ignore_ascii_case(sink_name))
+    });
     let mut sink_names = HashSet::new();
-    if let Some(sink) = sink {
+    if let Some(sink) = sink
+        && !(sink_overlaps_source && sink_alias.is_some())
+    {
         sink_names.insert(TableKey::new(sink));
     }
     sink_names.insert(TableKey::new("_output_"));
@@ -244,7 +257,8 @@ fn validate_dfc_policy(
     }
 
     if !sources.is_empty() {
-        let unaggregated = unaggregated_source_columns(constraint, &source_names)?;
+        let unaggregated =
+            unaggregated_source_columns(constraint, &source_qualifier_names, source_aliases)?;
         if !unaggregated.is_empty() {
             return Err(RewriteError::catalog_with_context(
                 ErrorKind::UnaggregatedSourceColumn,
@@ -270,16 +284,19 @@ fn validate_dfc_policy(
         let column_name = column.column.as_str();
         let table_key = TableKey::from_table(&column.table);
         let column_key = column.column.key();
-        if source_names.contains(&table_key) {
-            let Some(columns) = source_columns.get(&table_key) else {
+        if let Some(base_source_key) =
+            resolve_source_table_key(&table_key, &source_names, source_aliases)
+        {
+            let Some(columns) = source_columns.get(&base_source_key) else {
                 continue;
             };
             if !columns.contains(&column_key) {
+                let base_name = base_source_key.as_str();
                 return Err(RewriteError::catalog_with_context(
                     ErrorKind::UnknownColumn,
                     format!(
                         "Column '{table_name}.{column_name}' referenced in constraint \
-                         does not exist in source table '{table_name}'"
+                         does not exist in source table '{base_name}'"
                     ),
                     Some(table_name.to_string()),
                     Some(column_name.to_string()),
@@ -355,14 +372,30 @@ fn qualified_columns(sql: &str) -> Result<Vec<QualifiedColumn>, RewriteError> {
     Ok(crate::sql::collect_qualified_columns_from_expr(&expr))
 }
 
+fn resolve_source_table_key(
+    table_key: &TableKey,
+    source_names: &HashSet<TableKey>,
+    source_aliases: &HashMap<String, String>,
+) -> Option<TableKey> {
+    if source_names.contains(table_key) {
+        return Some(table_key.clone());
+    }
+    source_aliases
+        .get(table_key.as_str())
+        .map(|base| TableKey::new(base))
+        .filter(|base| source_names.contains(base))
+}
+
 fn unaggregated_source_columns(
     sql: &str,
-    source_names: &HashSet<TableKey>,
+    source_qualifier_names: &HashSet<TableKey>,
+    source_aliases: &HashMap<String, String>,
 ) -> Result<Vec<String>, RewriteError> {
     let expr = parse_constraint_expr(sql)?;
     Ok(UnaggregatedSourceColumnCollector::collect(
         &expr,
-        source_names,
+        source_qualifier_names,
+        source_aliases,
     ))
 }
 
@@ -390,15 +423,19 @@ impl UnqualifiedColumnCollector {
 }
 
 struct UnaggregatedSourceColumnCollector {
-    source_names: HashSet<TableKey>,
+    source_qualifier_names: HashSet<TableKey>,
     found: Vec<String>,
     seen: HashSet<String>,
 }
 
 impl UnaggregatedSourceColumnCollector {
-    fn collect(expr: &Expr, source_names: &HashSet<TableKey>) -> Vec<String> {
+    fn collect(
+        expr: &Expr,
+        source_qualifier_names: &HashSet<TableKey>,
+        _source_aliases: &HashMap<String, String>,
+    ) -> Vec<String> {
         let mut collector = Self {
-            source_names: source_names.clone(),
+            source_qualifier_names: source_qualifier_names.clone(),
             found: Vec::new(),
             seen: HashSet::new(),
         };
@@ -415,7 +452,7 @@ impl UnaggregatedSourceColumnCollector {
         if let Some(column) = QualifiedColumn::from_expr(expr)
             && !next_inside
             && self
-                .source_names
+                .source_qualifier_names
                 .contains(&TableKey::from_table(&column.table))
         {
             let qualified = column.display_sql();
@@ -564,12 +601,13 @@ mod tests {
     #[test]
     fn rejects_missing_source_table() {
         let catalog = sample_catalog();
-        let policy = PolicyIr::Dfc {
+        let policy = PolicyIr::Pgn {
             sources: vec!["missing".into()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: HashMap::new(),
             constraint: "max(missing.id) > 1".into(),
             on_fail: Resolution::Remove,
             description: None,
@@ -581,12 +619,13 @@ mod tests {
     #[test]
     fn rejects_unaggregated_source_column() {
         let catalog = sample_catalog();
-        let policy = PolicyIr::Dfc {
+        let policy = PolicyIr::Pgn {
             sources: vec!["foo".into()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: HashMap::new(),
             constraint: "foo.id > 0 AND avg(foo.id) > 1".into(),
             on_fail: Resolution::Remove,
             description: None,
@@ -598,17 +637,39 @@ mod tests {
     #[test]
     fn rejects_missing_source_column() {
         let catalog = sample_catalog();
-        let policy = PolicyIr::Dfc {
+        let policy = PolicyIr::Pgn {
             sources: vec!["foo".into()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: HashMap::new(),
             constraint: "max(foo.missing) > 1".into(),
             on_fail: Resolution::Remove,
             description: None,
         };
         let err = catalog.validate_policy(&policy).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnknownColumn);
+    }
+
+    #[test]
+    fn validates_constraint_columns_through_source_alias() {
+        let catalog = sample_catalog();
+        let mut source_aliases = HashMap::new();
+        source_aliases.insert("f".to_string(), "foo".to_string());
+        let policy = PolicyIr::Pgn {
+            sources: vec!["foo".into()],
+            required_sources: Vec::new(),
+            dimensions: Vec::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases,
+            constraint: "max(f.id) > 1".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        catalog
+            .validate_policy(&policy)
+            .expect("alias-qualified source column should validate");
     }
 }

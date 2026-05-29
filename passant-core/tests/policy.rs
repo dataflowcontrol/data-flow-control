@@ -3,7 +3,7 @@ mod common;
 use passant_core::{PolicyIr, Resolution, parse_policy_text};
 
 #[test]
-fn parse_pgn_dfc_policy_text() {
+fn parse_pgn_pgn_policy_text() {
     let policy = parse_policy_text(
         "SOURCE foo SINK reports CONSTRAINT max(foo.id) > 1 ON FAIL KILL DESCRIPTION stop bad rows",
     )
@@ -24,7 +24,7 @@ fn parse_pgn_sink_alias_policy_text() {
     assert_eq!(policy.sink(), Some("reports"));
     assert!(matches!(
         policy,
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sink_alias: Some(ref alias),
             ..
         } if alias == "r"
@@ -38,7 +38,9 @@ fn parse_pgn_source_alias_policy_text() {
             .expect("policy should parse");
 
     assert_eq!(policy.sources(), &["foo".to_string()]);
-    assert_eq!(policy.constraint(), "max(foo.id) > 1");
+    assert_eq!(policy.constraint(), "max(f.id) > 1");
+    let PolicyIr::Pgn { source_aliases, .. } = policy;
+    assert_eq!(source_aliases.get("f"), Some(&"foo".to_string()));
 }
 
 #[test]
@@ -70,21 +72,18 @@ fn parse_pgn_dimension_policy_text() {
 
     assert_eq!(
         policy.dimensions(),
-        &["foo.region".to_string(), "reports.department".to_string()]
+        &["f.region".to_string(), "reports.department".to_string()]
     );
-    assert_eq!(policy.constraint(), "max(foo.id) > 1");
+    assert_eq!(policy.constraint(), "max(f.id) > 1");
 }
 
 #[test]
-fn parse_rejects_aggregate_dfc_policy_text() {
+fn parse_rejects_legacy_aggregate_prefix() {
     let err = parse_policy_text(
         "AGGREGATE SOURCE foo SINK reports DIMENSION reports.region CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
     )
-    .expect_err("aggregate DFC policies should be rejected");
-    assert!(
-        err.to_string()
-            .contains("aggregate policies are not supported")
-    );
+    .expect_err("legacy AGGREGATE prefix should be rejected");
+    assert!(err.to_string().contains("AGGREGATE clause was removed"));
 }
 
 #[test]

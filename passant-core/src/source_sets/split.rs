@@ -147,7 +147,7 @@ fn split_policy_from_cached_conjuncts(
     conjuncts: &SmallVec<[(TableKey, Expr); 4]>,
     available_tables: &HashSet<TableKey>,
 ) -> Option<Vec<PolicyIr>> {
-    let PolicyIr::Dfc {
+    let PolicyIr::Pgn {
         sources,
         required_sources,
         dimensions,
@@ -156,10 +156,7 @@ fn split_policy_from_cached_conjuncts(
         on_fail,
         description,
         ..
-    } = policy
-    else {
-        return None;
-    };
+    } = policy;
     if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
         return None;
     }
@@ -176,12 +173,16 @@ fn split_policy_from_cached_conjuncts(
         let Some((_, expr)) = conjuncts.iter().find(|(key, _)| key == &source_key) else {
             continue;
         };
-        split.push(PolicyIr::Dfc {
+        split.push(PolicyIr::Pgn {
             sources: vec![source.clone()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: sink_alias.clone(),
+            source_aliases: aliases_for_sources(
+                policy.source_aliases(),
+                std::slice::from_ref(source),
+            ),
             constraint: expr.to_string(),
             on_fail: *on_fail,
             description: description.clone(),
@@ -195,19 +196,17 @@ fn split_policy_by_source_local_conjuncts_from_ast(
     constraint_ast: Option<&Expr>,
     available_tables: &HashSet<TableKey>,
 ) -> Option<Vec<PolicyIr>> {
-    let PolicyIr::Dfc {
+    let PolicyIr::Pgn {
         sources,
         required_sources,
         dimensions,
         sink,
         sink_alias,
+        source_aliases,
         constraint,
         on_fail,
         description,
-    } = policy
-    else {
-        return None;
-    };
+    } = policy;
     if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
         return None;
     }
@@ -241,18 +240,30 @@ fn split_policy_by_source_local_conjuncts_from_ast(
         let Some(constraints) = constraints_by_source.remove(&source_key) else {
             continue;
         };
-        split.push(PolicyIr::Dfc {
+        split.push(PolicyIr::Pgn {
             sources: vec![source.clone()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: sink_alias.clone(),
+            source_aliases: aliases_for_sources(source_aliases, std::slice::from_ref(source)),
             constraint: join_conjuncts(constraints).to_string(),
             on_fail: *on_fail,
             description: description.clone(),
         });
     }
     (!split.is_empty()).then_some(split)
+}
+
+fn aliases_for_sources(
+    source_aliases: &HashMap<String, String>,
+    sources: &[String],
+) -> HashMap<String, String> {
+    source_aliases
+        .iter()
+        .filter(|(_, base)| sources.iter().any(|source| source == *base))
+        .map(|(alias, base)| (alias.clone(), base.clone()))
+        .collect()
 }
 
 pub(crate) fn split_conjuncts(expr: Expr) -> Vec<Expr> {

@@ -2,16 +2,17 @@
 
 use passant_core::{PolicyIr, Resolution, TableCatalog};
 
-use crate::common::{assert_rewrite, dfc_policy, dfc_policy_kill, rewrite, rewrite_with_catalog};
+use crate::common::{assert_rewrite, pgn_policy, pgn_policy_kill, rewrite, rewrite_with_catalog};
 
 #[test]
 fn scan_count_if_transforms_to_case_when() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "COUNT_IF(foo.id > 2) > 0".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -27,12 +28,13 @@ fn scan_count_if_transforms_to_case_when() {
 fn scan_array_agg_non_distributive_uses_partial_push() {
     let sql = rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "array_agg(foo.id) = [foo.id]".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -46,7 +48,7 @@ fn scan_array_agg_non_distributive_uses_partial_push() {
 fn aggregation_kill_wraps_having_clause() {
     assert_rewrite(
         "SELECT category, sum(amount) FROM foo GROUP BY category",
-        &[dfc_policy_kill(&["foo"], "sum(foo.amount) > 100")],
+        &[pgn_policy_kill(&["foo"], "sum(foo.amount) > 100")],
         "SELECT category, sum(amount) FROM foo GROUP BY category HAVING CASE WHEN sum(foo.amount) > 100 THEN (foo.category = foo.category) OR kill() ELSE true END",
     );
 }
@@ -55,12 +57,13 @@ fn aggregation_kill_wraps_having_clause() {
 fn scan_count_distinct_equality_expands_to_row_predicate() {
     assert_rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "count(distinct foo.id) = 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -73,12 +76,13 @@ fn scan_count_distinct_equality_expands_to_row_predicate() {
 fn scan_avg_non_distributive_uses_partial_push() {
     let sql = rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "avg(foo.amount) > 100".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -93,12 +97,13 @@ fn scan_avg_non_distributive_uses_partial_push() {
 fn scan_min_max_preserve_full_expression() {
     assert_rewrite(
         "SELECT id FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "min(foo.amount + 1) > 0".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -111,12 +116,13 @@ fn scan_min_max_preserve_full_expression() {
 fn dimension_table_constraint_references_external_context() {
     assert_rewrite(
         "SELECT foo.id FROM foo JOIN regions ON foo.region_id = regions.id",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: vec!["regions.code".to_string()],
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.id) > 1 AND regions.code = 'US'".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -129,12 +135,13 @@ fn dimension_table_constraint_references_external_context() {
 fn insert_without_column_list_expands_from_catalog() {
     let mut catalog = TableCatalog::new();
     catalog.register_table("reports", vec!["id".to_string(), "amount".to_string()]);
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -154,7 +161,7 @@ fn insert_without_column_list_expands_from_catalog() {
 fn merge_statement_rewrite_supported() {
     let sql = rewrite(
         "MERGE INTO reports USING foo ON reports.id = foo.id WHEN MATCHED THEN UPDATE SET amount = foo.amount",
-        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
     );
     assert!(sql.contains("MERGE INTO reports"));
     assert!(sql.contains("foo.id > 1"));

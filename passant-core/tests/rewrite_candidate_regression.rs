@@ -8,12 +8,13 @@ use passant_core::{
 };
 
 fn dfc(source: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({source}.amount) > {threshold}"),
         on_fail: Resolution::Remove,
         description: None,
@@ -21,12 +22,13 @@ fn dfc(source: &str, threshold: i64) -> PolicyIr {
 }
 
 fn sink_only_policy(sink: &str) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: Some(sink.to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({sink}.amount) <= 0"),
         on_fail: Resolution::Remove,
         description: None,
@@ -34,12 +36,13 @@ fn sink_only_policy(sink: &str) -> PolicyIr {
 }
 
 fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![hot.to_string(), other.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: format!("max({hot}.amount) + max({other}.amount) > {threshold}"),
         on_fail: Resolution::Remove,
         description: None,
@@ -141,12 +144,13 @@ fn hot_source_multi_source_subset_lookup_avoids_policy_blowup() {
 #[test]
 fn partial_push_enforcement_lookup_uses_overlap_for_multi_source() {
     let mut store = PolicyStore::default();
-    store.register(PolicyIr::Dfc {
+    store.register(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > avg(bar.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,

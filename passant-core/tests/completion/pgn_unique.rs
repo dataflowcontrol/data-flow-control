@@ -22,12 +22,13 @@ fn assert_rewrite_with_catalog(
 
 #[test]
 fn unique_equality_constraint_adds_count_distinct_guard() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["users".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "users.email = 'alice@example.com'".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -42,12 +43,13 @@ fn unique_equality_constraint_adds_count_distinct_guard() {
 
 #[test]
 fn unique_inequality_constraint_adds_count_distinct_guard() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["users".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "users.email != 'alice@example.com'".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -62,12 +64,13 @@ fn unique_inequality_constraint_adds_count_distinct_guard() {
 
 #[test]
 fn non_unique_column_constraint_is_not_rewritten() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["users".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "users.nickname = 'alice'".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -81,12 +84,13 @@ fn non_unique_column_constraint_is_not_rewritten() {
 
 #[test]
 fn unique_constraint_in_join_query_pushes_guard() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["users".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "users.email = 'alice@example.com'".to_string(),
         on_fail: Resolution::Remove,
         description: None,

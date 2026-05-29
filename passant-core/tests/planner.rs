@@ -9,12 +9,13 @@ use passant_core::{
 #[test]
 fn planner_chooses_full_push_for_aggregate_query() {
     let ir = parse_query_to_ir("SELECT max(foo.id) FROM foo").expect("query should parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -28,12 +29,13 @@ fn planner_chooses_full_push_for_aggregate_query() {
 fn planner_chooses_full_push_for_monotonic_spj_query() {
     let ir = parse_query_to_ir("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -63,12 +65,13 @@ fn semiring_analysis_classifies_policy_aggregates() {
 fn planner_uses_partial_push_for_non_distributive_policy_aggregate() {
     let ir = parse_query_to_ir("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -87,12 +90,13 @@ fn planner_uses_partial_push_for_non_distributive_policy_aggregate() {
 #[test]
 fn rewriter_uses_partial_push_for_aggregate_only_non_distributive_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -108,12 +112,13 @@ fn rewriter_uses_partial_push_for_aggregate_only_non_distributive_policy() {
 #[test]
 fn rewriter_splits_source_local_non_distributive_policies_via_partial_push() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > 1 AND avg(bar.id) > 10".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -130,12 +135,13 @@ fn rewriter_splits_source_local_non_distributive_policies_via_partial_push() {
 #[test]
 fn rewriter_uses_partial_push_for_alias_non_distributive_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -151,12 +157,13 @@ fn rewriter_uses_partial_push_for_alias_non_distributive_policy() {
 #[test]
 fn rewriter_partial_pushes_cross_source_non_distributive_aggregate_comparison() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.id) > avg(bar.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -171,12 +178,13 @@ fn rewriter_partial_pushes_cross_source_non_distributive_aggregate_comparison() 
 #[test]
 fn rewriter_partial_pushes_mixed_row_and_non_distributive_aggregate_policy() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "foo.id > 0 AND avg(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -192,12 +200,13 @@ fn rewriter_partial_pushes_mixed_row_and_non_distributive_aggregate_policy() {
 fn planner_chooses_full_push_for_non_monotonic_query() {
     let ir = parse_query_to_ir("SELECT id FROM bar EXCEPT SELECT id FROM foo")
         .expect("query should parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -213,12 +222,13 @@ fn planner_chooses_full_push_for_non_monotonic_query() {
 fn planner_marks_outer_join_as_requiring_source_set_annotations() {
     let ir = parse_query_to_ir("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -233,12 +243,13 @@ fn planner_marks_outer_join_as_requiring_source_set_annotations() {
 fn planner_records_successful_except_rewrite_in_explain_output() {
     let ir = parse_query_to_ir("SELECT id FROM bar EXCEPT SELECT id FROM foo")
         .expect("query should parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -252,12 +263,13 @@ fn planner_records_successful_except_rewrite_in_explain_output() {
 fn planner_records_successful_source_set_rewrite_in_explain_output() {
     let ir = parse_query_to_ir("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
         .expect("query should parse");
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > max(foo.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,

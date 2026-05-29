@@ -5,12 +5,13 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 #[test]
 fn exists_subquery_with_policy_on_inner_table_rewrites_to_join() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["lineitem".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(lineitem.l_quantity) >= 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -36,12 +37,13 @@ ORDER BY o_orderpriority";
 #[test]
 fn exists_subquery_aggregation_with_inner_policy_rewrites_to_join() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["lineitem".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(lineitem.l_quantity) >= 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,

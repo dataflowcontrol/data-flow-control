@@ -4,14 +4,15 @@ use sqlparser::ast::Expr;
 
 use crate::catalog::TableCatalog;
 use crate::identifiers::{AliasByBase, TableKey};
-use crate::policy::{PgnPolicyKind, PolicyIr, Resolution};
+use crate::policy::{PolicyIr, Resolution};
 use crate::policy_store::PolicyStore;
 use crate::rewrite_stats::RewriteStatsCell;
-use crate::rewriter::columns::{replace_sink_columns, rewrite_column_qualifiers};
-use crate::rewriter::expr::bool_literal;
-use crate::rewriter::policy_expr::{
-    ConstraintExprCtx, build_pgn_over_filter_expr, scan_policy_expr,
+use crate::rewriter::columns::{
+    apply_policy_sink_column_replacements, replace_source_alias_qualifiers,
+    rewrite_column_qualifiers,
 };
+use crate::rewriter::expr::bool_literal;
+use crate::rewriter::policy_expr::{ConstraintExprCtx, scan_policy_expr};
 use crate::rewriter::scope::TableScope;
 use crate::rewriter::types::{PolicyApplicability, RewriteContext};
 
@@ -19,12 +20,7 @@ use super::applicability::{ScopePlanDiagnostics, resolve_scope_policies};
 
 #[derive(Debug, Clone)]
 pub enum UpdatePolicyAction {
-    Dfc {
-        filter: Expr,
-        on_fail: Resolution,
-        description: Option<String>,
-    },
-    PgnUpdate {
+    Pgn {
         filter: Expr,
         on_fail: Resolution,
         description: Option<String>,
@@ -66,66 +62,42 @@ pub(crate) fn plan_update_scope(
             index,
             stats,
         };
-        match policy {
-            PolicyIr::Dfc {
-                constraint,
-                on_fail,
-                sink_alias,
-                description,
-                ..
-            } => {
-                let filter = if applicability == PolicyApplicability::RequiredSourceMissing {
-                    bool_literal(false)
-                } else {
-                    let mut expr = constraint_ctx.scan_policy_base_expr(constraint)?;
-                    if let Some(sink) = &context.sink {
-                        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
-                        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
-                        if let Some(sink_alias) = sink_alias {
-                            expr = replace_sink_columns(
-                                expr,
-                                sink_alias,
-                                &context.sink_expr_by_column,
-                            );
-                        }
-                    }
-                    rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
-                    scan_policy_expr(
-                        expr,
-                        policy.sources(),
-                        context,
-                        &table_scope.alias_by_base,
-                        constraint_ctx.uses_scan_ready_expr(),
-                    )?
-                };
-                plan.actions.push(UpdatePolicyAction::Dfc {
-                    filter,
-                    on_fail: *on_fail,
-                    description: description.clone(),
-                });
+        let PolicyIr::Pgn {
+            constraint,
+            on_fail,
+            sink_alias,
+            source_aliases,
+            description,
+            ..
+        } = policy;
+        let filter = if applicability == PolicyApplicability::RequiredSourceMissing {
+            bool_literal(false)
+        } else {
+            let mut expr = constraint_ctx.scan_policy_base_expr(constraint)?;
+            expr = replace_source_alias_qualifiers(expr, source_aliases);
+            if let Some(sink) = &context.sink {
+                expr = apply_policy_sink_column_replacements(
+                    expr,
+                    sink,
+                    sink_alias,
+                    policy.sources(),
+                    &context.sink_expr_by_column,
+                );
             }
-            PolicyIr::NativePgn(pgn) if pgn.kind == PgnPolicyKind::Update => {
-                let filter = if applicability == PolicyApplicability::RequiredSourceMissing {
-                    bool_literal(false)
-                } else {
-                    build_pgn_over_filter_expr(
-                        &pgn.scope.sources,
-                        &pgn.constraint,
-                        &pgn.scope.sink_alias,
-                        applicability,
-                        context,
-                        table_scope,
-                        &constraint_ctx,
-                    )?
-                };
-                plan.actions.push(UpdatePolicyAction::PgnUpdate {
-                    filter,
-                    on_fail: pgn.on_fail,
-                    description: pgn.description.clone(),
-                });
-            }
-            _ => {}
-        }
+            rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
+            scan_policy_expr(
+                expr,
+                policy.sources(),
+                context,
+                &table_scope.alias_by_base,
+                constraint_ctx.uses_scan_ready_expr(),
+            )?
+        };
+        plan.actions.push(UpdatePolicyAction::Pgn {
+            filter,
+            on_fail: *on_fail,
+            description: description.clone(),
+        });
     }
     plan.diagnostics.emitted_policy_actions = plan.actions.len();
     Ok(plan)
@@ -138,26 +110,18 @@ pub(crate) fn apply_update_scope_plan(
 ) -> Result<(), crate::diagnostics::RewriteError> {
     use crate::rewriter::policy_expr::apply_update_resolution;
     for action in &plan.actions {
-        match action {
-            UpdatePolicyAction::Dfc {
-                filter,
-                on_fail,
-                description,
-            }
-            | UpdatePolicyAction::PgnUpdate {
-                filter,
-                on_fail,
-                description,
-            } => {
-                apply_update_resolution(
-                    assignments,
-                    selection,
-                    filter.clone(),
-                    *on_fail,
-                    description.as_deref(),
-                )?;
-            }
-        }
+        let UpdatePolicyAction::Pgn {
+            filter,
+            on_fail,
+            description,
+        } = action;
+        apply_update_resolution(
+            assignments,
+            selection,
+            filter.clone(),
+            *on_fail,
+            description.as_deref(),
+        )?;
     }
     Ok(())
 }
@@ -180,14 +144,11 @@ pub(crate) fn plan_merge_source_filters(
         let Some(policy) = store.policy(index) else {
             continue;
         };
-        let PolicyIr::Dfc {
+        let PolicyIr::Pgn {
             constraint,
             on_fail,
             ..
-        } = policy
-        else {
-            continue;
-        };
+        } = policy;
         if !matches!(on_fail, Resolution::Remove) {
             continue;
         }

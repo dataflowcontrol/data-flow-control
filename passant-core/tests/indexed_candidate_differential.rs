@@ -3,12 +3,13 @@ use std::collections::HashSet;
 use passant_core::{MultiSourceLookupMode, PolicyIr, PolicyStore, Resolution, TableKey};
 
 fn dfc(source: &str, constraint: &str, on_fail: Resolution) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: constraint.to_string(),
         on_fail,
         description: None,
@@ -18,32 +19,35 @@ fn dfc(source: &str, constraint: &str, on_fail: Resolution) -> PolicyIr {
 fn register_diverse_registry(store: &mut PolicyStore) {
     store.register(dfc("orders", "max(orders.amount) > 1", Resolution::Remove));
     store.register(dfc("customers", "max(customers.id) > 0", Resolution::Kill));
-    store.register(PolicyIr::Dfc {
+    store.register(PolicyIr::Pgn {
         sources: vec!["orders".to_string(), "customers".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(orders.amount) + max(customers.id) > 10".to_string(),
         on_fail: Resolution::Remove,
         description: None,
     });
-    store.register(PolicyIr::Dfc {
+    store.register(PolicyIr::Pgn {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
         dimensions: Vec::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "reports.id > 0".to_string(),
         on_fail: Resolution::Remove,
         description: None,
     });
-    store.register(PolicyIr::Dfc {
+    store.register(PolicyIr::Pgn {
         sources: vec![],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(reports.amount) <= 0".to_string(),
         on_fail: Resolution::Remove,
         description: None,

@@ -267,7 +267,7 @@ fn plan_join_policy_pushdown(
         let Some(policy) = store.policy(index) else {
             continue;
         };
-        let PolicyIr::Dfc {
+        let PolicyIr::Pgn {
             sources,
             constraint,
             on_fail: Resolution::Remove,

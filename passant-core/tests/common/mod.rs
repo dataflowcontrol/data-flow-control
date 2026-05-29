@@ -5,43 +5,46 @@ use passant_core::{
     RewriteStrategy, TableCatalog, parse_query_to_ir,
 };
 
-pub fn dfc_policy(sources: &[&str], constraint: &str) -> PolicyIr {
-    dfc_policy_with(sources, constraint, Resolution::Remove)
+pub fn pgn_policy(sources: &[&str], constraint: &str) -> PolicyIr {
+    pgn_policy_with(sources, constraint, Resolution::Remove)
 }
 
-pub fn dfc_policy_with(sources: &[&str], constraint: &str, on_fail: Resolution) -> PolicyIr {
-    PolicyIr::Dfc {
+pub fn pgn_policy_with(sources: &[&str], constraint: &str, on_fail: Resolution) -> PolicyIr {
+    PolicyIr::Pgn {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: constraint.to_string(),
         on_fail,
         description: None,
     }
 }
 
-pub fn dfc_policy_sink(sources: &[&str], sink: &str, constraint: &str) -> PolicyIr {
-    PolicyIr::Dfc {
+pub fn pgn_policy_sink(sources: &[&str], sink: &str, constraint: &str) -> PolicyIr {
+    PolicyIr::Pgn {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: Some(sink.to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: constraint.to_string(),
         on_fail: Resolution::Remove,
         description: None,
     }
 }
 
-pub fn dfc_policy_required(sources: &[&str], required: &[&str], constraint: &str) -> PolicyIr {
-    PolicyIr::Dfc {
+pub fn pgn_policy_required(sources: &[&str], required: &[&str], constraint: &str) -> PolicyIr {
+    PolicyIr::Pgn {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: required.iter().map(|s| (*s).to_string()).collect(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: constraint.to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -97,6 +100,6 @@ pub fn assert_explain_strategy(sql: &str, policies: &[PolicyIr], strategy: Rewri
     assert_eq!(plan_query(sql, policies).chosen.strategy, strategy);
 }
 
-pub fn dfc_policy_kill(sources: &[&str], constraint: &str) -> PolicyIr {
-    dfc_policy_with(sources, constraint, Resolution::Kill)
+pub fn pgn_policy_kill(sources: &[&str], constraint: &str) -> PolicyIr {
+    pgn_policy_with(sources, constraint, Resolution::Kill)
 }

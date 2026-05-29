@@ -5,6 +5,7 @@ from typing import Any
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
 from .duckdb import quote_sql_identifier
+from .kill import CLICKHOUSE_KILL_DDL
 
 try:
     import clickhouse_connect
@@ -28,7 +29,7 @@ class _ClickHouseCursor:
 
 class ClickHouseAdapter:
     dialect = "clickhouse"
-    capabilities = Capabilities(exception_udf=False)
+    capabilities = Capabilities(exception_udf=True)
 
     def __init__(self, client) -> None:
         if clickhouse_connect is None:
@@ -50,7 +51,7 @@ class ClickHouseAdapter:
         return quote_sql_identifier(name)
 
     def register_kill_function(self) -> None:
-        return
+        self._client.command(CLICKHOUSE_KILL_DDL)
 
     def introspect_catalog(self) -> dict:
         database = getattr(self._client, "database", "default") or "default"

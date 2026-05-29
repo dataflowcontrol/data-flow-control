@@ -152,19 +152,17 @@ pub fn split_policy_for_set_branches(
     left_tables: &HashSet<TableKey>,
     right_tables: &HashSet<TableKey>,
 ) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
-    let PolicyIr::Dfc {
+    let PolicyIr::Pgn {
         sources,
         required_sources,
         dimensions,
         sink,
         sink_alias,
+        source_aliases,
         constraint,
         on_fail,
         description,
-    } = policy
-    else {
-        return None;
-    };
+    } = policy;
     if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
         return None;
     }
@@ -213,12 +211,17 @@ pub fn split_policy_for_set_branches(
         if branch_sources.is_empty() {
             return None;
         }
-        Some(PolicyIr::Dfc {
-            sources: branch_sources,
+        Some(PolicyIr::Pgn {
+            sources: branch_sources.clone(),
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: sink_alias.clone(),
+            source_aliases: source_aliases
+                .iter()
+                .filter(|(_, base)| branch_sources.iter().any(|s| s == *base))
+                .map(|(alias, base)| (alias.clone(), base.clone()))
+                .collect(),
             constraint: join_conjuncts(constraints).to_string(),
             on_fail: *on_fail,
             description: description.clone(),

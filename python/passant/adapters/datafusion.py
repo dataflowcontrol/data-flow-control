@@ -4,6 +4,7 @@ from typing import Any
 
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
+from .kill import python_kill
 
 
 class _DataFusionCursor:
@@ -27,7 +28,7 @@ class _DataFusionCursor:
 
 class DataFusionAdapter:
     dialect = "datafusion"
-    capabilities = Capabilities(exception_udf=False)
+    capabilities = Capabilities(exception_udf=True)
 
     def __init__(self, context) -> None:
         self._ctx = context
@@ -47,7 +48,15 @@ class DataFusionAdapter:
         return quote_sql_identifier(name)
 
     def register_kill_function(self) -> None:
-        return
+        import pyarrow as pa
+        from datafusion import udf
+
+        def _kill() -> pa.Array:
+            python_kill()
+            return pa.array([True], type=pa.bool_())
+
+        kill_udf = udf(_kill, [], pa.bool_(), "volatile", name="kill")
+        self._ctx.register_udf(kill_udf)
 
     def introspect_catalog(self) -> dict:
         tables: dict[str, dict] = {}

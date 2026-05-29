@@ -3,12 +3,13 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 #[test]
 fn rewriter_applies_policy_to_joined_source_table() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -26,12 +27,13 @@ fn rewriter_applies_policy_to_joined_source_table() {
 #[test]
 fn rewriter_applies_policy_to_each_inner_self_join_alias() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -49,12 +51,13 @@ fn rewriter_applies_policy_to_each_inner_self_join_alias() {
 #[test]
 fn rewriter_pushes_nullable_side_left_join_policy_into_join_condition() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -72,12 +75,13 @@ fn rewriter_pushes_nullable_side_left_join_policy_into_join_condition() {
 #[test]
 fn rewriter_pushes_nullable_side_right_join_policy_into_join_condition() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -95,12 +99,13 @@ fn rewriter_pushes_nullable_side_right_join_policy_into_join_condition() {
 #[test]
 fn rewriter_rewrites_outer_join_policy_with_source_sets() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > max(foo.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -118,12 +123,13 @@ fn rewriter_rewrites_outer_join_policy_with_source_sets() {
 #[test]
 fn rewriter_splits_source_local_outer_join_policy_that_would_need_source_sets() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > 1 AND max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -141,12 +147,13 @@ fn rewriter_splits_source_local_outer_join_policy_that_would_need_source_sets() 
 #[test]
 fn rewriter_rewrites_cross_source_outer_join_policy_with_source_sets() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > max(foo.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -164,12 +171,13 @@ fn rewriter_rewrites_cross_source_outer_join_policy_with_source_sets() {
 #[test]
 fn rewriter_splits_source_local_union_policy_that_would_need_source_sets() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1 AND max(bar.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -187,12 +195,13 @@ fn rewriter_splits_source_local_union_policy_that_would_need_source_sets() {
 #[test]
 fn rewriter_splits_source_local_intersect_policy_that_would_need_source_sets() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1 AND max(bar.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -210,12 +219,13 @@ fn rewriter_splits_source_local_intersect_policy_that_would_need_source_sets() {
 #[test]
 fn rewriter_passes_through_cross_source_union_all_when_branch_split_unavailable() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > max(bar.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -230,12 +240,13 @@ fn rewriter_passes_through_cross_source_union_all_when_branch_split_unavailable(
 #[test]
 fn rewriter_filters_full_join_source_before_join() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -253,12 +264,13 @@ fn rewriter_filters_full_join_source_before_join() {
 #[test]
 fn rewriter_rewrites_cross_source_full_join_policy_with_source_sets() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > max(bar.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -276,12 +288,13 @@ fn rewriter_rewrites_cross_source_full_join_policy_with_source_sets() {
 #[test]
 fn rewriter_pushes_policy_into_semi_join_condition() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -299,12 +312,13 @@ fn rewriter_pushes_policy_into_semi_join_condition() {
 #[test]
 fn rewriter_pushes_policy_into_right_semi_join_condition() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -322,12 +336,13 @@ fn rewriter_pushes_policy_into_right_semi_join_condition() {
 #[test]
 fn rewriter_allows_anti_join_policy_on_preserved_source() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -345,12 +360,13 @@ fn rewriter_allows_anti_join_policy_on_preserved_source() {
 #[test]
 fn rewriter_filters_anti_join_probe_source_before_join() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Dfc {
+    rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,

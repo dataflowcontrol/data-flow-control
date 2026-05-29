@@ -1,12 +1,13 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
 fn shared_constraint_policy(source: &str) -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(source.amount) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,

@@ -5,11 +5,11 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from passant import Policy, Resolution, wrap
+from passant import Policy, Resolution, dfc
 
 
 def test_kill_resolution_aborts_query():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1)")
     rewriter.register_policy(
@@ -25,7 +25,7 @@ def test_kill_resolution_aborts_query():
 
 
 def test_update_kill_policy_aborts_invalid_assignment():
-    rewriter = wrap(duckdb.connect())
+    rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE reports (id INTEGER, status VARCHAR)")
     rewriter.execute("INSERT INTO reports VALUES (1, 'draft')")
     rewriter.register_policy(

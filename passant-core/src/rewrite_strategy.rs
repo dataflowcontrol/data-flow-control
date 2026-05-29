@@ -234,12 +234,13 @@ mod tests {
     use crate::rewriter::{PassantRewriter, RewriteOptions};
 
     fn distributive_policy() -> PolicyIr {
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "max(foo.amount) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -247,12 +248,13 @@ mod tests {
     }
 
     fn non_distributive_policy() -> PolicyIr {
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "avg(foo.amount) > 1".to_string(),
             on_fail: Resolution::Remove,
             description: None,

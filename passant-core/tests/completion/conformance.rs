@@ -2,16 +2,17 @@
 
 use passant_core::{PolicyIr, Resolution, parse_policy_text};
 
-use crate::common::{assert_rewrite, dfc_policy, rewriter_with_policies};
+use crate::common::{assert_rewrite, pgn_policy, rewriter_with_policies};
 
 #[test]
 fn cross_source_outer_join_rewrites_with_source_sets() {
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(bar.id) > max(foo.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -25,12 +26,13 @@ fn cross_source_outer_join_rewrites_with_source_sets() {
 
 #[test]
 fn cross_source_union_all_passes_through_when_branch_split_unavailable() {
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > max(bar.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -46,7 +48,7 @@ fn cross_source_union_all_passes_through_when_branch_split_unavailable() {
 fn except_with_single_source_policy_rewrites_branch() {
     assert_rewrite(
         "SELECT id FROM bar EXCEPT SELECT id FROM foo",
-        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "SELECT id FROM bar EXCEPT SELECT id FROM foo WHERE foo.id > 1",
     );
 }
@@ -55,7 +57,7 @@ fn except_with_single_source_policy_rewrites_branch() {
 fn delete_with_policies_is_unsupported() {
     crate::common::assert_rewrite_fails_with(
         "DELETE FROM foo WHERE id = 1",
-        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "delete with registered policies",
     );
 }
@@ -64,7 +66,7 @@ fn delete_with_policies_is_unsupported() {
 fn create_table_as_select_fails_closed_with_registered_policies() {
     crate::common::assert_rewrite_fails_with(
         "CREATE TABLE leak AS SELECT * FROM foo",
-        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "create_table",
     );
 }
@@ -73,7 +75,7 @@ fn create_table_as_select_fails_closed_with_registered_policies() {
 fn copy_select_fails_closed_with_registered_policies() {
     crate::common::assert_rewrite_fails_with(
         "COPY (SELECT * FROM foo) TO 'out.csv' (HEADER)",
-        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "copy",
     );
 }
@@ -84,20 +86,18 @@ fn aggregate_policy_text_is_rejected() {
         "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
     )
     .expect_err("AGGREGATE policies should be rejected");
-    assert!(
-        err.to_string()
-            .contains("aggregate policies are not supported")
-    );
+    assert!(err.to_string().contains("AGGREGATE clause was removed"));
 }
 
 #[test]
 fn anti_join_probe_side_policy_rewrites_with_source_sets() {
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "max(foo.id) > max(bar.id)".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -111,12 +111,13 @@ fn anti_join_probe_side_policy_rewrites_with_source_sets() {
 
 #[test]
 fn insert_without_required_source_rewrites_to_false() {
-    let policy = PolicyIr::Dfc {
+    let policy = PolicyIr::Pgn {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
         dimensions: Vec::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "reports.id > 0".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -130,7 +131,7 @@ fn insert_without_required_source_rewrites_to_false() {
 
 #[test]
 fn duplicate_policy_registration_is_allowed() {
-    let policy = dfc_policy(&["foo"], "max(foo.id) > 1");
+    let policy = pgn_policy(&["foo"], "max(foo.id) > 1");
     let rewriter = rewriter_with_policies(&[policy.clone(), policy]);
     assert_eq!(rewriter.policies().len(), 2);
     let sql = rewriter

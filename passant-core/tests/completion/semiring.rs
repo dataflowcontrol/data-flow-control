@@ -5,12 +5,13 @@ use passant_core::{PolicyIr, Resolution, RewriteStrategy};
 use crate::common::{assert_explain_strategy, plan_query, rewrite};
 
 fn multi_source_sum_policy() -> PolicyIr {
-    PolicyIr::Dfc {
+    PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "sum(foo.amount) + sum(bar.amount) > 100".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -38,12 +39,13 @@ fn full_push_inner_join_decomposes_distributive_sum() {
 
 #[test]
 fn full_push_nested_subquery_join_uses_semiring_not_scalar_fallback() {
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "sum(foo.amount) > 100".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -60,12 +62,13 @@ fn full_push_nested_subquery_join_uses_semiring_not_scalar_fallback() {
 
 #[test]
 fn full_push_left_join_preserves_nullable_side_semantics() {
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["bar".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "sum(bar.amount) > 10".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -97,12 +100,13 @@ fn distributive_sum_decomposition_across_sources() {
 
 #[test]
 fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "avg(foo.amount) > 100".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -128,12 +132,13 @@ fn non_distributive_aggregate_keeps_partial_push_with_explicit_reason() {
 
 #[test]
 fn aggregation_query_full_push_inlines_having_semiring() {
-    let policies = vec![PolicyIr::Dfc {
+    let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
         dimensions: Vec::new(),
         sink: None,
         sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
         constraint: "sum(foo.amount) > 100".to_string(),
         on_fail: Resolution::Remove,
         description: None,

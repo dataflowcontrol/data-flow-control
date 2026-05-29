@@ -305,12 +305,13 @@ mod tests {
     fn roaring_bitmap_index_promotes_at_threshold() {
         let mut store = PolicyStore::default();
         for index in 0..600usize {
-            store.register(crate::policy::PolicyIr::Dfc {
+            store.register(crate::policy::PolicyIr::Pgn {
                 sources: vec!["orders".to_string()],
                 required_sources: Vec::new(),
                 dimensions: Vec::new(),
                 sink: None,
                 sink_alias: None,
+                source_aliases: std::collections::HashMap::new(),
                 constraint: format!("max(orders.amount) > {index}"),
                 on_fail: crate::policy::Resolution::Remove,
                 description: None,

@@ -32,12 +32,13 @@ mod tests {
     use crate::rewriter::{PassantRewriter, RewriteContext};
 
     fn remove_policy(source: &str, constraint: &str) -> PolicyIr {
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec![source.to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: constraint.to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -96,7 +97,7 @@ mod tests {
         assert_eq!(plan.diagnostics.emitted_policy_actions, 1);
         assert!(matches!(
             plan.policy_actions.first(),
-            Some(PolicyResolutionAction::Dfc { .. })
+            Some(PolicyResolutionAction::Pgn { .. })
         ));
     }
 

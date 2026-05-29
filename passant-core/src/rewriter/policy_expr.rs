@@ -2,7 +2,7 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 use sqlparser::ast::{
@@ -19,7 +19,10 @@ use crate::semiring;
 use crate::sql::{count_distinct_eq_one, scalar_subquery};
 
 use super::aggregates::{is_scan_transformable_non_distributive, transform_scan_aggregates};
-use super::columns::{replace_sink_columns, rewrite_column_qualifiers};
+use super::columns::{
+    apply_policy_sink_column_replacements, replace_source_alias_qualifiers,
+    rewrite_column_qualifiers,
+};
 use super::expr::{
     and_expr, bool_literal, expr_contains_aggregate, is_aggregate_name, join_conjuncts, kill_expr,
     parse_expr,
@@ -254,16 +257,11 @@ pub(crate) fn join_pushdown_expr(
     alias: Option<String>,
     catalog: &TableCatalog,
 ) -> Result<Expr, RewriteError> {
-    let PolicyIr::Dfc {
+    let PolicyIr::Pgn {
         constraint,
         on_fail,
         ..
-    } = policy
-    else {
-        return Err(RewriteError::unsupported_statement(
-            "non-DFC policy cannot be pushed into joins",
-        ));
-    };
+    } = policy;
     let scan_ready = constraint_ctx.uses_scan_ready_expr();
     let mut expr = constraint_ctx.scan_policy_base_expr(constraint)?;
     if let Some(alias) = alias {
@@ -433,10 +431,11 @@ fn compiled_sink_matches(policy: &PolicyIr, sink: Option<&TableKey>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_dfc_filter_expr(
+pub(crate) fn build_pgn_filter_expr(
     sources: &[String],
     constraint: &str,
     sink_alias: &Option<String>,
+    source_aliases: &HashMap<String, String>,
     applicability: PolicyApplicability,
     context: &RewriteContext,
     table_scope: &TableScope,
@@ -454,9 +453,10 @@ pub(crate) fn build_dfc_filter_expr(
             let filters = aliases
                 .iter()
                 .map(|alias| {
-                    build_single_alias_dfc_filter_expr(
+                    build_single_alias_pgn_filter_expr(
                         constraint,
                         sink_alias,
+                        source_aliases,
                         context,
                         sources,
                         &base,
@@ -468,9 +468,10 @@ pub(crate) fn build_dfc_filter_expr(
                 .collect::<Result<Vec<_>, _>>()?;
             return Ok(join_conjuncts(filters));
         }
-        return build_single_alias_dfc_filter_expr(
+        return build_single_alias_pgn_filter_expr(
             constraint,
             sink_alias,
+            source_aliases,
             context,
             sources,
             &base,
@@ -487,12 +488,15 @@ pub(crate) fn build_dfc_filter_expr(
     } else {
         constraint_ctx.scan_policy_base_expr(constraint)?
     };
+    expr = replace_source_alias_qualifiers(expr, source_aliases);
     if let Some(sink) = &context.sink {
-        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
-        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
-        if let Some(sink_alias) = sink_alias {
-            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
-        }
+        expr = apply_policy_sink_column_replacements(
+            expr,
+            sink,
+            sink_alias,
+            sources,
+            &context.sink_expr_by_column,
+        );
     }
     rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
     if !is_aggregation {
@@ -534,31 +538,6 @@ fn extract_simple_column_comparison(expr: &Expr) -> Option<QualifiedColumn> {
     }
 }
 
-pub(crate) fn build_pgn_over_filter_expr(
-    sources: &[String],
-    constraint: &str,
-    sink_alias: &Option<String>,
-    applicability: PolicyApplicability,
-    context: &RewriteContext,
-    table_scope: &TableScope,
-    constraint_ctx: &ConstraintExprCtx<'_>,
-) -> Result<Expr, RewriteError> {
-    if applicability == PolicyApplicability::RequiredSourceMissing {
-        return Ok(bool_literal(false));
-    }
-    let mut expr = constraint_ctx.expr(constraint)?;
-    if let Some(sink) = &context.sink {
-        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
-        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
-        if let Some(sink_alias) = sink_alias {
-            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
-        }
-    }
-    rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
-    let _ = sources;
-    Ok(expr)
-}
-
 pub(crate) fn apply_update_resolution(
     _assignments: &mut [Assignment],
     selection: &mut Option<Expr>,
@@ -585,9 +564,10 @@ pub(crate) fn apply_update_resolution(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_single_alias_dfc_filter_expr(
+pub(crate) fn build_single_alias_pgn_filter_expr(
     constraint: &str,
     sink_alias: &Option<String>,
+    source_aliases: &HashMap<String, String>,
     context: &RewriteContext,
     sources: &[String],
     base: &str,
@@ -602,12 +582,15 @@ pub(crate) fn build_single_alias_dfc_filter_expr(
     } else {
         constraint_ctx.scan_policy_base_expr(constraint)?
     };
+    expr = replace_source_alias_qualifiers(expr, source_aliases);
     if let Some(sink) = &context.sink {
-        expr = replace_sink_columns(expr, sink, &context.sink_expr_by_column);
-        expr = replace_sink_columns(expr, "_OUTPUT_", &context.sink_expr_by_column);
-        if let Some(sink_alias) = sink_alias {
-            expr = replace_sink_columns(expr, sink_alias, &context.sink_expr_by_column);
-        }
+        expr = apply_policy_sink_column_replacements(
+            expr,
+            sink,
+            sink_alias,
+            sources,
+            &context.sink_expr_by_column,
+        );
     }
     rewrite_column_qualifiers(&mut expr, &alias_map);
     if !is_aggregation {

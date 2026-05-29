@@ -33,96 +33,67 @@ pub enum PolicyParseError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PgnPolicyKind {
-    Over,
-    Update,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PolicyScope {
-    pub sources: Vec<String>,
-    pub sink: Option<String>,
-    pub sink_alias: Option<String>,
-    pub dimensions: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PgnPolicy {
-    pub kind: PgnPolicyKind,
-    pub scope: PolicyScope,
-    pub aggregations: Vec<String>,
-    pub constraint: String,
-    pub on_fail: Resolution,
-    pub description: Option<String>,
-    /// Original policy text when registered via `register_policy_text`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_text: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolicyIr {
-    Dfc {
+    Pgn {
         sources: Vec<String>,
         required_sources: Vec<String>,
         dimensions: Vec<String>,
         sink: Option<String>,
         sink_alias: Option<String>,
+        #[serde(default)]
+        source_aliases: HashMap<String, String>,
         constraint: String,
         on_fail: Resolution,
         description: Option<String>,
     },
-    NativePgn(PgnPolicy),
 }
 
 impl PolicyIr {
     pub fn sources(&self) -> &[String] {
         match self {
-            PolicyIr::Dfc { sources, .. } => sources,
-            PolicyIr::NativePgn(policy) => &policy.scope.sources,
+            PolicyIr::Pgn { sources, .. } => sources,
         }
     }
 
     pub fn required_sources(&self) -> &[String] {
         match self {
-            PolicyIr::Dfc {
+            PolicyIr::Pgn {
                 required_sources, ..
             } => required_sources,
-            PolicyIr::NativePgn(_) => &[],
         }
     }
 
     pub fn sink(&self) -> Option<&str> {
         match self {
-            PolicyIr::Dfc { sink, .. } => sink.as_deref(),
-            PolicyIr::NativePgn(policy) => policy.scope.sink.as_deref(),
+            PolicyIr::Pgn { sink, .. } => sink.as_deref(),
         }
     }
 
     pub fn dimensions(&self) -> &[String] {
         match self {
-            PolicyIr::Dfc { dimensions, .. } => dimensions,
-            PolicyIr::NativePgn(policy) => &policy.scope.dimensions,
+            PolicyIr::Pgn { dimensions, .. } => dimensions,
         }
     }
 
     pub fn constraint(&self) -> &str {
         match self {
-            PolicyIr::Dfc { constraint, .. } => constraint,
-            PolicyIr::NativePgn(policy) => &policy.constraint,
+            PolicyIr::Pgn { constraint, .. } => constraint,
         }
     }
 
     pub fn resolution(&self) -> Resolution {
         match self {
-            PolicyIr::Dfc { on_fail, .. } => *on_fail,
-            PolicyIr::NativePgn(policy) => policy.on_fail,
+            PolicyIr::Pgn { on_fail, .. } => *on_fail,
         }
     }
 
     pub fn name(&self) -> &'static str {
+        "pgn"
+    }
+
+    pub fn source_aliases(&self) -> &HashMap<String, String> {
         match self {
-            PolicyIr::Dfc { .. } => "dfc",
-            PolicyIr::NativePgn(_) => "pgn",
+            PolicyIr::Pgn { source_aliases, .. } => source_aliases,
         }
     }
 }
@@ -140,6 +111,16 @@ pub fn normalize_policy_sources(sources: &[String]) -> Result<Vec<String>, Polic
         return Ok(Vec::new());
     }
     Ok(parse_sources(&sources.join(", "))?.sources)
+}
+
+/// Extract source alias → base table mappings from a policy source list.
+pub fn normalize_policy_source_aliases(
+    sources: &[String],
+) -> Result<HashMap<String, String>, PolicyParseError> {
+    if sources.is_empty() {
+        return Ok(HashMap::new());
+    }
+    Ok(parse_sources(&sources.join(", "))?.aliases)
 }
 
 /// Normalize a policy dimension list (trim, reject empty/duplicate names).
@@ -161,20 +142,12 @@ pub fn normalize_policy_dimensions(dimensions: &[String]) -> Result<Vec<String>,
 }
 
 pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
-    let mut normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return Err(PolicyParseError::Empty);
     }
 
-    if strip_keyword_prefix(&mut normalized, "PGN") {
-        return parse_pgn_policy(&normalized);
-    }
-
-    if strip_keyword_prefix(&mut normalized, "AGGREGATE") {
-        return Err(PolicyParseError::InvalidSyntax(
-            "aggregate policies are not supported; use Policy with REMOVE or KILL".into(),
-        ));
-    }
+    reject_legacy_policy_keywords(&normalized)?;
 
     let sources = clause_value(
         &normalized,
@@ -201,7 +174,7 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
     .map(|value| parse_dimensions(&value))
     .transpose()?
     .unwrap_or_default();
-    let mut constraint = clause_value(&normalized, &["CONSTRAINT"], &["ON FAIL", "DESCRIPTION"])
+    let constraint = clause_value(&normalized, &["CONSTRAINT"], &["ON FAIL", "DESCRIPTION"])
         .and_then(blank_to_none)
         .ok_or(PolicyParseError::MissingClause("CONSTRAINT"))?;
     let resolution = clause_value(&normalized, &["ON FAIL"], &["DESCRIPTION"])
@@ -210,131 +183,46 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
     let description = clause_value(&normalized, &["DESCRIPTION"], &[]).and_then(blank_to_none);
 
     let parsed_sources = parse_sources(&sources)?;
-    constraint = rewrite_constraint_source_aliases(&constraint, &parsed_sources.aliases);
-    let dimensions: Vec<String> = dimensions
-        .into_iter()
-        .map(|dimension| rewrite_constraint_source_aliases(&dimension, &parsed_sources.aliases))
-        .collect();
     validate_sql_expression(&constraint, "constraint")?;
     for dimension in &dimensions {
         validate_sql_expression(dimension.as_str(), "dimension")?;
     }
-    Ok(PolicyIr::Dfc {
+    Ok(PolicyIr::Pgn {
         sources: parsed_sources.sources,
         required_sources: parsed_sources.required_sources,
         dimensions,
         sink,
         sink_alias,
+        source_aliases: parsed_sources.aliases,
         constraint,
         on_fail: Resolution::parse(&resolution)?,
         description,
     })
 }
 
-fn parse_pgn_policy(normalized: &str) -> Result<PolicyIr, PolicyParseError> {
-    let mut remainder = normalized.to_string();
-    let kind = if strip_keyword_prefix(&mut remainder, "OVER") {
-        PgnPolicyKind::Over
-    } else if strip_keyword_prefix(&mut remainder, "UPDATE") {
-        PgnPolicyKind::Update
-    } else {
-        return Err(PolicyParseError::MissingClause("OVER or UPDATE"));
-    };
-    let sources = clause_value(
-        &remainder,
-        &["SOURCE", "SOURCES"],
-        &[
-            "SINK",
-            "DIMENSION",
-            "AGGREGATE",
-            "CONSTRAINT",
-            "ON FAIL",
-            "DESCRIPTION",
-        ],
-    )
-    .unwrap_or_default();
-    let raw_sink = clause_value(
-        &remainder,
-        &["SINK"],
-        &[
-            "DIMENSION",
-            "AGGREGATE",
-            "CONSTRAINT",
-            "ON FAIL",
-            "DESCRIPTION",
-        ],
-    )
-    .and_then(blank_to_none);
-    let (sink, sink_alias) = raw_sink
-        .as_deref()
-        .map(parse_name_alias)
-        .transpose()?
-        .unwrap_or((None, None));
-    let dimensions = clause_value(
-        &remainder,
-        &["DIMENSION", "DIMENSIONS"],
-        &["AGGREGATE", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
-    )
-    .map(|value| parse_dimensions(&value))
-    .transpose()?
-    .unwrap_or_default();
-    let aggregations = clause_value(
-        &remainder,
-        &["AGGREGATE"],
-        &["CONSTRAINT", "ON FAIL", "DESCRIPTION"],
-    )
-    .and_then(blank_to_none)
-    .ok_or(PolicyParseError::MissingClause("AGGREGATE"))?;
-    let mut constraint = clause_value(&remainder, &["CONSTRAINT"], &["ON FAIL", "DESCRIPTION"])
-        .and_then(blank_to_none)
-        .ok_or(PolicyParseError::MissingClause("CONSTRAINT"))?;
-    let resolution = clause_value(&remainder, &["ON FAIL"], &["DESCRIPTION"])
-        .and_then(blank_to_none)
-        .ok_or(PolicyParseError::MissingClause("ON FAIL"))?;
-    let description = clause_value(&remainder, &["DESCRIPTION"], &[]).and_then(blank_to_none);
-
-    let parsed_sources = parse_sources(&sources)?;
-    constraint = rewrite_constraint_source_aliases(&constraint, &parsed_sources.aliases);
-    let dimensions: Vec<String> = dimensions
-        .into_iter()
-        .map(|dimension| rewrite_constraint_source_aliases(&dimension, &parsed_sources.aliases))
-        .collect();
-    validate_sql_expression(&constraint, "constraint")?;
-    for dimension in &dimensions {
-        validate_sql_expression(dimension.as_str(), "dimension")?;
+fn reject_legacy_policy_keywords(normalized: &str) -> Result<(), PolicyParseError> {
+    let upper = normalized.to_ascii_uppercase();
+    if upper.starts_with("PGN ") || upper == "PGN" {
+        return Err(PolicyParseError::InvalidSyntax(
+            "the PGN keyword prefix was removed; policies begin with SOURCE, SINK, or CONSTRAINT clauses".into(),
+        ));
     }
-    for aggregation in aggregations.split(',') {
-        validate_sql_expression(aggregation.trim(), "aggregate")?;
+    if upper.starts_with("AGGREGATE ") || upper == "AGGREGATE" {
+        return Err(PolicyParseError::InvalidSyntax(
+            "the AGGREGATE clause was removed; put aggregate expressions in CONSTRAINT".into(),
+        ));
     }
-
-    Ok(PolicyIr::NativePgn(PgnPolicy {
-        kind,
-        scope: PolicyScope {
-            sources: parsed_sources.sources,
-            sink,
-            sink_alias,
-            dimensions,
-        },
-        aggregations: aggregations
-            .split(',')
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .collect(),
-        constraint,
-        on_fail: Resolution::parse(&resolution)?,
-        description,
-        source_text: None,
-    }))
-}
-
-fn strip_keyword_prefix(text: &mut String, keyword: &str) -> bool {
-    let prefix = format!("{keyword} ");
-    if text.to_ascii_uppercase().starts_with(&prefix) {
-        *text = text[prefix.len()..].trim().to_string();
-        true
-    } else {
-        false
+    if upper.starts_with("OVER ") || upper == "OVER" {
+        return Err(PolicyParseError::InvalidSyntax(
+            "the OVER keyword was removed; applicability is determined by SOURCE and SINK".into(),
+        ));
     }
+    if upper.starts_with("UPDATE ") || upper == "UPDATE" {
+        return Err(PolicyParseError::InvalidSyntax(
+            "the UPDATE keyword was removed; applicability is determined by SOURCE and SINK".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn clause_value(text: &str, starts: &[&str], ends: &[&str]) -> Option<String> {
@@ -478,56 +366,6 @@ fn parse_name_alias(value: &str) -> Result<(Option<String>, Option<String>), Pol
     }
 }
 
-fn rewrite_constraint_source_aliases(
-    constraint: &str,
-    aliases: &HashMap<String, String>,
-) -> String {
-    if aliases.is_empty() {
-        return constraint.to_string();
-    }
-    let mut rewritten = String::with_capacity(constraint.len());
-    let chars = constraint.chars().collect::<Vec<_>>();
-    let mut index = 0;
-    let mut in_string = false;
-    while index < chars.len() {
-        let current = chars[index];
-        if current == '\'' {
-            in_string = !in_string;
-            rewritten.push(current);
-            index += 1;
-            continue;
-        }
-        if !in_string && is_identifier_start(current) {
-            let start = index;
-            index += 1;
-            while index < chars.len() && is_identifier_continue(chars[index]) {
-                index += 1;
-            }
-            let ident = chars[start..index].iter().collect::<String>();
-            if index < chars.len()
-                && chars[index] == '.'
-                && let Some(source) = aliases.get(&ident.to_ascii_lowercase())
-            {
-                rewritten.push_str(source);
-            } else {
-                rewritten.push_str(&ident);
-            }
-            continue;
-        }
-        rewritten.push(current);
-        index += 1;
-    }
-    rewritten
-}
-
-fn is_identifier_start(value: char) -> bool {
-    value == '_' || value.is_ascii_alphabetic()
-}
-
-fn is_identifier_continue(value: char) -> bool {
-    value == '_' || value.is_ascii_alphanumeric()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +413,22 @@ mod tests {
         ])
         .unwrap_err();
         assert!(err.to_string().contains("Duplicate dimension"));
+    }
+
+    #[test]
+    fn parse_rejects_legacy_pgn_prefix() {
+        let err = parse_policy_text(
+            "PGN OVER SOURCE foo SINK reports AGGREGATE sum(foo.amount) CONSTRAINT sum(foo.amount) <= 1000 ON FAIL REMOVE",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("PGN keyword prefix was removed"));
+    }
+
+    #[test]
+    fn parse_rejects_legacy_aggregate_prefix() {
+        let err =
+            parse_policy_text("AGGREGATE SOURCE foo CONSTRAINT max(foo.id) > 1 ON FAIL REMOVE")
+                .unwrap_err();
+        assert!(err.to_string().contains("AGGREGATE clause was removed"));
     }
 }

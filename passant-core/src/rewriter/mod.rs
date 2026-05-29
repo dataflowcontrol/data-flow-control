@@ -117,10 +117,7 @@ impl PassantRewriter {
     }
 
     pub fn register_policy_text(&mut self, text: &str) -> Result<(), RewriteError> {
-        let mut policy = parse_policy_text(text)?;
-        if let PolicyIr::NativePgn(ref mut pgn) = policy {
-            pgn.source_text = Some(text.to_string());
-        }
+        let policy = parse_policy_text(text)?;
         self.register_validated_policy(policy)
     }
 
@@ -178,26 +175,8 @@ impl PassantRewriter {
         self.store.policies_vec()
     }
 
-    pub fn dfc_policies(&self) -> Vec<PolicyIr> {
-        self.store
-            .dfc_policy_indices()
-            .into_iter()
-            .filter_map(|index| self.store.policy(index).cloned())
-            .collect()
-    }
-
-    pub fn pgn_policies(&self) -> Vec<PolicyIr> {
-        self.store
-            .pgn_policy_indices()
-            .into_iter()
-            .filter_map(|index| self.store.policy(index).cloned())
-            .collect()
-    }
-
-    pub fn has_dfc_policies(&self) -> bool {
-        self.store
-            .iter_active()
-            .any(|(_, policy)| matches!(policy, PolicyIr::Dfc { .. }))
+    pub fn has_policies(&self) -> bool {
+        !self.store.policy_indices().is_empty()
     }
 
     pub fn has_registered_policies(&self) -> bool {

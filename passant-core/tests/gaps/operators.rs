@@ -1,4 +1,4 @@
-use crate::common::dfc_policy;
+use crate::common::pgn_policy;
 use crate::duckdb::TestDb;
 
 fn setup_foo_table(db: &mut TestDb) {
@@ -10,7 +10,7 @@ fn setup_foo_table(db: &mut TestDb) {
 fn remove_drops_rows_with_lt_constraint() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "min(foo.id) < 3"));
+    db.register_policy(pgn_policy(&["foo"], "min(foo.id) < 3"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -22,7 +22,7 @@ fn remove_drops_rows_with_lt_constraint() {
 fn remove_drops_rows_with_equality_constraint() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) = 2"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) = 2"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -34,7 +34,7 @@ fn remove_drops_rows_with_equality_constraint() {
 fn remove_drops_rows_with_ne_constraint() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) != 2"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) != 2"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -46,7 +46,7 @@ fn remove_drops_rows_with_ne_constraint() {
 fn remove_drops_rows_with_or_constraint() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) = 1 OR max(foo.id) = 3"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) = 1 OR max(foo.id) = 3"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -58,7 +58,7 @@ fn remove_drops_rows_with_or_constraint() {
 fn remove_drops_rows_with_and_constraint() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) > 1 AND min(foo.id) < 3"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) > 1 AND min(foo.id) < 3"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -70,7 +70,7 @@ fn remove_drops_rows_with_and_constraint() {
 fn remove_drops_all_rows_when_all_fail() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) > 10"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) > 10"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -82,7 +82,7 @@ fn remove_drops_all_rows_when_all_fail() {
 fn remove_keeps_all_rows_when_all_pass() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) >= 1"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) >= 1"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -94,7 +94,7 @@ fn remove_keeps_all_rows_when_all_pass() {
 fn remove_drops_rows_with_count_if() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "COUNT_IF(foo.id > 2) > 0"));
+    db.register_policy(pgn_policy(&["foo"], "COUNT_IF(foo.id > 2) > 0"));
 
     assert_eq!(
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
@@ -106,7 +106,7 @@ fn remove_drops_rows_with_count_if() {
 fn remove_drops_rows_with_string_comparison() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.name) != 'Alice'"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.name) != 'Alice'"));
 
     assert_eq!(
         db.rewrite_and_fetch_strings("SELECT name FROM foo ORDER BY name"),
@@ -119,7 +119,7 @@ fn remove_drops_violating_aggregation_groups() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE foo (category VARCHAR, amount INTEGER)");
     db.exec("INSERT INTO foo VALUES ('a', 1), ('a', 5), ('b', 10)");
-    db.register_policy(dfc_policy(&["foo"], "max(foo.amount) > 6"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.amount) > 6"));
 
     let rewritten = db
         .rewrite(
@@ -138,7 +138,7 @@ fn remove_drops_violating_aggregation_groups() {
 fn remove_drops_scalar_aggregation_when_constraint_fails() {
     let mut db = TestDb::new();
     setup_foo_table(&mut db);
-    db.register_policy(dfc_policy(&["foo"], "max(foo.id) > 10"));
+    db.register_policy(pgn_policy(&["foo"], "max(foo.id) > 10"));
 
     let rewritten = db
         .rewrite("SELECT MAX(id) FROM foo")

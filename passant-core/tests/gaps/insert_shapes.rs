@@ -1,11 +1,11 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution, TableCatalog};
 
-use crate::common::{assert_rewrite, dfc_policy, rewrite_with_catalog};
+use crate::common::{assert_rewrite, pgn_policy, rewrite_with_catalog};
 
 #[test]
 fn insert_values_statement_is_not_rewritten() {
     let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(dfc_policy(&["foo"], "max(foo.id) > 1"));
+    rewriter.register_policy(pgn_policy(&["foo"], "max(foo.id) > 1"));
     let sql = rewriter
         .rewrite("INSERT INTO foo VALUES (1), (2)")
         .expect("INSERT VALUES should pass through");
@@ -22,12 +22,13 @@ fn reports_catalog() -> TableCatalog {
 fn sink_only_remove_policy_on_insert_select() {
     let sql = rewrite_with_catalog(
         "INSERT INTO reports SELECT id, status FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec![],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "reports.status = 'approved'".to_string(),
             on_fail: Resolution::Remove,
             description: None,
@@ -44,12 +45,13 @@ fn sink_only_remove_policy_on_insert_select() {
 fn sink_only_kill_policy_on_insert_select() {
     let sql = rewrite_with_catalog(
         "INSERT INTO reports SELECT id, status FROM foo",
-        &[PolicyIr::Dfc {
+        &[PolicyIr::Pgn {
             sources: vec![],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: "reports.status = 'approved'".to_string(),
             on_fail: Resolution::Kill,
             description: None,
@@ -66,7 +68,7 @@ fn sink_only_kill_policy_on_insert_select() {
 fn insert_with_cte_and_subquery_recurses_into_source() {
     assert_rewrite(
         "WITH src AS (SELECT id FROM foo) INSERT INTO bar SELECT id FROM src",
-        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "WITH src AS (SELECT id FROM foo WHERE foo.id > 1) INSERT INTO bar SELECT id FROM src",
     );
 }
@@ -76,7 +78,7 @@ fn nested_cte_recurses_policy_into_inner_cte() {
     let sql = rewrite_with_catalog(
         "WITH outer_cte AS (WITH inner_cte AS (SELECT id FROM foo) SELECT id FROM inner_cte) \
 SELECT id FROM outer_cte",
-        &[dfc_policy(&["foo"], "max(foo.id) > 1")],
+        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         TableCatalog::new(),
     );
     assert!(
@@ -91,8 +93,8 @@ fn multiple_ctes_with_join_recurses_into_both_branches() {
         "WITH a AS (SELECT id FROM foo), b AS (SELECT x FROM baz) \
 SELECT a.id, b.x FROM a JOIN b ON a.id = b.x",
         &[
-            dfc_policy(&["foo"], "max(foo.id) > 1"),
-            dfc_policy(&["baz"], "max(baz.x) > 5"),
+            pgn_policy(&["foo"], "max(foo.id) > 1"),
+            pgn_policy(&["baz"], "max(baz.x) > 5"),
         ],
         TableCatalog::new(),
     );

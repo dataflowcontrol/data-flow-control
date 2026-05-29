@@ -4,6 +4,85 @@ use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Iden
 
 use crate::identifiers::{AliasByBase, ColumnName, QualifiedColumn, TableName};
 
+pub(crate) fn replace_source_alias_qualifiers(
+    expr: Expr,
+    source_aliases: &HashMap<String, String>,
+) -> Expr {
+    if source_aliases.is_empty() {
+        return expr;
+    }
+    match expr {
+        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+            if let Some(column) = QualifiedColumn::from_compound_identifier(&parts) {
+                let alias_key = column.table.as_str().to_ascii_lowercase();
+                if let Some(base) = source_aliases.get(&alias_key) {
+                    let mut new_parts = vec![Ident::new(base)];
+                    new_parts.extend_from_slice(&parts[1..]);
+                    return Expr::CompoundIdentifier(new_parts);
+                }
+            }
+            Expr::CompoundIdentifier(parts)
+        }
+        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+            left: Box::new(replace_source_alias_qualifiers(*left, source_aliases)),
+            op,
+            right: Box::new(replace_source_alias_qualifiers(*right, source_aliases)),
+        },
+        Expr::Nested(expr) => Expr::Nested(Box::new(replace_source_alias_qualifiers(
+            *expr,
+            source_aliases,
+        ))),
+        Expr::UnaryOp { op, expr } => Expr::UnaryOp {
+            op,
+            expr: Box::new(replace_source_alias_qualifiers(*expr, source_aliases)),
+        },
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => Expr::Case {
+            operand: operand
+                .map(|expr| Box::new(replace_source_alias_qualifiers(*expr, source_aliases))),
+            conditions: conditions
+                .into_iter()
+                .map(|expr| replace_source_alias_qualifiers(expr, source_aliases))
+                .collect(),
+            results: results
+                .into_iter()
+                .map(|expr| replace_source_alias_qualifiers(expr, source_aliases))
+                .collect(),
+            else_result: else_result
+                .map(|expr| Box::new(replace_source_alias_qualifiers(*expr, source_aliases))),
+        },
+        Expr::Function(mut function) => {
+            replace_source_alias_qualifiers_in_function(&mut function, source_aliases);
+            Expr::Function(function)
+        }
+        other => other,
+    }
+}
+
+pub(crate) fn apply_policy_sink_column_replacements(
+    expr: Expr,
+    sink: &str,
+    sink_alias: &Option<String>,
+    sources: &[String],
+    sink_expr_by_column: &HashMap<String, Expr>,
+) -> Expr {
+    let sink_overlaps_source = sources
+        .iter()
+        .any(|source| source.eq_ignore_ascii_case(sink));
+    let mut expr = replace_sink_columns(expr, "_OUTPUT_", sink_expr_by_column);
+    if let Some(sink_alias) = sink_alias {
+        expr = replace_sink_columns(expr, sink_alias, sink_expr_by_column);
+    }
+    if !(sink_overlaps_source && sink_alias.is_some()) {
+        expr = replace_sink_columns(expr, sink, sink_expr_by_column);
+    }
+    expr
+}
+
 pub(crate) fn replace_sink_columns(
     expr: Expr,
     sink: &str,
@@ -188,6 +267,34 @@ fn replace_identifiers_in_function(
     }
     if let Some(filter) = &mut function.filter {
         replace_identifiers(filter, replacements);
+    }
+}
+
+fn replace_source_alias_qualifiers_in_function(
+    function: &mut sqlparser::ast::Function,
+    source_aliases: &HashMap<String, String>,
+) {
+    let FunctionArguments::List(args) = &mut function.args else {
+        return;
+    };
+    for arg in &mut args.args {
+        match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+            | FunctionArg::Named {
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            }
+            | FunctionArg::ExprNamed {
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            } => {
+                *expr = replace_source_alias_qualifiers(expr.clone(), source_aliases);
+            }
+            _ => {}
+        }
+    }
+    if let Some(filter) = &mut function.filter {
+        **filter = replace_source_alias_qualifiers((**filter).clone(), source_aliases);
     }
 }
 

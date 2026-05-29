@@ -1,7 +1,7 @@
-use crate::common::{assert_rewrite, dfc_policy, rewrite};
+use crate::common::{assert_rewrite, pgn_policy, rewrite};
 
 fn multi_source_policy() -> passant_core::PolicyIr {
-    dfc_policy(&["foo", "baz"], "max(foo.id) >= 2 AND max(baz.x) <= 20")
+    pgn_policy(&["foo", "baz"], "max(foo.id) >= 2 AND max(baz.x) <= 20")
 }
 
 #[test]

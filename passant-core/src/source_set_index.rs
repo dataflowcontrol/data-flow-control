@@ -152,12 +152,13 @@ mod tests {
     use crate::policy::{PolicyIr, Resolution};
 
     fn dfc_multi(constraint: &str) -> PolicyIr {
-        PolicyIr::Dfc {
+        PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
             dimensions: Vec::new(),
             sink: None,
             sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
             constraint: constraint.to_string(),
             on_fail: Resolution::Remove,
             description: None,

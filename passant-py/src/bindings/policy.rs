@@ -1,52 +1,11 @@
 use passant_core::{
-    Resolution, normalize_policy_dimensions, normalize_policy_sources, parse_policy_text,
-    validate_constraint_expression,
+    Resolution, normalize_policy_dimensions, normalize_policy_source_aliases,
+    normalize_policy_sources, parse_policy_text, validate_constraint_expression,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use super::errors::{map_policy_parse_error, map_rewrite_error};
-
-#[pyclass(module = "passant._passant")]
-#[derive(Clone)]
-pub struct PyDfcPolicy {
-    #[pyo3(get)]
-    pub sources: Vec<String>,
-    #[pyo3(get)]
-    pub sink: Option<String>,
-    #[pyo3(get)]
-    pub sink_alias: Option<String>,
-    #[pyo3(get)]
-    pub constraint: String,
-    #[pyo3(get)]
-    pub on_fail: String,
-    #[pyo3(get)]
-    pub description: Option<String>,
-}
-
-#[pymethods]
-impl PyDfcPolicy {
-    #[new]
-    #[pyo3(signature = (constraint, sources, on_fail="REMOVE".to_string(), sink=None, sink_alias=None, description=None))]
-    fn new(
-        constraint: String,
-        sources: Vec<String>,
-        on_fail: String,
-        sink: Option<String>,
-        sink_alias: Option<String>,
-        description: Option<String>,
-    ) -> PyResult<Self> {
-        let _ = parse_resolution(&on_fail)?;
-        Ok(Self {
-            sources,
-            sink,
-            sink_alias,
-            constraint,
-            on_fail,
-            description,
-        })
-    }
-}
 
 #[pyfunction]
 pub fn parse_policy_to_json(policy_text: String) -> PyResult<String> {
@@ -63,6 +22,13 @@ pub fn validate_constraint_expression_py(sql: String, label: String) -> PyResult
 #[pyfunction]
 pub fn normalize_policy_sources_py(sources: Vec<String>) -> PyResult<Vec<String>> {
     normalize_policy_sources(&sources).map_err(map_policy_parse_error)
+}
+
+#[pyfunction]
+pub fn normalize_policy_source_aliases_py(
+    sources: Vec<String>,
+) -> PyResult<std::collections::HashMap<String, String>> {
+    normalize_policy_source_aliases(&sources).map_err(map_policy_parse_error)
 }
 
 #[pyfunction]
