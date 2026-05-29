@@ -8,7 +8,9 @@ fn cross_source_policy() -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -43,7 +45,9 @@ fn union_all_cross_source_policy_with_source_sets() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string(), "bar".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -92,7 +96,9 @@ fn insert_sink_write_applies_per_tuple_source_sets() {
         &[PolicyIr::Pgn {
             sources: vec!["bar".to_string(), "foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),

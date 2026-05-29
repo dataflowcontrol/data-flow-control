@@ -30,5 +30,7 @@ def build_catalog_snapshot(
         }
         if "nullable" in info:
             entry["nullable"] = info["nullable"]
+        if "row_count" in info:
+            entry["row_count"] = info["row_count"]
         snapshot["tables"][table_name] = entry
     return snapshot

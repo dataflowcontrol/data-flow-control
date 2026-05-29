@@ -17,7 +17,9 @@ fn explain_selects_full_push_for_distributive_scan() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -36,7 +38,9 @@ fn explain_selects_partial_push_for_non_distributive_policy() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -55,7 +59,9 @@ fn explain_selects_full_push_for_non_monotonic_set_operation() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -73,7 +79,9 @@ fn explain_includes_strategy_reasons_for_distributive_scan() {
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -100,7 +108,9 @@ fn explain_partial_push_includes_non_distributive_reason() {
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -122,12 +132,14 @@ fn explain_partial_push_includes_non_distributive_reason() {
 }
 
 #[test]
-fn explain_records_rewrite_error_for_delete_with_policies() {
+fn explain_passthrough_delete_with_policies() {
     let ir = parse_query_to_ir("DELETE FROM foo WHERE id = 1").expect("parse");
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -136,9 +148,10 @@ fn explain_records_rewrite_error_for_delete_with_policies() {
         description: None,
     }];
     let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
+    assert!(explanation.chosen.rewrite_error.is_none());
     assert_eq!(
-        explanation.chosen.rewrite_error.as_deref(),
-        Some("unsupported query form: delete with registered policies")
+        explanation.chosen.rewritten_sql.as_str(),
+        "DELETE FROM foo WHERE id = 1"
     );
 }
 
@@ -149,7 +162,9 @@ fn explain_records_source_set_scope_for_outer_join() {
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

@@ -8,7 +8,9 @@ fn subquery_missing_policy_column_is_propagated_to_select_list() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -32,7 +34,9 @@ fn multi_source_subquery_join_propagates_both_policy_columns() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "baz".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -58,7 +62,9 @@ fn cte_missing_policy_column_is_propagated_to_select_list() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

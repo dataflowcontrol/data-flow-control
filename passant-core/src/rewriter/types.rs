@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::Expr;
 
@@ -63,6 +63,7 @@ impl PassantRewriter {
 pub(crate) struct RewriteContext {
     pub(crate) sink: Option<String>,
     pub(crate) sink_expr_by_column: HashMap<String, Expr>,
+    pub(crate) ambiguous_output_columns: HashSet<String>,
     pub(crate) allow_partial_source_visibility: bool,
     pub(crate) collect_stats: bool,
 }

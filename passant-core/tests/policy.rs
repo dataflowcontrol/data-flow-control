@@ -66,13 +66,17 @@ fn parse_pgn_rejects_udf_resolution() {
 #[test]
 fn parse_pgn_dimension_policy_text() {
     let policy = parse_policy_text(
-        "SOURCE foo AS f SINK reports DIMENSION f.region, reports.department CONSTRAINT max(f.id) > 1 ON FAIL REMOVE",
+        "SOURCE foo AS f SINK reports DIMENSION catalog_users U, catalog_roles R CONSTRAINT max(f.id) > 1 ON FAIL REMOVE",
     )
     .expect("policy should parse");
 
     assert_eq!(
-        policy.dimensions(),
-        &["f.region".to_string(), "reports.department".to_string()]
+        policy.dimension_tables(),
+        &["catalog_users".to_string(), "catalog_roles".to_string()]
+    );
+    assert_eq!(
+        policy.dimension_aliases().get("u").map(String::as_str),
+        Some("catalog_users")
     );
     assert_eq!(policy.constraint(), "max(f.id) > 1");
 }

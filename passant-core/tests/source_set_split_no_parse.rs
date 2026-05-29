@@ -4,7 +4,9 @@ fn cross_source_policy(left: &str, right: &str, constraint: &str) -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec![left.to_string(), right.to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -26,7 +28,9 @@ fn union_all_split_rewrite_uses_compiled_constraints_without_reparsing() {
         rewriter.register_policy(PolicyIr::Pgn {
             sources: vec![format!("other_{index:05}")],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),

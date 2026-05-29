@@ -88,6 +88,8 @@ pub struct PyStatementRewriteSummary {
     pub applicable_policies: usize,
     #[pyo3(get)]
     pub dominated_policies: usize,
+    #[pyo3(get)]
+    pub warnings: Vec<String>,
 }
 
 impl From<StatementRewriteSummary> for PyStatementRewriteSummary {
@@ -98,6 +100,7 @@ impl From<StatementRewriteSummary> for PyStatementRewriteSummary {
             candidate_policies: aggregate.candidate_policies,
             applicable_policies: aggregate.applicable_policies,
             dominated_policies: aggregate.dominated_policies,
+            warnings: aggregate.warnings,
         }
     }
 }

@@ -47,13 +47,46 @@ class Connection:
     def refresh_catalog(self) -> None:
         self.planner.sync_catalog(self.adapter.introspect_catalog())
 
+    def register_resolution_function(
+        self,
+        name: str,
+        func: Any,
+        parameter_types: list[Any],
+        return_type: Any,
+    ) -> None:
+        if not self.adapter.capabilities.tuple_udf:
+            raise ValueError(
+                f"Tuple UDF resolution is not supported for dialect {self.adapter.dialect!r}"
+            )
+        self.adapter.register_resolution_function(name, func, parameter_types, return_type)
+
+    def register_relation_resolution_function(self, name: str, func: Any) -> None:
+        if not self.adapter.capabilities.relation_udf:
+            raise ValueError(
+                f"Relation UDF resolution is not supported for dialect {self.adapter.dialect!r}"
+            )
+        self.adapter.register_relation_resolution_function(name, func)
+
     def register_policy(self, policy: Policy) -> None:
-        if isinstance(policy, Policy) and policy.on_fail == Resolution.KILL:
-            if not self.adapter.capabilities.exception_udf:
-                raise ValueError(
-                    f"Resolution {policy.on_fail.value} is not supported for dialect "
-                    f"{self.adapter.dialect!r}: missing capability exception_udf"
-                )
+        if isinstance(policy, Policy):
+            if policy.on_fail == Resolution.KILL:
+                if not self.adapter.capabilities.exception_udf:
+                    raise ValueError(
+                        f"Resolution {policy.on_fail.value} is not supported for dialect "
+                        f"{self.adapter.dialect!r}: missing capability exception_udf"
+                    )
+            elif policy.on_fail == Resolution.UDF:
+                if not self.adapter.capabilities.tuple_udf:
+                    raise ValueError(
+                        f"Resolution {policy.on_fail_label} is not supported for dialect "
+                        f"{self.adapter.dialect!r}: missing capability tuple_udf"
+                    )
+            elif policy.on_fail == Resolution.RELATION_UDF:
+                if not self.adapter.capabilities.relation_udf:
+                    raise ValueError(
+                        f"Resolution {policy.on_fail_label} is not supported for dialect "
+                        f"{self.adapter.dialect!r}: missing capability relation_udf"
+                    )
         self.refresh_catalog()
         self.planner.register_policy(policy)
 

@@ -1,14 +1,9 @@
-use crate::sql::{
-    binary_comparison, case_when, or_kill, parse_projection_expr, qualified_column,
-    wrap_table_with_filter,
-};
+use crate::sql::{parse_projection_expr, wrap_table_with_filter};
 use sqlparser::ast::{
-    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Select,
-    SelectItem, TableFactor,
+    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, TableFactor,
 };
 
 use crate::diagnostics::RewriteError;
-use crate::policy::Resolution;
 
 pub(crate) fn expr_contains_aggregate(expr: &Expr) -> bool {
     match expr {
@@ -104,25 +99,8 @@ pub(crate) fn projected_column_name(expr: &Expr) -> Option<String> {
     }
 }
 
-pub(crate) fn apply_resolution(
-    select: &mut Select,
-    expr: Expr,
-    resolution: Resolution,
-    _description: Option<&str>,
-    is_aggregation: bool,
-) -> Result<(), RewriteError> {
-    match resolution {
-        Resolution::Remove => add_filter(select, expr, is_aggregation),
-        Resolution::Kill => add_filter(
-            select,
-            kill_expr_for_select(expr, select, is_aggregation)?,
-            is_aggregation,
-        ),
-    }
-}
-
 pub(crate) fn add_filter(
-    select: &mut Select,
+    select: &mut sqlparser::ast::Select,
     expr: Expr,
     is_aggregation: bool,
 ) -> Result<(), RewriteError> {
@@ -144,60 +122,6 @@ pub(crate) fn and_expr(left: Expr, right: Expr) -> Expr {
         op: BinaryOperator::And,
         right: Box::new(right),
     }
-}
-
-pub(crate) fn kill_expr(expr: Expr) -> Result<Expr, RewriteError> {
-    Ok(or_kill(expr))
-}
-
-fn kill_expr_for_select(
-    expr: Expr,
-    select: &Select,
-    is_aggregation: bool,
-) -> Result<Expr, RewriteError> {
-    if !is_aggregation {
-        return kill_expr(expr);
-    }
-    let tautology = aggregation_kill_tautology(select)?;
-    Ok(case_when(expr, or_kill(tautology), bool_literal(true)))
-}
-
-fn aggregation_kill_tautology(select: &Select) -> Result<Expr, RewriteError> {
-    let source_prefix = select
-        .from
-        .first()
-        .and_then(|table| table_factor_base_and_alias(&table.relation))
-        .map(|(base, _)| base);
-    if let GroupByExpr::Expressions(exprs, _) = &select.group_by
-        && let Some(group_expr) = exprs.first()
-    {
-        let tautology = qualify_kill_tautology_expr(group_expr, source_prefix.as_deref());
-        return Ok(binary_comparison(
-            tautology.clone(),
-            BinaryOperator::Eq,
-            tautology,
-        ));
-    }
-    for item in &select.projection {
-        if let SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } = item
-            && !expr_contains_aggregate(expr)
-        {
-            let tautology = qualify_kill_tautology_expr(expr, source_prefix.as_deref());
-            return Ok(binary_comparison(
-                tautology.clone(),
-                BinaryOperator::Eq,
-                tautology,
-            ));
-        }
-    }
-    Ok(bool_literal(true))
-}
-
-fn qualify_kill_tautology_expr(expr: &Expr, source_prefix: Option<&str>) -> Expr {
-    if let (Some(prefix), Expr::Identifier(ident)) = (source_prefix, expr) {
-        return qualified_column(prefix, &ident.value);
-    }
-    expr.clone()
 }
 
 pub(crate) fn parse_expr(sql: &str) -> Result<Expr, RewriteError> {

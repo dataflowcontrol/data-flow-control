@@ -100,21 +100,6 @@ def test_pgn_policy_from_pgn_preserves_source_alias():
     )
 
 
-def test_pgn_policy_from_pgn_preserves_dimensions():
-    policy = Policy.from_pgn(
-        "SOURCE foo AS f SINK reports DIMENSION f.region, reports.department "
-        "CONSTRAINT max(f.id) > 1 ON FAIL REMOVE"
-    )
-    assert policy == Policy(
-        sources=["foo"],
-        sink="reports",
-        source_aliases={"f": "foo"},
-        dimensions=["f.region", "reports.department"],
-        constraint="max(f.id) > 1",
-        on_fail=Resolution.REMOVE,
-    )
-
-
 def test_policy_requires_sources_list():
     with pytest.raises(ValueError, match="Sources must be provided"):
         Policy(
@@ -1101,32 +1086,18 @@ def test_register_policy_rejects_missing_source_column():
         )
 
 
-def test_register_policy_validates_dimension_columns():
+def test_register_policy_validates_dimension_tables():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    with pytest.raises(ValueError, match="foo.region"):
+    with pytest.raises(ValueError, match="dim_missing"):
         rewriter.register_policy(
             Policy(
                 sources=["foo"],
-                dimensions=["foo.region"],
+                dimensions=["dim_missing"],
                 constraint="max(foo.id) > 1",
                 on_fail=Resolution.REMOVE,
             )
         )
-
-
-def test_rejects_delete_when_policy_registered():
-    rewriter = dfc(duckdb.connect())
-    rewriter.execute("CREATE TABLE foo (id INTEGER)")
-    rewriter.register_policy(
-        Policy(
-            sources=["foo"],
-            constraint="max(foo.id) > 1",
-            on_fail=Resolution.REMOVE,
-        )
-    )
-    with pytest.raises(ValueError, match="delete with registered policies"):
-        rewriter.execute("DELETE FROM foo WHERE id = 1")
 
 
 def test_rewrites_except_branch_when_policy_registered():

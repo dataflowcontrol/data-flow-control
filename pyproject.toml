@@ -43,12 +43,13 @@ features = ["extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
-pythonpath = ["python"]
+pythonpath = ["python", "python/tests"]
 markers = [
     "completion: tests that must pass before Passant is feature-complete",
     "postgres: requires psycopg and Passant docker postgres service",
     "clickhouse: requires clickhouse-connect and Passant docker clickhouse service",
     "umbra: requires psycopg and Passant docker umbra service",
+    "flock: optional Flock DuckDB extension tests (see passant/scripts/setup_flock.sh)",
 ]
 
 [tool.ruff]

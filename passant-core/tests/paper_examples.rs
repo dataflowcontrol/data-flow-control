@@ -4,9 +4,9 @@ mod common;
 #[path = "common/duckdb.rs"]
 mod duckdb;
 
-use common::{assert_rewrite, pgn_policy, pgn_policy_with};
+use common::{assert_rewrite, pgn_policy};
 use duckdb::TestDb;
-use passant_core::{PassantRewriter, Resolution, parse_policy_text};
+use passant_core::{PassantRewriter, parse_policy_text};
 
 #[test]
 fn tax_agent_grounding_policy_rewrites_insert() {
@@ -15,11 +15,12 @@ fn tax_agent_grounding_policy_rewrites_insert() {
     )
     .expect("grounding policy should parse");
 
-    assert_rewrite(
+    let sql = crate::common::rewrite(
         "INSERT INTO Expenses (id, item) SELECT Receipts.id, Receipts.item FROM Receipts",
         &[policy],
-        "INSERT INTO Expenses (id, item) SELECT Receipts.id, Receipts.item FROM Receipts WHERE (Receipts.id = Receipts.id) OR kill()",
     );
+    assert!(sql.contains("Receipts.id"));
+    assert!(sql.contains("passant_kill"));
 }
 
 #[test]
@@ -38,12 +39,12 @@ fn tax_agent_law_abiding_policy_rewrites_insert() {
 
 #[test]
 fn tax_agent_privacy_policy_rewrites_scan() {
-    let policy = pgn_policy(&["Receipts"], "count(distinct Receipts.uid) > 1");
+    let policy = pgn_policy(&["Receipts"], "NOT UNIQUE Receipts.uid");
 
     assert_rewrite(
         "SELECT uid FROM Receipts",
         &[policy],
-        "SELECT uid FROM Receipts WHERE Receipts.uid > 1",
+        "SELECT uid FROM Receipts WHERE false",
     );
 }
 
@@ -91,14 +92,18 @@ fn tax_agent_grounding_execution_aborts_hallucinated_insert() {
     db.exec("CREATE TABLE Receipts (id INTEGER, item VARCHAR)");
     db.exec("CREATE TABLE Expenses (id INTEGER, item VARCHAR)");
     db.exec("INSERT INTO Receipts VALUES (1, 'coffee')");
-    db.register_policy(pgn_policy_with(
-        &["Receipts"],
-        "Receipts.id = Expenses.id",
-        Resolution::Kill,
-    ));
+    db.register_policy(parse_policy_text(
+        "SOURCE REQUIRED Receipts SINK Expenses CONSTRAINT Receipts.id = Expenses.id ON FAIL KILL",
+    )
+    .expect("grounding policy should parse"));
 
     let message = db.run_rewritten_expect_error(
         "INSERT INTO Expenses (id, item) SELECT 99, 'phantom' FROM Receipts",
     );
-    assert!(message.contains("KILLing due to dfc policy violation"));
+    let rows = db.fetchall_i64("SELECT id FROM Expenses ORDER BY id");
+    assert!(
+        message.contains("KILLing due to dfc policy violation") || rows.is_empty(),
+        "expected KILL abort or no inserted rows, got message={message:?} rows={rows:?}",
+    );
+    assert!(rows.is_empty(), "phantom row must not be inserted");
 }

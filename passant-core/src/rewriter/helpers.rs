@@ -1,17 +1,27 @@
 use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{
-    Assignment, AssignmentTarget, BinaryOperator, Expr, JoinOperator, Select, SetExpr, TableFactor,
-    TableWithJoins,
+    Assignment, AssignmentTarget, BinaryOperator, Expr, JoinOperator, ObjectName, Select,
+    SelectItem, SetExpr, TableFactor, TableWithJoins,
 };
 
+use crate::catalog::TableCatalog;
+use crate::diagnostics::RewriteError;
 use crate::identifiers::TableKey;
 use crate::policy::PolicyIr;
 use crate::policy_store::PolicyStore;
+use crate::sql::{ExprKey, qualified_column};
 use crate::threshold;
 
-use super::expr::{and_expr, projection_expr_and_name, table_factor_base_and_alias};
+use super::expr::{
+    and_expr, projected_column_name, projection_expr_and_name, table_factor_base_and_alias,
+};
 use super::types::PolicyApplicability;
+
+pub(crate) struct OutputColumnMapping {
+    pub expr_by_column: HashMap<String, Expr>,
+    pub ambiguous_columns: HashSet<String>,
+}
 
 pub(crate) fn flatten_and(expr: &Expr) -> Vec<Expr> {
     match expr {
@@ -145,13 +155,20 @@ pub(crate) fn prune_dominated_remove_policies(
         .collect()
 }
 
-pub(crate) fn insert_select_mapping(insert: &sqlparser::ast::Insert) -> HashMap<String, Expr> {
-    let mut mapping = HashMap::new();
+pub(crate) const OUTPUT_MARKER: &str = "_OUTPUT_";
+
+pub(crate) fn insert_select_mapping(
+    insert: &sqlparser::ast::Insert,
+) -> Result<OutputColumnMapping, RewriteError> {
+    let mut mapping = OutputColumnMapping {
+        expr_by_column: HashMap::new(),
+        ambiguous_columns: HashSet::new(),
+    };
     let Some(query) = insert.source.as_ref() else {
-        return mapping;
+        return Ok(mapping);
     };
     let SetExpr::Select(select) = query.body.as_ref() else {
-        return mapping;
+        return Ok(mapping);
     };
 
     for (index, item) in select.projection.iter().enumerate() {
@@ -159,15 +176,123 @@ pub(crate) fn insert_select_mapping(insert: &sqlparser::ast::Insert) -> HashMap<
             continue;
         };
         if let Some(column) = insert.columns.get(index) {
-            mapping.insert(column.value.to_ascii_lowercase(), expr.clone());
+            insert_output_mapping(&mut mapping, column.value.clone(), expr.clone())?;
         }
         if let Some(alias) = alias {
             mapping
+                .expr_by_column
                 .entry(alias.to_ascii_lowercase())
-                .or_insert(expr.clone());
+                .or_insert_with(|| expr.clone());
         }
     }
-    mapping
+    Ok(mapping)
+}
+
+pub(crate) fn select_output_column_mapping(
+    select: &Select,
+    catalog: &TableCatalog,
+) -> Result<OutputColumnMapping, RewriteError> {
+    let mut mapping = OutputColumnMapping {
+        expr_by_column: HashMap::new(),
+        ambiguous_columns: HashSet::new(),
+    };
+    for item in &select.projection {
+        match item {
+            SelectItem::UnnamedExpr(expr) => {
+                let Some(name) = projected_column_name(expr) else {
+                    continue;
+                };
+                insert_output_mapping(&mut mapping, name, expr.clone())?;
+            }
+            SelectItem::ExprWithAlias { expr, alias } => {
+                insert_output_mapping(&mut mapping, alias.value.clone(), expr.clone())?;
+            }
+            SelectItem::Wildcard(_) => {
+                expand_wildcard_output_columns(select, catalog, None, &mut mapping)?;
+            }
+            SelectItem::QualifiedWildcard(object_name, _) => {
+                expand_wildcard_output_columns(select, catalog, Some(object_name), &mut mapping)?;
+            }
+        }
+    }
+    Ok(mapping)
+}
+
+fn insert_output_mapping(
+    mapping: &mut OutputColumnMapping,
+    name: String,
+    expr: Expr,
+) -> Result<(), RewriteError> {
+    let key = name.to_ascii_lowercase();
+    if mapping.ambiguous_columns.contains(&key) {
+        return Ok(());
+    }
+    if let Some(existing) = mapping.expr_by_column.get(&key) {
+        if ExprKey::from_expr(existing) != ExprKey::from_expr(&expr) {
+            mapping.ambiguous_columns.insert(key.clone());
+            mapping.expr_by_column.remove(&key);
+        }
+        return Ok(());
+    }
+    mapping.expr_by_column.insert(key, expr);
+    Ok(())
+}
+
+fn expand_wildcard_output_columns(
+    select: &Select,
+    catalog: &TableCatalog,
+    qualified_table: Option<&ObjectName>,
+    mapping: &mut OutputColumnMapping,
+) -> Result<(), RewriteError> {
+    let mut expanded = false;
+    for table in &select.from {
+        expand_wildcard_from_table_factor(
+            &table.relation,
+            catalog,
+            qualified_table,
+            mapping,
+            &mut expanded,
+        )?;
+        for join in &table.joins {
+            expand_wildcard_from_table_factor(
+                &join.relation,
+                catalog,
+                qualified_table,
+                mapping,
+                &mut expanded,
+            )?;
+        }
+    }
+    if !expanded {
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn expand_wildcard_from_table_factor(
+    factor: &TableFactor,
+    catalog: &TableCatalog,
+    qualified_table: Option<&ObjectName>,
+    mapping: &mut OutputColumnMapping,
+    expanded: &mut bool,
+) -> Result<(), RewriteError> {
+    let Some((base, alias)) = table_factor_base_and_alias(factor) else {
+        return Ok(());
+    };
+    if let Some(object_name) = qualified_table
+        && !base.eq_ignore_ascii_case(&object_name.to_string())
+    {
+        return Ok(());
+    }
+    let Some(columns) = catalog.columns(&base) else {
+        return Ok(());
+    };
+    let table_ref = alias.as_deref().unwrap_or(&base);
+    for column in columns {
+        insert_output_mapping(mapping, column.clone(), qualified_column(table_ref, column))?;
+    }
+    *expanded = true;
+    Ok(())
 }
 
 pub(crate) fn update_target_name(table: &TableWithJoins) -> Option<String> {
@@ -188,4 +313,29 @@ pub(crate) fn update_assignment_mapping(assignments: &[Assignment]) -> HashMap<S
         }
     }
     mapping
+}
+
+pub(crate) fn update_output_column_mapping(
+    table: &TableWithJoins,
+    assignments: &[Assignment],
+    catalog: &TableCatalog,
+) -> Result<OutputColumnMapping, RewriteError> {
+    let mut mapping = OutputColumnMapping {
+        expr_by_column: update_assignment_mapping(assignments),
+        ambiguous_columns: HashSet::new(),
+    };
+    let Some(table_name) = update_target_name(table) else {
+        return Ok(mapping);
+    };
+    let table_ref = table_name.as_str();
+    if let Some(columns) = catalog.columns(&table_name) {
+        for column in columns {
+            let key = column.to_ascii_lowercase();
+            mapping
+                .expr_by_column
+                .entry(key)
+                .or_insert_with(|| qualified_column(table_ref, column));
+        }
+    }
+    Ok(mapping)
 }

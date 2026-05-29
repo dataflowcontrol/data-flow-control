@@ -1,8 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident};
 
+use crate::diagnostics::{ErrorKind, RewriteError};
 use crate::identifiers::{AliasByBase, ColumnName, QualifiedColumn, TableName};
+
+use super::helpers::OUTPUT_MARKER;
 
 pub(crate) fn replace_source_alias_qualifiers(
     expr: Expr,
@@ -69,18 +72,44 @@ pub(crate) fn apply_policy_sink_column_replacements(
     sink_alias: &Option<String>,
     sources: &[String],
     sink_expr_by_column: &HashMap<String, Expr>,
-) -> Expr {
+    ambiguous_output_columns: &HashSet<String>,
+) -> Result<Expr, RewriteError> {
     let sink_overlaps_source = sources
         .iter()
         .any(|source| source.eq_ignore_ascii_case(sink));
-    let mut expr = replace_sink_columns(expr, "_OUTPUT_", sink_expr_by_column);
+    let mut expr = if !sink_expr_by_column.is_empty() || !ambiguous_output_columns.is_empty() {
+        replace_sink_columns_strict(
+            expr,
+            OUTPUT_MARKER,
+            sink_expr_by_column,
+            ambiguous_output_columns,
+        )?
+    } else {
+        expr
+    };
     if let Some(sink_alias) = sink_alias {
         expr = replace_sink_columns(expr, sink_alias, sink_expr_by_column);
     }
     if !(sink_overlaps_source && sink_alias.is_some()) {
         expr = replace_sink_columns(expr, sink, sink_expr_by_column);
     }
-    expr
+    Ok(expr)
+}
+
+pub(crate) fn apply_output_marker_replacements(
+    expr: Expr,
+    output_expr_by_column: &HashMap<String, Expr>,
+    ambiguous_output_columns: &HashSet<String>,
+) -> Result<Expr, RewriteError> {
+    if output_expr_by_column.is_empty() && ambiguous_output_columns.is_empty() {
+        return Ok(expr);
+    }
+    replace_sink_columns_strict(
+        expr,
+        OUTPUT_MARKER,
+        output_expr_by_column,
+        ambiguous_output_columns,
+    )
 }
 
 pub(crate) fn replace_sink_columns(
@@ -139,6 +168,133 @@ pub(crate) fn replace_sink_columns(
             Expr::Function(function)
         }
         other => other,
+    }
+}
+
+fn replace_sink_columns_strict(
+    expr: Expr,
+    sink: &str,
+    sink_expr_by_column: &HashMap<String, Expr>,
+    ambiguous_output_columns: &HashSet<String>,
+) -> Result<Expr, RewriteError> {
+    let sink_table = TableName::parse(sink);
+    match expr {
+        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+            if let Some(column) = QualifiedColumn::from_compound_identifier(&parts)
+                && sink_table.matches_name(column.table.as_str())
+            {
+                let key = column.column.key();
+                if ambiguous_output_columns.contains(&key) {
+                    return Err(RewriteError::unsupported(
+                        ErrorKind::InvalidSinkColumn,
+                        format!(
+                            "ambiguous _OUTPUT_ column '{}': multiple projected expressions share this output name",
+                            column.column.as_str()
+                        ),
+                    ));
+                }
+                if let Some(replacement) = sink_expr_by_column.get(&key) {
+                    return Ok(replacement.clone());
+                }
+                return Err(RewriteError::catalog(
+                    ErrorKind::InvalidSinkColumn,
+                    format!(
+                        "{sink}.{} is not a projected output column",
+                        column.column.as_str()
+                    ),
+                    Some(sink.to_string()),
+                    Some(column.column.as_str().to_string()),
+                ));
+            }
+            Ok(Expr::CompoundIdentifier(parts))
+        }
+        Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
+            left: Box::new(replace_sink_columns_strict(
+                *left,
+                sink,
+                sink_expr_by_column,
+                ambiguous_output_columns,
+            )?),
+            op,
+            right: Box::new(replace_sink_columns_strict(
+                *right,
+                sink,
+                sink_expr_by_column,
+                ambiguous_output_columns,
+            )?),
+        }),
+        Expr::Nested(expr) => Ok(Expr::Nested(Box::new(replace_sink_columns_strict(
+            *expr,
+            sink,
+            sink_expr_by_column,
+            ambiguous_output_columns,
+        )?))),
+        Expr::UnaryOp { op, expr } => Ok(Expr::UnaryOp {
+            op,
+            expr: Box::new(replace_sink_columns_strict(
+                *expr,
+                sink,
+                sink_expr_by_column,
+                ambiguous_output_columns,
+            )?),
+        }),
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => Ok(Expr::Case {
+            operand: match operand {
+                Some(expr) => Some(Box::new(replace_sink_columns_strict(
+                    *expr,
+                    sink,
+                    sink_expr_by_column,
+                    ambiguous_output_columns,
+                )?)),
+                None => None,
+            },
+            conditions: conditions
+                .into_iter()
+                .map(|expr| {
+                    replace_sink_columns_strict(
+                        expr,
+                        sink,
+                        sink_expr_by_column,
+                        ambiguous_output_columns,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            results: results
+                .into_iter()
+                .map(|expr| {
+                    replace_sink_columns_strict(
+                        expr,
+                        sink,
+                        sink_expr_by_column,
+                        ambiguous_output_columns,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            else_result: match else_result {
+                Some(expr) => Some(Box::new(replace_sink_columns_strict(
+                    *expr,
+                    sink,
+                    sink_expr_by_column,
+                    ambiguous_output_columns,
+                )?)),
+                None => None,
+            },
+        }),
+        Expr::Function(mut function) => {
+            replace_sink_columns_strict_in_function(
+                &mut function,
+                sink,
+                sink_expr_by_column,
+                ambiguous_output_columns,
+            )?;
+            Ok(Expr::Function(function))
+        }
+        other => Ok(other),
     }
 }
 
@@ -322,6 +478,39 @@ fn replace_sink_columns_in_function(
             _ => {}
         }
     }
+}
+
+fn replace_sink_columns_strict_in_function(
+    function: &mut sqlparser::ast::Function,
+    sink: &str,
+    sink_expr_by_column: &HashMap<String, Expr>,
+    ambiguous_output_columns: &HashSet<String>,
+) -> Result<(), RewriteError> {
+    let FunctionArguments::List(args) = &mut function.args else {
+        return Ok(());
+    };
+    for arg in &mut args.args {
+        match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+            | FunctionArg::Named {
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            }
+            | FunctionArg::ExprNamed {
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            } => {
+                *expr = replace_sink_columns_strict(
+                    expr.clone(),
+                    sink,
+                    sink_expr_by_column,
+                    ambiguous_output_columns,
+                )?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn rewrite_column_qualifiers(expr: &mut Expr, alias_by_base: &AliasByBase) {

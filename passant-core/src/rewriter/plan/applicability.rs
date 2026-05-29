@@ -32,6 +32,7 @@ impl StatementRewriteSummary {
                 acc.skipped_pushdown += scope.skipped_pushdown;
                 acc.skipped_exists_handled += scope.skipped_exists_handled;
                 acc.emitted_policy_actions += scope.emitted_policy_actions;
+                acc.warnings.extend(scope.warnings.clone());
                 acc
             })
     }
@@ -72,6 +73,8 @@ pub struct ScopePlanDiagnostics {
     pub skipped_pushdown: usize,
     pub skipped_exists_handled: usize,
     pub emitted_policy_actions: usize,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Resolve indexed candidates, applicability, and dominance for a scope.

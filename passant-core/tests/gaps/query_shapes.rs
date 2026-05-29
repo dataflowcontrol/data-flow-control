@@ -66,7 +66,9 @@ fn approx_count_distinct_equality_rewrites_to_one() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -85,7 +87,9 @@ fn nested_aggregation_constraint_uses_inner_expression() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),

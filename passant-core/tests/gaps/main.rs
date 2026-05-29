@@ -6,6 +6,8 @@ mod duckdb;
 
 #[path = "column_propagation.rs"]
 mod column_propagation;
+#[path = "dimensions.rs"]
+mod dimensions;
 #[path = "exists_join.rs"]
 mod exists_join;
 #[path = "having_where.rs"]

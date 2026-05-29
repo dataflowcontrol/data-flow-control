@@ -6,7 +6,9 @@ fn rewriter_applies_update_remove_policy() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: Vec::new(),
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -30,7 +32,9 @@ fn rewriter_applies_update_sink_alias_policy() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: Vec::new(),
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: Some("r".to_string()),
         source_aliases: std::collections::HashMap::new(),
@@ -54,7 +58,9 @@ fn rewriter_fails_closed_for_missing_required_source_on_update() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -75,7 +81,9 @@ fn rewriter_applies_update_from_source_policy() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

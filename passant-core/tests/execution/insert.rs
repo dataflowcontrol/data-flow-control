@@ -30,7 +30,9 @@ fn required_source_fail_closed_on_insert() {
     db.register_policy(PolicyIr::Pgn {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

@@ -60,4 +60,5 @@ fn sanitize_projection_alias_handles_non_identifiers() {
     );
     assert_eq!(sanitize_projection_alias(""), "expr");
     assert_eq!(sanitize_projection_alias("valid_name"), "valid_name");
+    assert_eq!(sanitize_projection_alias("'approve'"), "approve");
 }

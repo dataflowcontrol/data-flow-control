@@ -5,6 +5,8 @@ mod common;
 mod insert;
 #[path = "joins.rs"]
 mod joins;
+#[path = "output.rs"]
+mod output;
 #[path = "recursive.rs"]
 mod recursive;
 #[path = "scan.rs"]

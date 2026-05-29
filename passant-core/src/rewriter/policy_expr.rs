@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 use sqlparser::ast::{
-    Assignment, BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments,
+    Assignment, BinaryOperator, DuplicateTreatment, Expr, Function, FunctionArg, FunctionArgExpr,
+    FunctionArguments,
 };
 
 use crate::catalog::TableCatalog;
@@ -16,17 +17,20 @@ use crate::policy::{PolicyIr, Resolution};
 use crate::policy_store::{CompiledPolicy, PolicyStore};
 use crate::rewrite_stats::RewriteStatsCell;
 use crate::semiring;
-use crate::sql::{count_distinct_eq_one, scalar_subquery};
+use crate::sql::{
+    and_exprs, count_distinct_eq_one, max_column, min_column, passant_kill_pass_filter,
+    scalar_subquery,
+};
 
 use super::aggregates::{is_scan_transformable_non_distributive, transform_scan_aggregates};
 use super::columns::{
-    apply_policy_sink_column_replacements, replace_source_alias_qualifiers,
-    rewrite_column_qualifiers,
+    apply_output_marker_replacements, apply_policy_sink_column_replacements,
+    replace_source_alias_qualifiers, rewrite_column_qualifiers,
 };
 use super::expr::{
-    and_expr, bool_literal, expr_contains_aggregate, is_aggregate_name, join_conjuncts, kill_expr,
-    parse_expr,
+    and_expr, bool_literal, expr_contains_aggregate, is_aggregate_name, join_conjuncts, parse_expr,
 };
+use super::resolution::PASSANT_KILL_UDF;
 use super::scope::TableScope;
 use super::types::{PolicyApplicability, RewriteContext};
 
@@ -255,32 +259,142 @@ pub(crate) fn join_pushdown_expr(
     constraint_ctx: &ConstraintExprCtx<'_>,
     base: &str,
     alias: Option<String>,
-    catalog: &TableCatalog,
+    _catalog: &TableCatalog,
+    context: &RewriteContext,
 ) -> Result<Expr, RewriteError> {
     let PolicyIr::Pgn {
         constraint,
-        on_fail,
+        sink_alias,
+        source_aliases,
         ..
     } = policy;
     let scan_ready = constraint_ctx.uses_scan_ready_expr();
     let mut expr = constraint_ctx.scan_policy_base_expr(constraint)?;
-    if let Some(alias) = alias {
-        rewrite_column_qualifiers(&mut expr, &AliasByBase::single(base, alias));
+    expr = replace_source_alias_qualifiers(expr, source_aliases);
+    if let Some(sink) = &context.sink {
+        expr = apply_policy_sink_column_replacements(
+            expr,
+            sink,
+            sink_alias,
+            policy.sources(),
+            &context.sink_expr_by_column,
+            &context.ambiguous_output_columns,
+        )?;
+    } else if !context.sink_expr_by_column.is_empty()
+        || !context.ambiguous_output_columns.is_empty()
+    {
+        expr = apply_output_marker_replacements(
+            expr,
+            &context.sink_expr_by_column,
+            &context.ambiguous_output_columns,
+        )?;
+    }
+    let alias_by_base = alias
+        .as_ref()
+        .map(|table_alias| AliasByBase::single(base, table_alias.clone()));
+    if let Some(alias_map) = &alias_by_base {
+        rewrite_column_qualifiers(&mut expr, alias_map);
     }
     expr = scan_policy_expr(
         expr,
         policy.sources(),
-        &RewriteContext::default(),
+        context,
         &AliasByBase::default(),
         scan_ready,
+        false,
     )?;
-    if let Some(guard) = unique_column_guard_from_constraint(constraint, catalog, constraint_ctx) {
+    if let Some(guard) =
+        unique_column_guard_from_constraint(constraint, policy.sources(), constraint_ctx)
+    {
+        let mut guard = guard;
+        if let Some(alias_map) = &alias_by_base {
+            rewrite_column_qualifiers(&mut guard, alias_map);
+        }
+        let guard = scalar_policy_subquery_expr(guard, policy.sources())?;
         expr = and_expr(guard, expr);
     }
-    if *on_fail == Resolution::Kill {
-        expr = kill_expr(expr)?;
-    }
     Ok(expr)
+}
+
+fn function_is_distinct(function: &Function) -> bool {
+    match &function.args {
+        FunctionArguments::List(list) => {
+            list.duplicate_treatment == Some(DuplicateTreatment::Distinct)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_count_distinct_cardinality_one_check(expr: &Expr) -> bool {
+    if let Expr::Nested(inner) = expr {
+        return is_count_distinct_cardinality_one_check(inner);
+    }
+    let Expr::BinaryOp { left, op, right } = expr else {
+        return false;
+    };
+    if !matches!(
+        op,
+        BinaryOperator::Eq
+            | BinaryOperator::NotEq
+            | BinaryOperator::Gt
+            | BinaryOperator::Lt
+            | BinaryOperator::GtEq
+            | BinaryOperator::LtEq
+    ) {
+        return false;
+    }
+    let Expr::Function(function) = left.as_ref() else {
+        return false;
+    };
+    if !function.name.to_string().eq_ignore_ascii_case("count") {
+        return false;
+    }
+    if !function_is_distinct(function) {
+        return false;
+    }
+    matches!(
+        right.as_ref(),
+        Expr::Value(sqlparser::ast::Value::Number(value, _))
+            if value == "1"
+    )
+}
+
+fn count_distinct_cardinality_operator(expr: &Expr) -> Option<BinaryOperator> {
+    let target = match expr {
+        Expr::Nested(inner) => inner.as_ref(),
+        other => other,
+    };
+    let Expr::BinaryOp { op, .. } = target else {
+        return None;
+    };
+    Some(op.clone())
+}
+
+pub(crate) fn is_count_distinct_not_unique_check(expr: &Expr) -> bool {
+    is_count_distinct_cardinality_one_check(expr)
+        && matches!(
+            count_distinct_cardinality_operator(expr),
+            Some(BinaryOperator::NotEq)
+        )
+}
+
+fn is_count_distinct_threshold_comparison(expr: &Expr) -> bool {
+    let Expr::BinaryOp { left, op, right } = expr else {
+        return false;
+    };
+    if !matches!(
+        op,
+        BinaryOperator::Gt | BinaryOperator::Lt | BinaryOperator::GtEq | BinaryOperator::LtEq
+    ) {
+        return false;
+    }
+    let Expr::Function(function) = left.as_ref() else {
+        return false;
+    };
+    if !function.name.to_string().eq_ignore_ascii_case("count") {
+        return false;
+    }
+    matches!(right.as_ref(), Expr::Value(_)) && function_is_distinct(function)
 }
 
 pub(crate) fn scan_policy_expr(
@@ -289,11 +403,112 @@ pub(crate) fn scan_policy_expr(
     context: &RewriteContext,
     alias_by_base: &AliasByBase,
     scan_ready: bool,
+    is_aggregation: bool,
 ) -> Result<Expr, RewriteError> {
+    if let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::And,
+        right,
+    } = &expr
+    {
+        return Ok(and_expr(
+            scan_policy_expr(
+                *left.clone(),
+                sources,
+                context,
+                alias_by_base,
+                scan_ready,
+                is_aggregation,
+            )?,
+            scan_policy_expr(
+                *right.clone(),
+                sources,
+                context,
+                alias_by_base,
+                scan_ready,
+                is_aggregation,
+            )?,
+        ));
+    }
     let non_distributive = non_distributive_aggregates(&expr)?;
     if non_distributive.is_empty() {
         if scan_ready {
+            if context.sink.is_none() && !sources.is_empty() {
+                if let Expr::BinaryOp {
+                    left,
+                    op: BinaryOperator::Or,
+                    right,
+                } = &expr
+                {
+                    return Ok(Expr::BinaryOp {
+                        left: Box::new(scan_policy_expr(
+                            *left.clone(),
+                            sources,
+                            context,
+                            alias_by_base,
+                            false,
+                            is_aggregation,
+                        )?),
+                        op: BinaryOperator::Or,
+                        right: Box::new(scan_policy_expr(
+                            *right.clone(),
+                            sources,
+                            context,
+                            alias_by_base,
+                            false,
+                            is_aggregation,
+                        )?),
+                    });
+                }
+                if expr_is_aggregate_only(&expr) && expr_contains_aggregate(&expr) {
+                    rewrite_column_qualifiers(&mut expr, &inverse_alias_map(alias_by_base));
+                    return scalar_policy_subquery_expr(expr, sources);
+                }
+            }
             return Ok(expr);
+        }
+        if context.sink.is_none() && !sources.is_empty() {
+            if let Expr::BinaryOp {
+                left,
+                op: BinaryOperator::Or,
+                right,
+            } = &expr
+            {
+                return Ok(Expr::BinaryOp {
+                    left: Box::new(scan_policy_expr(
+                        *left.clone(),
+                        sources,
+                        context,
+                        alias_by_base,
+                        scan_ready,
+                        is_aggregation,
+                    )?),
+                    op: BinaryOperator::Or,
+                    right: Box::new(scan_policy_expr(
+                        *right.clone(),
+                        sources,
+                        context,
+                        alias_by_base,
+                        scan_ready,
+                        is_aggregation,
+                    )?),
+                });
+            }
+            if expr_is_aggregate_only(&expr) && expr_contains_aggregate(&expr) {
+                if is_count_distinct_threshold_comparison(&expr) {
+                    return transform_scan_aggregates(expr);
+                }
+                if is_count_distinct_not_unique_check(&expr)
+                    && context.sink.is_none()
+                    && !is_aggregation
+                {
+                    // Per-tuple provenance on a non-aggregated scan always has one distinct
+                    // source value; NOT UNIQUE is false until the query is grouped.
+                    return Ok(bool_literal(false));
+                }
+                rewrite_column_qualifiers(&mut expr, &inverse_alias_map(alias_by_base));
+                return scalar_policy_subquery_expr(expr, sources);
+            }
         }
         return transform_scan_aggregates(expr);
     }
@@ -496,7 +711,16 @@ pub(crate) fn build_pgn_filter_expr(
             sink_alias,
             sources,
             &context.sink_expr_by_column,
-        );
+            &context.ambiguous_output_columns,
+        )?;
+    } else if !context.sink_expr_by_column.is_empty()
+        || !context.ambiguous_output_columns.is_empty()
+    {
+        expr = apply_output_marker_replacements(
+            expr,
+            &context.sink_expr_by_column,
+            &context.ambiguous_output_columns,
+        )?;
     }
     rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
     if !is_aggregation {
@@ -506,35 +730,99 @@ pub(crate) fn build_pgn_filter_expr(
             context,
             &table_scope.alias_by_base,
             scan_ready,
+            false,
         )?;
+        rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
     }
     Ok(expr)
 }
 
 pub(crate) fn unique_column_guard_from_constraint(
     constraint: &str,
-    catalog: &TableCatalog,
+    sources: &[String],
     constraint_ctx: &ConstraintExprCtx<'_>,
 ) -> Option<Expr> {
     let expr = constraint_ctx.expr(constraint).ok()?;
-    let column = extract_simple_column_comparison(&expr)?;
-    if !catalog.is_unique_column(column.table.as_str(), column.column.as_str()) {
+    let comparison = extract_column_value_comparison(&expr)?;
+    let table = comparison.column.table.as_str();
+    if !sources
+        .iter()
+        .any(|source| source.eq_ignore_ascii_case(table))
+    {
         return None;
     }
-    Some(count_distinct_eq_one(
-        column.table.as_str(),
-        column.column.as_str(),
-    ))
+    let column = comparison.column.column.as_str();
+    let ColumnValueComparison { op, other, .. } = comparison;
+    and_exprs(vec![
+        count_distinct_eq_one(table, column),
+        Expr::BinaryOp {
+            left: Box::new(min_column(table, column)),
+            op: op.clone(),
+            right: Box::new(other.clone()),
+        },
+        Expr::BinaryOp {
+            left: Box::new(max_column(table, column)),
+            op,
+            right: Box::new(other),
+        },
+    ])
 }
 
-fn extract_simple_column_comparison(expr: &Expr) -> Option<QualifiedColumn> {
-    match expr {
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::Eq | BinaryOperator::NotEq,
-            right,
-        } => QualifiedColumn::from_expr(left).or_else(|| QualifiedColumn::from_expr(right)),
-        _ => None,
+struct ColumnValueComparison {
+    column: QualifiedColumn,
+    op: BinaryOperator,
+    other: Expr,
+}
+
+fn extract_column_value_comparison(expr: &Expr) -> Option<ColumnValueComparison> {
+    let Expr::BinaryOp { left, op, right } = expr else {
+        return None;
+    };
+    if !matches!(
+        op,
+        BinaryOperator::Eq
+            | BinaryOperator::NotEq
+            | BinaryOperator::Gt
+            | BinaryOperator::Lt
+            | BinaryOperator::GtEq
+            | BinaryOperator::LtEq
+    ) {
+        return None;
+    }
+    if let Some(column) = QualifiedColumn::from_expr(left) {
+        if QualifiedColumn::from_expr(right).is_some() {
+            return None;
+        }
+        return Some(ColumnValueComparison {
+            column,
+            op: op.clone(),
+            other: right.as_ref().clone(),
+        });
+    }
+    if let Some(column) = QualifiedColumn::from_expr(right) {
+        if QualifiedColumn::from_expr(left).is_some() {
+            return None;
+        }
+        return Some(ColumnValueComparison {
+            column,
+            op: op.clone(),
+            other: left.as_ref().clone(),
+        });
+    }
+    None
+}
+
+pub(crate) fn update_tuple_udf_pass_filter(
+    pass_expr: Expr,
+    udf_name: &str,
+) -> Result<Expr, RewriteError> {
+    if udf_name.eq_ignore_ascii_case(PASSANT_KILL_UDF) || udf_name.eq_ignore_ascii_case("kill") {
+        Ok(passant_kill_pass_filter(pass_expr))
+    } else {
+        Err(RewriteError::unsupported_statement(format!(
+            "tuple UDF resolution '{udf_name}' on UPDATE is not supported yet; \
+             use ON FAIL REMOVE or KILL"
+        )))
     }
 }
 
@@ -553,11 +841,23 @@ pub(crate) fn apply_update_resolution(
             });
         }
         Resolution::Kill => {
-            let expr = kill_expr(expr)?;
+            let filter = update_tuple_udf_pass_filter(expr, PASSANT_KILL_UDF)?;
             *selection = Some(match selection.take() {
-                Some(existing) => and_expr(existing, expr),
-                None => expr,
+                Some(existing) => and_expr(existing, filter),
+                None => filter,
             });
+        }
+        Resolution::Udf(name) => {
+            let filter = update_tuple_udf_pass_filter(expr, &name)?;
+            *selection = Some(match selection.take() {
+                Some(existing) => and_expr(existing, filter),
+                None => filter,
+            });
+        }
+        Resolution::RelationUdf(_) => {
+            return Err(RewriteError::unsupported_statement(
+                "relation UDF resolution on UPDATE is not supported yet",
+            ));
         }
     }
     Ok(())
@@ -590,11 +890,28 @@ pub(crate) fn build_single_alias_pgn_filter_expr(
             sink_alias,
             sources,
             &context.sink_expr_by_column,
-        );
+            &context.ambiguous_output_columns,
+        )?;
+    } else if !context.sink_expr_by_column.is_empty()
+        || !context.ambiguous_output_columns.is_empty()
+    {
+        expr = apply_output_marker_replacements(
+            expr,
+            &context.sink_expr_by_column,
+            &context.ambiguous_output_columns,
+        )?;
     }
     rewrite_column_qualifiers(&mut expr, &alias_map);
     if !is_aggregation {
-        expr = scan_policy_expr(expr, sources, context, &alias_map, scan_ready)?;
+        expr = scan_policy_expr(
+            expr,
+            sources,
+            context,
+            &alias_map,
+            scan_ready,
+            is_aggregation,
+        )?;
+        rewrite_column_qualifiers(&mut expr, &alias_map);
     }
     Ok(expr)
 }

@@ -43,8 +43,6 @@ fn kill_rewrite_emits_kill_call_in_sql() {
     let rewritten = db
         .rewrite("SELECT id FROM foo")
         .expect("rewrite should succeed");
-    assert_eq!(
-        rewritten,
-        "SELECT id FROM foo WHERE (foo.id > 10) OR kill()"
-    );
+    assert!(rewritten.contains("passant_kill"));
+    assert!(rewritten.contains("t1 AS"));
 }

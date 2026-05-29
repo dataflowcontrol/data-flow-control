@@ -150,16 +150,20 @@ fn split_policy_from_cached_conjuncts(
     let PolicyIr::Pgn {
         sources,
         required_sources,
-        dimensions,
+        dimension_tables,
+        dimension_aliases,
+        dimension_queries,
         sink,
         sink_alias,
         on_fail,
         description,
         ..
     } = policy;
-    if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
+    if sink.is_some() || !required_sources.is_empty() || !dimension_queries.is_empty() {
         return None;
     }
+    let _ = dimension_tables;
+    let _ = dimension_aliases;
     if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
         return None;
     }
@@ -176,7 +180,9 @@ fn split_policy_from_cached_conjuncts(
         split.push(PolicyIr::Pgn {
             sources: vec![source.clone()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: dimension_tables.clone(),
+            dimension_aliases: dimension_aliases.clone(),
+            dimension_queries: dimension_queries.clone(),
             sink: None,
             sink_alias: sink_alias.clone(),
             source_aliases: aliases_for_sources(
@@ -184,7 +190,7 @@ fn split_policy_from_cached_conjuncts(
                 std::slice::from_ref(source),
             ),
             constraint: expr.to_string(),
-            on_fail: *on_fail,
+            on_fail: on_fail.clone(),
             description: description.clone(),
         });
     }
@@ -199,17 +205,22 @@ fn split_policy_by_source_local_conjuncts_from_ast(
     let PolicyIr::Pgn {
         sources,
         required_sources,
-        dimensions,
+        dimension_tables,
+        dimension_aliases,
+        dimension_queries,
         sink,
         sink_alias,
         source_aliases,
         constraint,
         on_fail,
         description,
+        ..
     } = policy;
-    if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
+    if sink.is_some() || !required_sources.is_empty() || !dimension_queries.is_empty() {
         return None;
     }
+    let _ = dimension_tables;
+    let _ = dimension_aliases;
     if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
         return None;
     }
@@ -243,12 +254,14 @@ fn split_policy_by_source_local_conjuncts_from_ast(
         split.push(PolicyIr::Pgn {
             sources: vec![source.clone()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: dimension_tables.clone(),
+            dimension_aliases: dimension_aliases.clone(),
+            dimension_queries: dimension_queries.clone(),
             sink: None,
             sink_alias: sink_alias.clone(),
             source_aliases: aliases_for_sources(source_aliases, std::slice::from_ref(source)),
             constraint: join_conjuncts(constraints).to_string(),
-            on_fail: *on_fail,
+            on_fail: on_fail.clone(),
             description: description.clone(),
         });
     }

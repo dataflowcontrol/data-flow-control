@@ -14,6 +14,7 @@ fn quoted_catalog() -> TableCatalog {
             CatalogTableInfo {
                 columns: vec!["OrderID".into(), "Amount".into()],
                 types: HashMap::new(),
+                ..Default::default()
             },
         )]),
         ..Default::default()
@@ -26,7 +27,9 @@ fn catalog_validates_quoted_column_references() {
     let policy = PolicyIr::Pgn {
         sources: vec!["MySchema.MyTable".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -45,7 +48,9 @@ fn catalog_rejects_unknown_quoted_column() {
     let policy = PolicyIr::Pgn {
         sources: vec!["MySchema.MyTable".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -66,7 +71,9 @@ fn schema_qualified_table_rewrites_with_full_push() {
         .register_validated_policy(PolicyIr::Pgn {
             sources: vec!["MySchema.MyTable".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -92,7 +99,9 @@ fn table_alias_does_not_break_policy_registration() {
         .register_validated_policy(PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -115,7 +124,9 @@ fn substring_column_name_does_not_corrupt_replace() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -134,7 +145,9 @@ fn reserved_word_column_rewrites_with_full_push() {
         &[PolicyIr::Pgn {
             sources: vec!["items".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -154,7 +167,9 @@ fn nested_cte_scan_applies_policy_filter() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),

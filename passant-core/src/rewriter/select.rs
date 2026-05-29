@@ -14,6 +14,7 @@ use crate::source_sets::{
 use crate::sql::ast_stats::count_select;
 
 use super::RewriteError;
+use super::helpers::select_output_column_mapping;
 use super::plan::{apply_select_rewrite_plan, plan_select_rewrite};
 use super::types::{PassantRewriter, RewriteContext};
 
@@ -144,6 +145,15 @@ impl PassantRewriter {
         }
 
         let stats = context.collect_stats.then_some(&self.stats);
+        let plan_context = {
+            let mut local_context = context.clone();
+            if local_context.sink_expr_by_column.is_empty() {
+                let output_mapping = select_output_column_mapping(select, &self.catalog)?;
+                local_context.sink_expr_by_column = output_mapping.expr_by_column;
+                local_context.ambiguous_output_columns = output_mapping.ambiguous_columns;
+            }
+            local_context
+        };
         let plan_start = Instant::now();
         let plan = plan_select_rewrite(
             &self.store,
@@ -151,7 +161,7 @@ impl PassantRewriter {
             stats,
             select,
             &select_analysis,
-            context,
+            &plan_context,
             &exists_handled,
         )?;
         if context.collect_stats {
@@ -289,6 +299,10 @@ impl PassantRewriter {
                 self.rewrite_query_with_context(&mut cte.query, context)?;
             }
         }
-        self.rewrite_set_expr(query.body.as_mut(), context)
+        self.rewrite_set_expr(query.body.as_mut(), context)?;
+        if context.sink.is_none() {
+            self.apply_query_relation_resolution(query, context)?;
+        }
+        Ok(())
     }
 }

@@ -202,7 +202,9 @@ mod tests {
         PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -249,7 +251,9 @@ mod tests {
             PolicyIr::Pgn {
                 sources: vec!["foo".to_string()],
                 required_sources: Vec::new(),
-                dimensions: Vec::new(),
+                dimension_tables: Vec::new(),
+                dimension_aliases: std::collections::HashMap::new(),
+                dimension_queries: std::collections::HashMap::new(),
                 sink: None,
                 sink_alias: None,
                 source_aliases: std::collections::HashMap::new(),

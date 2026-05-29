@@ -13,9 +13,10 @@ use crate::rewrite_strategy::{RewriteAttempt, RewriteEngine, RewriteRequest, Sta
 use crate::rewriter::{
     PassantRewriter, PolicyResolutionAction, RewriteContext, RewriteError, TableScope,
     apply_policy_having, collect_compound_columns_by_name, ensure_projection_aliases,
-    extract_policy_comparison_for_policy, group_by_join_specs, kill_expr,
-    outer_limited_projection_items, parse_expr, plan_policy_filter_actions, projected_column_name,
-    replace_identifiers, scope_has_enforcement_policies, select_is_aggregation, unqualify_columns,
+    extract_policy_comparison_for_policy, group_by_join_specs, outer_limited_projection_items,
+    parse_expr, plan_policy_filter_actions, projected_column_name, replace_identifiers,
+    scope_has_enforcement_policies, select_is_aggregation, unqualify_columns,
+    wrap_select_with_tuple_resolution,
 };
 use crate::sql::{
     alias_column, and_exprs, column_comparison, cte, empty_select, function_call,
@@ -359,12 +360,13 @@ fn partial_push_limit_scan(
     let projected_names = projected_select_names(select);
 
     let context = RewriteContext::default();
+    let mut plan_select = select.as_ref().clone();
     let (actions, _) = plan_policy_filter_actions(
         rewriter.policy_store(),
         rewriter.catalog(),
         None,
+        &mut plan_select,
         &table_scope.direct_base_tables,
-        &table_scope,
         None,
         &context,
         false,
@@ -372,38 +374,39 @@ fn partial_push_limit_scan(
         &HashSet::new(),
     )?;
 
+    let mut tuple_udf_actions = Vec::new();
     for action in actions {
-        let PolicyResolutionAction::Pgn {
-            filter: mut expr,
-            on_fail,
-            ..
-        } = action;
-        if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
-            continue;
-        }
-        let mut source_columns = HashMap::new();
-        collect_compound_columns_by_name(&expr, &mut source_columns);
-        unqualify_columns(&mut expr);
-        for (name, source_expr) in source_columns {
-            if !projected_names.contains(&name) {
-                let alias = passant_filter_temp_column(&name);
-                propagated_filter_columns
-                    .entry(name)
-                    .or_insert((source_expr, alias));
+        match action {
+            PolicyResolutionAction::Filter { filter, .. } => {
+                let mut expr = filter.clone();
+                let mut source_columns = HashMap::new();
+                collect_compound_columns_by_name(&expr, &mut source_columns);
+                unqualify_columns(&mut expr);
+                for (name, source_expr) in source_columns {
+                    if !projected_names.contains(&name) {
+                        let alias = passant_filter_temp_column(&name);
+                        propagated_filter_columns
+                            .entry(name)
+                            .or_insert((source_expr, alias));
+                    }
+                }
+                let replacements = propagated_filter_columns
+                    .iter()
+                    .map(|(name, (_, alias))| (name.clone(), alias.clone()))
+                    .collect::<HashMap<_, _>>();
+                replace_identifiers(&mut expr, &replacements);
+                filters.push(expr);
             }
+            PolicyResolutionAction::TupleUdf {
+                filter, udf_name, ..
+            } => {
+                tuple_udf_actions.push((filter.clone(), udf_name.clone()));
+            }
+            PolicyResolutionAction::RelationUdf { .. } => {}
         }
-        if on_fail == Resolution::Kill {
-            expr = kill_expr(expr)?;
-        }
-        let replacements = propagated_filter_columns
-            .iter()
-            .map(|(name, (_, alias))| (name.clone(), alias.clone()))
-            .collect::<HashMap<_, _>>();
-        replace_identifiers(&mut expr, &replacements);
-        filters.push(expr);
     }
 
-    if filters.is_empty() {
+    if filters.is_empty() && tuple_udf_actions.is_empty() {
         return Err(RewriteError::unsupported_statement(
             "partial-push LIMIT scan rewrite found no applicable filters",
         ));
@@ -433,6 +436,10 @@ fn partial_push_limit_scan(
         joins: Vec::new(),
     }];
     outer_select.selection = and_exprs(filters);
+
+    for (filter, udf_name) in tuple_udf_actions {
+        outer_select = wrap_select_with_tuple_resolution(outer_select, filter, &udf_name)?;
+    }
 
     Ok(render_statement(
         &statement_from_query(with_ctes(

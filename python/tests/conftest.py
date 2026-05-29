@@ -6,6 +6,7 @@ import duckdb
 import pytest
 
 from passant import dfc
+from flock_support import flock_available, load_flock
 
 
 @pytest.fixture
@@ -24,6 +25,17 @@ def rewriter():
     yield db
 
     db.close()
+
+
+@pytest.fixture(scope="session")
+def flock_extension():
+    """Install and load Flock once per test session when available."""
+    if not flock_available():
+        pytest.skip("Flock DuckDB extension not available (run passant/scripts/setup_flock.sh)")
+    conn = duckdb.connect()
+    load_flock(conn)
+    yield conn
+    conn.close()
 
 
 @pytest.fixture(scope="session")

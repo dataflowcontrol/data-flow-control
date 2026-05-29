@@ -9,6 +9,8 @@ class Capabilities:
     """Backend features enforced at policy registration time."""
 
     exception_udf: bool = False
+    tuple_udf: bool = False
+    relation_udf: bool = False
 
     @property
     def supports_kill(self) -> bool:
@@ -26,5 +28,19 @@ class Adapter(Protocol):
     def quote_identifier(self, name: str) -> str: ...
 
     def register_kill_function(self) -> None: ...
+
+    def register_resolution_function(
+        self,
+        name: str,
+        func: Any,
+        parameter_types: list[Any],
+        return_type: Any,
+    ) -> None: ...
+
+    def register_relation_resolution_function(
+        self,
+        name: str,
+        func: Any,
+    ) -> None: ...
 
     def close(self) -> None: ...

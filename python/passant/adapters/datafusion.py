@@ -58,6 +58,18 @@ class DataFusionAdapter:
         kill_udf = udf(_kill, [], pa.bool_(), "volatile", name="kill")
         self._ctx.register_udf(kill_udf)
 
+    def register_resolution_function(
+        self,
+        name: str,
+        func: Any,
+        parameter_types: list[Any],
+        return_type: Any,
+    ) -> None:
+        raise ValueError(f"Tuple UDF resolution is not supported for dialect {self.dialect!r}")
+
+    def register_relation_resolution_function(self, name: str, func: Any) -> None:
+        raise ValueError(f"Relation UDF resolution is not supported for dialect {self.dialect!r}")
+
     def introspect_catalog(self) -> dict:
         tables: dict[str, dict] = {}
         schema = self._ctx.catalog().schema("public")

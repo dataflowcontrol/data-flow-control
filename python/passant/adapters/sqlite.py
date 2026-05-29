@@ -30,6 +30,19 @@ class SQLiteAdapter:
 
     def register_kill_function(self) -> None:
         self._conn.create_function("kill", 0, python_kill)
+        self._conn.create_function("passant_kill", 0, python_kill)
+
+    def register_resolution_function(
+        self,
+        name: str,
+        func: Any,
+        parameter_types: list[Any],
+        return_type: Any,
+    ) -> None:
+        raise ValueError(f"Tuple UDF resolution is not supported for dialect {self.dialect!r}")
+
+    def register_relation_resolution_function(self, name: str, func: Any) -> None:
+        raise ValueError(f"Relation UDF resolution is not supported for dialect {self.dialect!r}")
 
     def introspect_catalog(self) -> dict:
         tables: dict[str, dict] = {}

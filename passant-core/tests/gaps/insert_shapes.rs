@@ -25,7 +25,9 @@ fn sink_only_remove_policy_on_insert_select() {
         &[PolicyIr::Pgn {
             sources: vec![],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -48,7 +50,9 @@ fn sink_only_kill_policy_on_insert_select() {
         &[PolicyIr::Pgn {
             sources: vec![],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: Some("reports".to_string()),
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),

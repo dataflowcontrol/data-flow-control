@@ -20,12 +20,17 @@ pub use types::{PassantRewriter, RewriteOptions};
 
 mod aggregates;
 mod columns;
+pub(crate) mod constraint_preprocess;
+pub(crate) use constraint_preprocess::preprocess_policy_constraint;
+mod dimensions;
 mod exists;
 mod expr;
 mod helpers;
 mod plan;
 mod policy_expr;
 mod projection;
+pub(crate) mod resolution;
+pub(crate) use resolution::wrap_select_with_tuple_resolution;
 mod select;
 mod write_path;
 
@@ -49,7 +54,7 @@ use plan::StatementRewriteSummaryCell;
 pub(crate) use columns::{
     collect_compound_columns_by_name, replace_identifiers, unqualify_columns,
 };
-pub(crate) use expr::{kill_expr, parse_expr, projected_column_name};
+pub(crate) use expr::{parse_expr, projected_column_name};
 pub(crate) use helpers::direct_source_occurrence_counts;
 
 impl PassantRewriter {
@@ -150,8 +155,8 @@ impl PassantRewriter {
             {
                 return None;
             }
-            if let Some(on_fail) = on_fail
-                && policy.resolution() != on_fail
+            if let Some(expected) = &on_fail
+                && policy.resolution() != *expected
             {
                 return None;
             }

@@ -6,8 +6,8 @@ SQLite, PostgreSQL, ClickHouse, Apache DataFusion, and Umbra support.
 
 The **Rust core** owns policy semantics, rewrite planning, and SQL generation.
 **Python** wraps database connections, syncs catalog snapshots from adapters,
-and executes rewritten SQL. Public resolutions are **`REMOVE`** and **`KILL`**
-only (`KILL` requires adapter `exception_udf` support; see table below).
+and executes rewritten SQL. Resolutions are **`REMOVE`**, **`KILL`**, tuple-level **`ON FAIL UDF`**, and
+relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutions; see capability table).
 
 ## Workspace
 
@@ -30,10 +30,11 @@ only (`KILL` requires adapter `exception_udf` support; see table below).
 
 - `sqlparser-rs` parser frontend and Passant-owned `QueryIr`
 - rewrite optimizer with `FullPush` / `PartialPush` and explain output
-- `Policy` parsing: `SOURCE`/`SOURCES`, `REQUIRED`, `SINK`, source/sink aliases, `DIMENSION`,
-  `CONSTRAINT`, `ON FAIL`, `DESCRIPTION`, and `PGN OVER`/`PGN UPDATE`
-- `SELECT`, `INSERT ... SELECT`, `UPDATE`, and `MERGE` rewrites
-- `REMOVE` and `KILL` resolutions
+- `Policy` parsing: paper PGN syntax — `SOURCE`/`SOURCES`, `REQUIRED`, `SINK`, aliases (`SOURCE R R`),
+  `DIMENSION` (table+alias or subquery), `UNIQUE`/`NOT UNIQUE`, `_OUTPUT_`, `CONSTRAINT`, `ON FAIL`,
+  `DESCRIPTION`, and `PGN OVER`/`PGN UPDATE`
+- `SELECT`, `INSERT ... SELECT`, `UPDATE`, and `MERGE` rewrites; **`DELETE` passthrough** (no rewrite)
+- `REMOVE`, `KILL` (`passant_kill` UDF), tuple UDF, and relation-level UDF resolutions
 - recursive rewriting for CTEs, subqueries, and set operations
 - catalog validation via adapter snapshots (not DuckDB-only)
 - threshold dominance, source-set splitting, semiring join decomposition
@@ -107,21 +108,30 @@ kill_policy = Policy(
     constraint="orders.region = 'us'",
     on_fail=Resolution.KILL,
 )
+
+# Paper PGN syntax (aliases, dimensions, UNIQUE, _OUTPUT_)
+paper_policy = Policy.from_pgn("""
+SOURCE Receipts R
+DIMENSION catalog_users U, catalog_roles R
+CONSTRAINT NOT UNIQUE Receipts.uid OR
+  (S.current_user_value = U.id AND U.id = R.userid AND R.is_superuser)
+ON FAIL REMOVE
+""")
 ```
 
-`KILL` requires adapter `exception_udf` support. Each adapter registers a `kill()`
-callable (Python UDF or `CREATE FUNCTION`) that raises when a violating row is
-evaluated. Rewritten SQL uses short-circuit `OR kill()` so compliant rows never
-invoke `kill()`.
+`KILL` routes through the `passant_kill()` UDF (alias of `kill()`). Rewritten SQL annotates rows in a
+`t1` CTE and filters with `__passant_policy_pass OR CASE WHEN NOT __passant_policy_pass THEN passant_kill() ELSE true END`.
+Tuple- and relation-level custom UDF resolutions use the `t1`–`t4` CTE pattern (see
+[`docs/rewrite-pipeline.md`](docs/rewrite-pipeline.md)).
 
-| Adapter | `exception_udf` | Registration |
-| --- | --- | --- |
-| DuckDB | yes | `create_function` (session) |
-| SQLite | yes | `sqlite3` `create_function` (session) |
-| DataFusion | yes | `SessionContext.register_udf` (session) |
-| PostgreSQL | yes | `CREATE OR REPLACE FUNCTION` (requires `CREATE` privilege) |
-| Umbra | no | `CREATE FUNCTION` not supported by Umbra yet |
-| ClickHouse | yes | `CREATE OR REPLACE FUNCTION` via SQL (`throwIf`) |
+| Adapter | `exception_udf` | `tuple_udf` | `relation_udf` | Registration |
+| --- | --- | --- | --- | --- |
+| DuckDB | yes | yes | yes | `create_function` (session); `register_resolution_function` / `register_relation_resolution_function` |
+| SQLite | yes | no | no | `sqlite3.create_function` (session) |
+| DataFusion | yes | no | no | `SessionContext.register_udf` (session) |
+| PostgreSQL | yes | no | no | `CREATE OR REPLACE FUNCTION` (requires `CREATE` privilege) |
+| Umbra | no | no | no | `CREATE FUNCTION` not supported by Umbra yet |
+| ClickHouse | yes | no | no | `CREATE OR REPLACE FUNCTION` via SQL (`throwIf`) |
 
 SQLite reports `OperationalError: user-defined function raised exception` rather
 than the Passant message text unless `sqlite3.enable_callback_tracebacks(True)` is
@@ -140,6 +150,19 @@ ON FAIL REMOVE
 
 conn.register_policy(policy)
 ```
+
+DuckDB extension functions (e.g. Flock `llm_filter`) may appear in `CONSTRAINT` as ordinary SQL;
+Passant does not integrate or special-case them. See `python/tests/test_extension_constraints.py`.
+
+Optional Flock setup (community extension, no network during default `pytest` if already installed):
+
+```bash
+./scripts/setup_flock.sh
+uv run pytest python/tests/test_extension_constraints.py -m flock
+```
+
+Rewrite/register tests run when Flock is installed. Execution tests that call `llm_filter` also need
+`OPENAI_API_KEY` or `FLOCK_OPENAI_API_KEY` (DuckDB `CREATE SECRET (TYPE OPENAI, ...)`).
 
 Query rewriting and execution:
 
@@ -203,5 +226,6 @@ Optional Docker integration (Postgres, ClickHouse, Umbra):
 | --- | --- |
 | Rust unit + integration | `passant-core/tests/`, `passant-core/src/**` |
 | CLI | `passant-cli/tests/` |
-| Python API | `python/tests/test_duckdb_rewrite.py`, `test_public_api.py`, … |
-| Backend conformance | `python/tests/test_conformance.py`, `test_capabilities.py` |
+| Python API | `python/tests/test_duckdb_rewrite.py`, `test_public_api.py`, `test_vldb_2026.py`, … |
+| Paper / phase tests | `test_vldb_2026.py` (paper examples); `test_paper_policy_parser.py`, `test_resolution_udf.py`, … |
+| Backend conformance | `python/tests/test_backend_basic_conformance.py`, `test_backend_capabilities.py` |

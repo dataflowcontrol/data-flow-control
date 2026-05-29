@@ -7,6 +7,7 @@ use sqlparser::ast::Expr;
 use super::PolicyStore;
 use crate::identifiers::{ColumnKey, TableKey};
 use crate::policy::{PolicyIr, Resolution};
+use crate::rewriter::preprocess_policy_constraint;
 use crate::semiring::{AggregateAnalysis, SemiringAnalysis, analyze_constraint};
 use crate::source_sets::{
     compile_constraint_referenced_source_keys, compile_source_local_conjuncts,
@@ -45,11 +46,16 @@ pub struct CompiledPolicy {
 }
 
 pub(crate) fn is_enforcement_resolution(resolution: Resolution) -> bool {
-    matches!(resolution, Resolution::Remove | Resolution::Kill)
+    matches!(
+        resolution,
+        Resolution::Remove | Resolution::Kill | Resolution::Udf(_) | Resolution::RelationUdf(_)
+    )
 }
 
 impl PolicyStore {
-    pub(crate) fn compile_policy(&mut self, index: usize, policy: PolicyIr) -> CompiledPolicy {
+    pub(crate) fn compile_policy(&mut self, index: usize, mut policy: PolicyIr) -> CompiledPolicy {
+        let PolicyIr::Pgn { constraint, .. } = &mut policy;
+        *constraint = preprocess_policy_constraint(constraint);
         let constraint_sql = self.intern_string(policy.constraint());
         let constraint = parse_projection_expr(constraint_sql.as_ref())
             .ok()
@@ -76,7 +82,7 @@ impl PolicyStore {
                 sources,
                 required_sources,
                 sink: None,
-                on_fail: Resolution::Remove | Resolution::Kill,
+                on_fail: Resolution::Remove,
                 ..
             } if required_sources.is_empty() && sources.len() == 1
         );
@@ -84,18 +90,15 @@ impl PolicyStore {
             if let Some(compiled) = constraint.as_ref() {
                 let referenced =
                     compile_constraint_referenced_source_keys(&compiled.ast, &source_keys);
-                let mut columns = compile_constraint_referenced_column_keys(self, &compiled.ast);
-                for dimension in policy.dimensions() {
-                    if let Ok(expr) = parse_projection_expr(dimension) {
-                        columns.extend(compile_constraint_referenced_column_keys(self, &expr));
-                    }
-                }
-                let columns = dedup_referenced_column_keys(columns);
+                let columns = dedup_referenced_column_keys(
+                    compile_constraint_referenced_column_keys(self, &compiled.ast),
+                );
                 let conjuncts =
                     if matches!(policy.resolution(), Resolution::Remove | Resolution::Kill)
                         && policy.sink().is_none()
                         && policy.required_sources().is_empty()
-                        && policy.dimensions().is_empty()
+                        && policy.dimension_tables().is_empty()
+                        && policy.dimension_queries().is_empty()
                         && source_keys.len() > 1
                     {
                         compile_source_local_conjuncts(&compiled.ast, &source_keys)

@@ -1,6 +1,7 @@
 use passant_core::{
-    Resolution, normalize_policy_dimensions, normalize_policy_source_aliases,
-    normalize_policy_sources, parse_policy_text, validate_constraint_expression,
+    Resolution, normalize_policy_dimension_aliases, normalize_policy_dimension_queries,
+    normalize_policy_dimensions, normalize_policy_source_aliases, normalize_policy_sources,
+    parse_policy_text, validate_constraint_expression,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -36,10 +37,28 @@ pub fn normalize_policy_dimensions_py(dimensions: Vec<String>) -> PyResult<Vec<S
     normalize_policy_dimensions(&dimensions).map_err(map_policy_parse_error)
 }
 
+#[pyfunction]
+pub fn normalize_policy_dimension_aliases_py(
+    dimensions: Vec<String>,
+) -> PyResult<std::collections::HashMap<String, String>> {
+    normalize_policy_dimension_aliases(&dimensions).map_err(map_policy_parse_error)
+}
+
+#[pyfunction]
+pub fn normalize_policy_dimension_queries_py(
+    dimensions: Vec<String>,
+) -> PyResult<std::collections::HashMap<String, String>> {
+    normalize_policy_dimension_queries(&dimensions).map_err(map_policy_parse_error)
+}
+
 pub fn parse_resolution(value: &str) -> PyResult<Resolution> {
-    match value.to_ascii_uppercase().as_str() {
-        "REMOVE" => Ok(Resolution::Remove),
-        "KILL" => Ok(Resolution::Kill),
-        _ => Err(PyValueError::new_err(format!("unknown resolution {value}"))),
-    }
+    Resolution::parse(value).map_err(|err| PyValueError::new_err(err.to_string()))
+}
+
+#[pyfunction]
+pub fn resolution_to_python_py(value: String) -> PyResult<String> {
+    let resolution: Resolution = serde_json::from_str(&value)
+        .or_else(|_| Resolution::parse(&value))
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    Ok(resolution.as_label())
 }

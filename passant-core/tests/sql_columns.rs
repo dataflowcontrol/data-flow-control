@@ -15,3 +15,14 @@ fn collect_qualified_columns_walks_aggregate_arguments() {
     assert_eq!(columns.len(), 1);
     assert_eq!(columns[0].column.as_str(), "amount");
 }
+
+#[test]
+fn collect_qualified_columns_from_flock_style_dictionary_args() {
+    let expr = parse_projection_expr(
+        "llm_filter({'model_name': 'default'}, {'prompt': 'safe?', 'context_columns': [{'data': products.description}]})",
+    )
+    .expect("parse flock constraint");
+    let columns = collect_qualified_columns_from_expr(&expr);
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].display_sql(), "products.description");
+}

@@ -155,17 +155,22 @@ pub fn split_policy_for_set_branches(
     let PolicyIr::Pgn {
         sources,
         required_sources,
-        dimensions,
+        dimension_tables,
+        dimension_aliases,
+        dimension_queries,
         sink,
         sink_alias,
         source_aliases,
         constraint,
         on_fail,
         description,
+        ..
     } = policy;
-    if sink.is_some() || !required_sources.is_empty() || !dimensions.is_empty() {
+    if sink.is_some() || !required_sources.is_empty() || !dimension_queries.is_empty() {
         return None;
     }
+    let _ = dimension_tables;
+    let _ = dimension_aliases;
     if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
         return None;
     }
@@ -214,7 +219,9 @@ pub fn split_policy_for_set_branches(
         Some(PolicyIr::Pgn {
             sources: branch_sources.clone(),
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: dimension_tables.clone(),
+            dimension_aliases: dimension_aliases.clone(),
+            dimension_queries: dimension_queries.clone(),
             sink: None,
             sink_alias: sink_alias.clone(),
             source_aliases: source_aliases
@@ -223,7 +230,7 @@ pub fn split_policy_for_set_branches(
                 .map(|(alias, base)| (alias.clone(), base.clone()))
                 .collect(),
             constraint: join_conjuncts(constraints).to_string(),
-            on_fail: *on_fail,
+            on_fail: on_fail.clone(),
             description: description.clone(),
         })
     };

@@ -8,8 +8,8 @@ use crate::policy::{PolicyIr, Resolution};
 use crate::policy_store::PolicyStore;
 use crate::rewrite_stats::RewriteStatsCell;
 use crate::rewriter::columns::{
-    apply_policy_sink_column_replacements, replace_source_alias_qualifiers,
-    rewrite_column_qualifiers,
+    apply_output_marker_replacements, apply_policy_sink_column_replacements,
+    replace_source_alias_qualifiers, rewrite_column_qualifiers,
 };
 use crate::rewriter::expr::bool_literal;
 use crate::rewriter::policy_expr::{ConstraintExprCtx, scan_policy_expr};
@@ -82,7 +82,16 @@ pub(crate) fn plan_update_scope(
                     sink_alias,
                     policy.sources(),
                     &context.sink_expr_by_column,
-                );
+                    &context.ambiguous_output_columns,
+                )?;
+            } else if !context.sink_expr_by_column.is_empty()
+                || !context.ambiguous_output_columns.is_empty()
+            {
+                expr = apply_output_marker_replacements(
+                    expr,
+                    &context.sink_expr_by_column,
+                    &context.ambiguous_output_columns,
+                )?;
             }
             rewrite_column_qualifiers(&mut expr, &table_scope.alias_by_base);
             scan_policy_expr(
@@ -91,11 +100,12 @@ pub(crate) fn plan_update_scope(
                 context,
                 &table_scope.alias_by_base,
                 constraint_ctx.uses_scan_ready_expr(),
+                false,
             )?
         };
         plan.actions.push(UpdatePolicyAction::Pgn {
             filter,
-            on_fail: *on_fail,
+            on_fail: on_fail.clone(),
             description: description.clone(),
         });
     }
@@ -119,7 +129,7 @@ pub(crate) fn apply_update_scope_plan(
             assignments,
             selection,
             filter.clone(),
-            *on_fail,
+            on_fail.clone(),
             description.as_deref(),
         )?;
     }
@@ -173,6 +183,7 @@ pub(crate) fn plan_merge_source_filters(
             &context,
             &AliasByBase::default(),
             constraint_ctx.uses_scan_ready_expr(),
+            false,
         )?;
         plan.filters.push(expr);
     }

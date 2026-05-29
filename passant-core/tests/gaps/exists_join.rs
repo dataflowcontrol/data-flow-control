@@ -8,7 +8,9 @@ fn exists_subquery_with_policy_on_inner_table_rewrites_to_join() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["lineitem".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -40,7 +42,9 @@ fn exists_subquery_aggregation_with_inner_policy_rewrites_to_join() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["lineitem".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

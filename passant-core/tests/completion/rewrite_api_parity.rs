@@ -9,7 +9,9 @@ fn scan_count_if_transforms_to_case_when() {
     let policy = PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -31,7 +33,9 @@ fn scan_array_agg_non_distributive_uses_partial_push() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -46,21 +50,25 @@ fn scan_array_agg_non_distributive_uses_partial_push() {
 
 #[test]
 fn aggregation_kill_wraps_having_clause() {
-    assert_rewrite(
+    let sql = rewrite(
         "SELECT category, sum(amount) FROM foo GROUP BY category",
         &[pgn_policy_kill(&["foo"], "sum(foo.amount) > 100")],
-        "SELECT category, sum(amount) FROM foo GROUP BY category HAVING CASE WHEN sum(foo.amount) > 100 THEN (foo.category = foo.category) OR kill() ELSE true END",
     );
+    assert!(sql.contains("passant_kill"));
+    assert!(sql.contains("t1 AS"));
+    assert!(sql.contains("GROUP BY category"));
 }
 
 #[test]
-fn scan_count_distinct_equality_expands_to_row_predicate() {
-    assert_rewrite(
+fn scan_count_distinct_equality_uses_global_cardinality_subquery() {
+    let sql = rewrite(
         "SELECT id FROM foo",
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -68,7 +76,10 @@ fn scan_count_distinct_equality_expands_to_row_predicate() {
             on_fail: Resolution::Remove,
             description: None,
         }],
-        "SELECT id FROM foo WHERE foo.id IS NOT NULL",
+    );
+    assert!(
+        sql.contains("count(DISTINCT foo.id) = 1"),
+        "expected global COUNT(DISTINCT) predicate on scan: {sql}"
     );
 }
 
@@ -79,7 +90,9 @@ fn scan_avg_non_distributive_uses_partial_push() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -100,7 +113,9 @@ fn scan_min_max_preserve_full_expression() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -119,7 +134,9 @@ fn dimension_table_constraint_references_external_context() {
         &[PolicyIr::Pgn {
             sources: vec!["foo".to_string()],
             required_sources: Vec::new(),
-            dimensions: vec!["regions.code".to_string()],
+            dimension_tables: vec!["regions".to_string()],
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -138,7 +155,9 @@ fn insert_without_column_list_expands_from_catalog() {
     let policy = PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

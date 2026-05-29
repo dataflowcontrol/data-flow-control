@@ -44,6 +44,18 @@ class PostgresAdapter:
         if not self._conn.autocommit:
             self._conn.commit()
 
+    def register_resolution_function(
+        self,
+        name: str,
+        func: Any,
+        parameter_types: list[Any],
+        return_type: Any,
+    ) -> None:
+        raise ValueError(f"Tuple UDF resolution is not supported for dialect {self.dialect!r}")
+
+    def register_relation_resolution_function(self, name: str, func: Any) -> None:
+        raise ValueError(f"Relation UDF resolution is not supported for dialect {self.dialect!r}")
+
     def introspect_catalog(self) -> dict:
         return introspect_pg_catalog(self._conn, dialect=self.dialect)
 

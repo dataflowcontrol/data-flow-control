@@ -20,6 +20,7 @@ pub struct TableCatalog {
     table_columns: HashMap<TableKey, Vec<String>>,
     column_types: HashMap<(TableKey, String), String>,
     unique_columns: HashSet<(TableKey, String)>,
+    table_row_counts: HashMap<TableKey, u64>,
     loaded: bool,
 }
 
@@ -47,11 +48,14 @@ impl CatalogSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct CatalogTableInfo {
     pub columns: Vec<String>,
     #[serde(default)]
     pub types: HashMap<String, String>,
+    /// Optional row count from adapter introspection (used for singleton DIMENSION joins).
+    #[serde(default)]
+    pub row_count: Option<u64>,
 }
 
 impl TableCatalog {
@@ -65,6 +69,9 @@ impl TableCatalog {
             catalog.register_table(table.clone(), info.columns.clone());
             for (column, sql_type) in info.types {
                 catalog.register_column_type(table.clone(), column, sql_type);
+            }
+            if let Some(row_count) = info.row_count {
+                catalog.register_table_row_count(table.clone(), row_count);
             }
         }
         for unique in snapshot.unique_columns {
@@ -112,6 +119,19 @@ impl TableCatalog {
         ));
     }
 
+    pub fn register_table_row_count(&mut self, table: impl Into<String>, row_count: u64) {
+        self.table_row_counts
+            .insert(TableKey::new(&table.into()), row_count);
+    }
+
+    pub fn table_row_count(&self, table: &str) -> Option<u64> {
+        self.table_row_counts.get(&TableKey::new(table)).copied()
+    }
+
+    pub fn is_singleton_table(&self, table: &str) -> bool {
+        self.table_row_count(table) == Some(1)
+    }
+
     pub fn table_exists(&self, table: &str) -> bool {
         self.table_columns.contains_key(&TableKey::new(table))
     }
@@ -139,7 +159,9 @@ impl TableCatalog {
         }
         let PolicyIr::Pgn {
             sources,
-            dimensions,
+            dimension_tables,
+            dimension_aliases,
+            dimension_queries,
             sink,
             sink_alias,
             source_aliases,
@@ -150,12 +172,14 @@ impl TableCatalog {
         validate_pgn_policy(
             self,
             sources,
-            dimensions,
+            dimension_tables,
+            dimension_aliases,
+            dimension_queries,
             sink.as_deref(),
             sink_alias.as_deref(),
             source_aliases,
             constraint,
-            *on_fail,
+            on_fail.clone(),
         )
     }
 }
@@ -164,20 +188,24 @@ impl TableCatalog {
 ///
 /// Parses the expression as SQL and requires all column references to be qualified.
 pub fn validate_constraint_expression(sql: &str, label: &str) -> Result<(), RewriteError> {
-    validate_qualified_columns(sql, label)
+    let sql = crate::rewriter::preprocess_policy_constraint(sql);
+    validate_qualified_columns(&sql, label)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn validate_pgn_policy(
     catalog: &TableCatalog,
     sources: &[String],
-    dimensions: &[String],
+    dimension_tables: &[String],
+    dimension_aliases: &HashMap<String, String>,
+    dimension_queries: &HashMap<String, String>,
     sink: Option<&str>,
     sink_alias: Option<&str>,
     source_aliases: &HashMap<String, String>,
     constraint: &str,
     _on_fail: Resolution,
 ) -> Result<(), RewriteError> {
+    let constraint = crate::rewriter::preprocess_policy_constraint(constraint);
     let mut source_columns = HashMap::new();
     for source in sources {
         let source_name = SourceName::parse(source);
@@ -227,9 +255,50 @@ fn validate_pgn_policy(
         None
     };
 
-    validate_qualified_columns(constraint, "constraint")?;
-    for dimension in dimensions {
-        validate_qualified_columns(dimension, "dimension")?;
+    validate_qualified_columns(&constraint, "constraint")?;
+
+    let mut dimension_columns = HashMap::new();
+    for table in dimension_tables {
+        if !catalog.table_exists(table) {
+            return Err(RewriteError::catalog_with_context(
+                ErrorKind::UnknownTable,
+                format!("Dimension table '{table}' does not exist"),
+                Some(table.clone()),
+                None,
+                Some(constraint.to_string()),
+                Some("catalog_validation"),
+            ));
+        }
+        let columns = catalog
+            .columns(table)
+            .unwrap_or_default()
+            .iter()
+            .map(|column| ColumnName::new(column).key())
+            .collect::<HashSet<_>>();
+        dimension_columns.insert(TableKey::new(table), columns);
+    }
+    for (alias, base) in dimension_aliases {
+        if dimension_queries.contains_key(alias) {
+            continue;
+        }
+        if !catalog.table_exists(base) {
+            return Err(RewriteError::catalog_with_context(
+                ErrorKind::UnknownTable,
+                format!("Dimension table '{base}' does not exist"),
+                Some(base.clone()),
+                None,
+                Some(constraint.to_string()),
+                Some("catalog_validation"),
+            ));
+        }
+        let columns = catalog
+            .columns(base)
+            .unwrap_or_default()
+            .iter()
+            .map(|column| ColumnName::new(column).key())
+            .collect::<HashSet<_>>();
+        dimension_columns.insert(TableKey::new(alias), columns.clone());
+        dimension_columns.insert(TableKey::new(base), columns);
     }
 
     let source_names = sources
@@ -256,9 +325,22 @@ fn validate_pgn_policy(
         sink_names.insert(TableKey::new(sink_alias));
     }
 
-    if !sources.is_empty() {
+    if !sources.is_empty() && sink.is_none() {
+        let sink_equality_sources =
+            source_columns_in_sink_equality(&constraint, &source_qualifier_names, &sink_names);
+        let implicit_uniqueness_columns =
+            implicit_uniqueness_source_columns(&constraint, &source_qualifier_names);
         let unaggregated =
-            unaggregated_source_columns(constraint, &source_qualifier_names, source_aliases)?;
+            unaggregated_source_columns(&constraint, &source_qualifier_names, source_aliases)?
+                .into_iter()
+                .filter(|qualified| !is_catalog_unique_source_column(catalog, qualified))
+                .filter(|qualified| {
+                    !implicit_uniqueness_columns.contains(&qualified.to_ascii_lowercase())
+                })
+                .filter(|qualified| {
+                    !sink_equality_sources.contains(&qualified.to_ascii_lowercase())
+                })
+                .collect::<Vec<_>>();
         if !unaggregated.is_empty() {
             return Err(RewriteError::catalog_with_context(
                 ErrorKind::UnaggregatedSourceColumn,
@@ -272,12 +354,11 @@ fn validate_pgn_policy(
                 Some("catalog_validation"),
             ));
         }
+    } else if !sources.is_empty() {
+        let _ = source_columns_in_sink_equality(&constraint, &source_qualifier_names, &sink_names);
     }
 
-    let mut referenced_columns = qualified_columns(constraint)?;
-    for dimension in dimensions {
-        referenced_columns.extend(qualified_columns(dimension)?);
-    }
+    let referenced_columns = qualified_columns(&constraint)?;
 
     for column in referenced_columns {
         let table_name = column.table.as_str();
@@ -314,6 +395,29 @@ fn validate_pgn_policy(
                         "Column '{table_name}.{column_name}' referenced in constraint \
                          does not exist in sink table '{}'",
                         sink.unwrap_or(table_name)
+                    ),
+                    Some(table_name.to_string()),
+                    Some(column_name.to_string()),
+                    Some(constraint.to_string()),
+                    Some("catalog_validation"),
+                ));
+            }
+        } else if let Some(columns) = resolve_dimension_columns(
+            &table_key,
+            dimension_tables,
+            dimension_aliases,
+            &dimension_columns,
+        ) {
+            if !columns.contains(&column_key) {
+                let base = dimension_aliases
+                    .get(table_key.as_str())
+                    .map(String::as_str)
+                    .unwrap_or(table_name);
+                return Err(RewriteError::catalog_with_context(
+                    ErrorKind::UnknownColumn,
+                    format!(
+                        "Column '{table_name}.{column_name}' referenced in constraint \
+                         does not exist in dimension table '{base}'"
                     ),
                     Some(table_name.to_string()),
                     Some(column_name.to_string()),
@@ -372,6 +476,31 @@ fn qualified_columns(sql: &str) -> Result<Vec<QualifiedColumn>, RewriteError> {
     Ok(crate::sql::collect_qualified_columns_from_expr(&expr))
 }
 
+fn is_catalog_unique_source_column(catalog: &TableCatalog, qualified: &str) -> bool {
+    let Some((table, column)) = qualified.rsplit_once('.') else {
+        return false;
+    };
+    catalog.is_unique_column(table, column)
+}
+
+fn resolve_dimension_columns<'a>(
+    table_key: &TableKey,
+    dimension_tables: &[String],
+    dimension_aliases: &HashMap<String, String>,
+    dimension_columns: &'a HashMap<TableKey, HashSet<String>>,
+) -> Option<&'a HashSet<String>> {
+    if dimension_tables
+        .iter()
+        .any(|table| TableKey::new(table) == *table_key)
+    {
+        return dimension_columns.get(table_key);
+    }
+    if let Some(base) = dimension_aliases.get(table_key.as_str()) {
+        return dimension_columns.get(&TableKey::new(base));
+    }
+    dimension_columns.get(table_key)
+}
+
 fn resolve_source_table_key(
     table_key: &TableKey,
     source_names: &HashSet<TableKey>,
@@ -384,6 +513,151 @@ fn resolve_source_table_key(
         .get(table_key.as_str())
         .map(|base| TableKey::new(base))
         .filter(|base| source_names.contains(base))
+}
+
+fn source_columns_in_sink_equality(
+    sql: &str,
+    source_qualifier_names: &HashSet<TableKey>,
+    sink_names: &HashSet<TableKey>,
+) -> HashSet<String> {
+    let Ok(expr) = parse_constraint_expr(sql) else {
+        return HashSet::new();
+    };
+    let mut found = HashSet::new();
+    collect_source_sink_equality_pairs(&expr, source_qualifier_names, sink_names, &mut found);
+    found
+}
+
+fn collect_source_sink_equality_pairs(
+    expr: &Expr,
+    source_qualifier_names: &HashSet<TableKey>,
+    sink_names: &HashSet<TableKey>,
+    found: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::BinaryOp {
+            left,
+            op: sqlparser::ast::BinaryOperator::Eq | sqlparser::ast::BinaryOperator::NotEq,
+            right,
+        } => {
+            if let (Some(source), Some(sink)) = (
+                qualified_source_column(left, source_qualifier_names),
+                qualified_sink_column(right, sink_names),
+            ) {
+                found.insert(source.to_ascii_lowercase());
+                let _ = sink;
+            } else if let (Some(source), Some(sink)) = (
+                qualified_source_column(right, source_qualifier_names),
+                qualified_sink_column(left, sink_names),
+            ) {
+                found.insert(source.to_ascii_lowercase());
+                let _ = sink;
+            }
+            collect_source_sink_equality_pairs(left, source_qualifier_names, sink_names, found);
+            collect_source_sink_equality_pairs(right, source_qualifier_names, sink_names, found);
+        }
+        Expr::Nested(inner) => {
+            collect_source_sink_equality_pairs(inner, source_qualifier_names, sink_names, found);
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_source_sink_equality_pairs(left, source_qualifier_names, sink_names, found);
+            collect_source_sink_equality_pairs(right, source_qualifier_names, sink_names, found);
+        }
+        _ => {}
+    }
+}
+
+fn qualified_source_column(
+    expr: &Expr,
+    source_qualifier_names: &HashSet<TableKey>,
+) -> Option<String> {
+    let column = QualifiedColumn::from_expr(expr)?;
+    if source_qualifier_names.contains(&TableKey::from_table(&column.table)) {
+        Some(column.display_sql())
+    } else {
+        None
+    }
+}
+
+fn qualified_sink_column(expr: &Expr, sink_names: &HashSet<TableKey>) -> Option<String> {
+    let column = QualifiedColumn::from_expr(expr)?;
+    if sink_names.contains(&TableKey::from_table(&column.table)) {
+        Some(column.display_sql())
+    } else {
+        None
+    }
+}
+
+fn implicit_uniqueness_source_columns(
+    sql: &str,
+    source_qualifier_names: &HashSet<TableKey>,
+) -> HashSet<String> {
+    let Ok(expr) = parse_constraint_expr(sql) else {
+        return HashSet::new();
+    };
+    let mut found = HashSet::new();
+    collect_implicit_uniqueness_source_columns(&expr, source_qualifier_names, &mut found);
+    found
+}
+
+fn collect_implicit_uniqueness_source_columns(
+    expr: &Expr,
+    source_qualifier_names: &HashSet<TableKey>,
+    found: &mut HashSet<String>,
+) {
+    if let Some(column) = column_value_comparison_source(expr, source_qualifier_names) {
+        found.insert(column);
+    }
+    match expr {
+        Expr::BinaryOp { left, right, .. } => {
+            collect_implicit_uniqueness_source_columns(left, source_qualifier_names, found);
+            collect_implicit_uniqueness_source_columns(right, source_qualifier_names, found);
+        }
+        Expr::Nested(inner)
+        | Expr::UnaryOp { expr: inner, .. }
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner) => {
+            collect_implicit_uniqueness_source_columns(inner, source_qualifier_names, found);
+        }
+        _ => {}
+    }
+}
+
+fn column_value_comparison_source(
+    expr: &Expr,
+    source_qualifier_names: &HashSet<TableKey>,
+) -> Option<String> {
+    let Expr::BinaryOp { left, op, right } = expr else {
+        return None;
+    };
+    if !matches!(
+        op,
+        sqlparser::ast::BinaryOperator::Eq
+            | sqlparser::ast::BinaryOperator::NotEq
+            | sqlparser::ast::BinaryOperator::Gt
+            | sqlparser::ast::BinaryOperator::Lt
+            | sqlparser::ast::BinaryOperator::GtEq
+            | sqlparser::ast::BinaryOperator::LtEq
+    ) {
+        return None;
+    }
+    if let Some(column) = QualifiedColumn::from_expr(left) {
+        if QualifiedColumn::from_expr(right).is_some() {
+            return None;
+        }
+        if source_qualifier_names.contains(&TableKey::from_table(&column.table)) {
+            return Some(column.display_sql().to_ascii_lowercase());
+        }
+    }
+    if let Some(column) = QualifiedColumn::from_expr(right) {
+        if QualifiedColumn::from_expr(left).is_some() {
+            return None;
+        }
+        if source_qualifier_names.contains(&TableKey::from_table(&column.table)) {
+            return Some(column.display_sql().to_ascii_lowercase());
+        }
+    }
+    None
 }
 
 fn unaggregated_source_columns(
@@ -604,7 +878,9 @@ mod tests {
         let policy = PolicyIr::Pgn {
             sources: vec!["missing".into()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: HashMap::new(),
@@ -622,7 +898,9 @@ mod tests {
         let policy = PolicyIr::Pgn {
             sources: vec!["foo".into()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: HashMap::new(),
@@ -640,11 +918,58 @@ mod tests {
         let policy = PolicyIr::Pgn {
             sources: vec!["foo".into()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: HashMap::new(),
             constraint: "max(foo.missing) > 1".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        let err = catalog.validate_policy(&policy).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnknownColumn);
+    }
+
+    #[test]
+    fn validates_constraint_columns_through_dimension_alias() {
+        let mut catalog = sample_catalog();
+        catalog.register_table("catalog_users", vec!["id".into(), "name".into()]);
+        let mut dimension_aliases = HashMap::new();
+        dimension_aliases.insert("u".to_string(), "catalog_users".to_string());
+        let policy = PolicyIr::Pgn {
+            sources: vec!["foo".into()],
+            required_sources: Vec::new(),
+            dimension_tables: vec!["catalog_users".into()],
+            dimension_aliases,
+            dimension_queries: HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: HashMap::new(),
+            constraint: "max(foo.id) > 1 AND u.id = 1".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        catalog
+            .validate_policy(&policy)
+            .expect("dimension alias column should validate");
+    }
+
+    #[test]
+    fn rejects_unknown_dimension_column() {
+        let mut catalog = sample_catalog();
+        catalog.register_table("regions", vec!["id".into(), "code".into()]);
+        let policy = PolicyIr::Pgn {
+            sources: vec!["foo".into()],
+            required_sources: Vec::new(),
+            dimension_tables: vec!["regions".into()],
+            dimension_aliases: HashMap::new(),
+            dimension_queries: HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: HashMap::new(),
+            constraint: "max(foo.id) > 1 AND regions.missing = 'x'".into(),
             on_fail: Resolution::Remove,
             description: None,
         };
@@ -660,7 +985,9 @@ mod tests {
         let policy = PolicyIr::Pgn {
             sources: vec!["foo".into()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases,

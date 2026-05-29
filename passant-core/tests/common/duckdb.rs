@@ -38,6 +38,7 @@ impl VScalar for KillScalar {
 
 fn register_passant_udfs(conn: &Connection) -> duckdb::Result<()> {
     conn.register_scalar_function::<KillScalar>("kill")?;
+    conn.register_scalar_function::<KillScalar>("passant_kill")?;
     Ok(())
 }
 

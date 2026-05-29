@@ -9,7 +9,9 @@ fn cross_source_outer_join_rewrites_with_source_sets() {
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["bar".to_string(), "foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -29,7 +31,9 @@ fn cross_source_union_all_passes_through_when_branch_split_unavailable() {
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -54,11 +58,11 @@ fn except_with_single_source_policy_rewrites_branch() {
 }
 
 #[test]
-fn delete_with_policies_is_unsupported() {
-    crate::common::assert_rewrite_fails_with(
+fn delete_with_policies_passthrough() {
+    crate::common::assert_rewrite(
         "DELETE FROM foo WHERE id = 1",
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
-        "delete with registered policies",
+        "DELETE FROM foo WHERE id = 1",
     );
 }
 
@@ -94,7 +98,9 @@ fn anti_join_probe_side_policy_rewrites_with_source_sets() {
     let policies = vec![PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -114,7 +120,9 @@ fn insert_without_required_source_rewrites_to_false() {
     let policy = PolicyIr::Pgn {
         sources: vec!["receipts".to_string()],
         required_sources: vec!["receipts".to_string()],
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

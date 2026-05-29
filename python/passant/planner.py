@@ -82,11 +82,13 @@ def _policy_specs_json(policies: list[Policy]) -> str:
                 "sources": policy.sources,
                 "required_sources": policy.required_sources,
                 "dimensions": policy.dimensions,
+                "dimension_aliases": policy.dimension_aliases,
+                "dimension_queries": policy.dimension_queries,
                 "sink": policy.sink,
                 "sink_alias": policy.sink_alias,
                 "source_aliases": policy.source_aliases,
                 "constraint": policy.constraint,
-                "on_fail": policy.on_fail.value,
+                "on_fail": policy.on_fail_label,
                 "description": policy.description,
             }
             for policy in policies
@@ -105,14 +107,26 @@ def _policies_from_rust(policies_json: str) -> list[Policy]:
         policies.append(
             Policy(
                 constraint=spec["constraint"],
-                on_fail=Resolution(resolution_to_python(spec["on_fail"])),
+                on_fail=Resolution.from_label(resolution_to_python(spec["on_fail"])),
                 sources=spec["sources"],
                 required_sources=spec.get("required_sources", []),
                 sink=spec.get("sink"),
                 sink_alias=spec.get("sink_alias"),
                 source_aliases=spec.get("source_aliases", {}),
                 description=spec.get("description"),
-                dimensions=spec.get("dimensions", []),
+                dimensions=spec.get("dimensions") or spec.get("dimension_tables", []),
+                dimension_aliases=spec.get("dimension_aliases", {}),
+                dimension_queries=spec.get("dimension_queries", {}),
+                udf_name=_udf_name_from_spec(spec),
             )
         )
     return policies
+
+
+def _udf_name_from_spec(spec: dict) -> str | None:
+    label = resolution_to_python(spec["on_fail"])
+    if label.startswith("UDF "):
+        return label[4:].strip()
+    if label.startswith("RELATION UDF "):
+        return label[13:].strip()
+    return None

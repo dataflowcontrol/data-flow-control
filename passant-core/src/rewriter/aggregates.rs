@@ -94,13 +94,12 @@ fn transform_scan_aggregate_function(function: sqlparser::ast::Function) -> Expr
         }
         return duckdb_array(null_literal());
     }
-    if lower == "count"
-        && function_is_distinct(&function)
-        && let Some(column) = first_function_expr(&function)
-    {
-        return column;
-    }
     if is_count_like_aggregate(&lower, &function) {
+        if function_is_distinct(&function)
+            && let Some(column) = first_function_expr(&function)
+        {
+            return column;
+        }
         return parse_expr_or_identity("1");
     }
     if is_aggregate_name(&name) {
@@ -140,7 +139,12 @@ pub(crate) fn finalize_policy_scan_ready(store: &mut PolicyStore, index: usize) 
     if !compiled.semiring.all_distributive || compiled.semiring.aggregate_count == 0 {
         return;
     }
-    if let Ok(scan_ready) = transform_scan_aggregates(constraint.ast.clone()) {
+    if super::policy_expr::is_count_distinct_cardinality_one_check(&constraint.ast) {
+        return;
+    }
+    if let Ok(scan_ready) = transform_scan_aggregates(constraint.ast.clone())
+        && !super::expr::expr_contains_aggregate(&scan_ready)
+    {
         store.set_scan_ready_expr(index, scan_ready);
     }
 }
@@ -155,7 +159,9 @@ mod scan_ready_tests {
         PolicyIr::Pgn {
             sources: vec![source.to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),

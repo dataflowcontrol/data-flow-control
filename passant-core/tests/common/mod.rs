@@ -13,7 +13,9 @@ pub fn pgn_policy_with(sources: &[&str], constraint: &str, on_fail: Resolution) 
     PolicyIr::Pgn {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -27,7 +29,9 @@ pub fn pgn_policy_sink(sources: &[&str], sink: &str, constraint: &str) -> Policy
     PolicyIr::Pgn {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some(sink.to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -41,7 +45,9 @@ pub fn pgn_policy_required(sources: &[&str], required: &[&str], constraint: &str
     PolicyIr::Pgn {
         sources: sources.iter().map(|s| (*s).to_string()).collect(),
         required_sources: required.iter().map(|s| (*s).to_string()).collect(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

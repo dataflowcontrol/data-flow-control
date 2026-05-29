@@ -39,6 +39,6 @@ fn kill_and_remove_policies_combine_on_scan() {
             pgn_policy(&["foo"], "max(foo.amount) > 0"),
         ],
     );
-    assert!(sql.contains("kill()"));
+    assert!(sql.contains("passant_kill"));
     assert!(sql.contains("foo.amount > 0"));
 }

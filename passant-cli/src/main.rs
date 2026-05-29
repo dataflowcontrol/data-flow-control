@@ -7,7 +7,9 @@ use passant_core::{
 
 #[derive(Debug, Parser)]
 #[command(name = "passant")]
-#[command(about = "Passant query planner and rewrite explainer")]
+#[command(
+    about = "Passant query planner and rewrite explainer (paper PGN, REMOVE/KILL/UDF resolutions)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -38,7 +40,10 @@ enum Commands {
         policy: Vec<String>,
     },
     ParsePolicy {
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "PGN policy text (SOURCE/SINK/DIMENSION/UNIQUE/CONSTRAINT/ON FAIL)"
+        )]
         text: Option<String>,
         #[arg(long)]
         source: Vec<String>,
@@ -117,7 +122,9 @@ fn main() -> anyhow::Result<()> {
                 PolicyIr::Pgn {
                     sources: source,
                     required_sources: Vec::new(),
-                    dimensions: dimension,
+                    dimension_tables: dimension,
+                    dimension_aliases: std::collections::HashMap::new(),
+                    dimension_queries: std::collections::HashMap::new(),
                     sink,
                     sink_alias: None,
                     source_aliases: std::collections::HashMap::new(),

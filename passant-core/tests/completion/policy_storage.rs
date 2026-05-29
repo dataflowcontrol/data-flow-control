@@ -39,7 +39,9 @@ fn delete_policy_can_match_sink_and_on_fail() {
     let mut rewriter = rewriter_with_policies(&[PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some("reports".to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

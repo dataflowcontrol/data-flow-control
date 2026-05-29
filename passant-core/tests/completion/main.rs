@@ -11,3 +11,4 @@ mod semiring;
 mod source_sets;
 mod symmetric_self_join;
 mod threshold;
+mod unique_not_unique;

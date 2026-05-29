@@ -3,7 +3,7 @@ use sqlparser::ast::{
     Array, BinaryOperator, Cte, DuplicateTreatment, Expr, Function, FunctionArg, FunctionArgExpr,
     FunctionArgumentList, FunctionArguments, GroupByExpr, Ident, Join, JoinConstraint,
     JoinOperator, ObjectName, Query, Select, SelectItem, SetExpr, Statement, TableAlias,
-    TableFactor, TableWithJoins, Value, WildcardAdditionalOptions, With,
+    TableFactor, TableWithJoins, UnaryOperator, Value, WildcardAdditionalOptions, With,
 };
 
 /// `table.column` compound identifier.
@@ -58,6 +58,22 @@ pub fn count_distinct_eq_one(table: &str, column: &str) -> Expr {
         BinaryOperator::Eq,
         Expr::Value(Value::Number("1".into(), false)),
     )
+}
+
+pub fn count_distinct_ne_one(table: &str, column: &str) -> Expr {
+    binary_comparison(
+        distinct_aggregate("count", qualified_column(table, column)),
+        BinaryOperator::NotEq,
+        Expr::Value(Value::Number("1".into(), false)),
+    )
+}
+
+pub fn min_column(table: &str, column: &str) -> Expr {
+    function_call("min", vec![qualified_column(table, column)])
+}
+
+pub fn max_column(table: &str, column: &str) -> Expr {
+    function_call("max", vec![qualified_column(table, column)])
 }
 
 pub fn scalar_subquery(body: Expr, table: &str) -> Expr {
@@ -337,11 +353,19 @@ pub fn case_when(condition: Expr, then_expr: Expr, else_expr: Expr) -> Expr {
     }
 }
 
-pub fn or_kill(predicate: Expr) -> Expr {
+/// Filter that keeps rows when `pass_expr` holds, or aborts via `passant_kill()` when it does not.
+pub fn passant_kill_pass_filter(pass_expr: Expr) -> Expr {
     Expr::BinaryOp {
-        left: Box::new(Expr::Nested(Box::new(predicate))),
+        left: Box::new(pass_expr.clone()),
         op: BinaryOperator::Or,
-        right: Box::new(function_call("kill", Vec::new())),
+        right: Box::new(case_when(
+            Expr::UnaryOp {
+                op: UnaryOperator::Not,
+                expr: Box::new(pass_expr),
+            },
+            function_call("passant_kill", Vec::new()),
+            bool_literal(true),
+        )),
     }
 }
 
@@ -388,7 +412,13 @@ pub fn passant_filter_temp_column(column: &str) -> String {
 
 /// Sanitize a derived SELECT item alias (SQL identifier rules, max 50 chars).
 pub fn sanitize_projection_alias(raw: &str) -> String {
-    let mut alias = raw
+    let trimmed = raw.trim();
+    let stripped = if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    let mut alias = stripped
         .to_ascii_lowercase()
         .replace(['(', ')'], "_")
         .replace([',', ' '], "_");

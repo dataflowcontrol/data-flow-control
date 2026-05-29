@@ -11,7 +11,9 @@ fn dfc(source: &str, threshold: i64) -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec![source.to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -25,7 +27,9 @@ fn sink_only_policy(sink: &str) -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec![],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: Some(sink.to_string()),
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -39,7 +43,9 @@ fn multi_source_policy(hot: &str, other: &str, threshold: i64) -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec![hot.to_string(), other.to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -147,7 +153,9 @@ fn partial_push_enforcement_lookup_uses_overlap_for_multi_source() {
     store.register(PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

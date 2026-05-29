@@ -6,7 +6,9 @@ fn rewriter_applies_scan_remove_policy_without_comment_stub() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -27,7 +29,9 @@ fn rewriter_collapses_dominated_remove_thresholds() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -38,7 +42,9 @@ fn rewriter_collapses_dominated_remove_thresholds() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -59,7 +65,9 @@ fn rewriter_collapses_dominated_upper_thresholds() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -70,7 +78,9 @@ fn rewriter_collapses_dominated_upper_thresholds() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -91,7 +101,9 @@ fn rewriter_applies_aliases_and_having_for_aggregation() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -115,7 +127,9 @@ fn rewriter_filters_after_limit_for_remove_policy() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -139,7 +153,9 @@ fn rewriter_filters_after_offset_for_remove_policy() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -163,7 +179,9 @@ fn rewriter_filters_after_limit_offset_for_remove_policy() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -187,7 +205,9 @@ fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -206,12 +226,14 @@ fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
 }
 
 #[test]
-fn rewriter_rejects_delete_when_policies_are_registered() {
+fn rewriter_passthrough_delete_when_policies_are_registered() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),
@@ -220,13 +242,10 @@ fn rewriter_rejects_delete_when_policies_are_registered() {
         description: None,
     });
 
-    let err = rewriter
+    let sql = rewriter
         .rewrite("DELETE FROM foo WHERE id = 1")
-        .expect_err("delete should be rejected");
-    assert_eq!(
-        err.to_string(),
-        "unsupported query form: delete with registered policies"
-    );
+        .expect("delete should pass through unchanged");
+    assert_eq!(sql, "DELETE FROM foo WHERE id = 1");
 }
 
 #[test]
@@ -235,7 +254,9 @@ fn rewriter_rewrites_except_branch_when_policies_are_registered() {
     rewriter.register_policy(PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
         required_sources: Vec::new(),
-        dimensions: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
         source_aliases: std::collections::HashMap::new(),

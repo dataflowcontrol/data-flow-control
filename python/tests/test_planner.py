@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import duckdb
 import pytest
@@ -84,6 +85,18 @@ def test_umbra_kill_registration_fails():
 
         def register_kill_function(self) -> None:
             raise AssertionError("register_kill_function should not be called")
+
+        def register_resolution_function(
+            self,
+            name: str,
+            func: Any,
+            parameter_types: list[Any],
+            return_type: Any,
+        ) -> None:
+            raise AssertionError("register_resolution_function should not be called")
+
+        def register_relation_resolution_function(self, name: str, func: Any) -> None:
+            raise AssertionError("register_relation_resolution_function should not be called")
 
         def close(self) -> None:
             return

@@ -71,15 +71,15 @@ pub(crate) fn plan_select_rewrite(
     store: &PolicyStore,
     catalog: &TableCatalog,
     stats: Option<&RewriteStatsCell>,
-    select: &Select,
+    select: &mut Select,
     analysis: &SelectAnalysis,
     context: &RewriteContext,
     exists_handled: &HashSet<usize>,
 ) -> Result<SelectRewritePlan, crate::diagnostics::RewriteError> {
     let mut plan = SelectRewritePlan::default();
 
-    plan_join_input_source_filters(store, catalog, stats, select, analysis, &mut plan)?;
-    plan_join_policy_pushdown(store, catalog, stats, select, analysis, &mut plan)?;
+    plan_join_input_source_filters(store, catalog, stats, select, analysis, context, &mut plan)?;
+    plan_join_policy_pushdown(store, catalog, stats, select, analysis, context, &mut plan)?;
 
     let (applicable, policy_diag) = resolve_scope_policies(
         store,
@@ -103,10 +103,11 @@ pub(crate) fn plan_select_rewrite(
         store,
         catalog,
         stats,
-        &analysis.scope,
+        select,
         context,
         analysis.is_aggregation,
         applicable,
+        &mut plan.diagnostics,
     )?;
     plan.diagnostics.emitted_policy_actions = plan.policy_actions.len();
     Ok(plan)
@@ -118,6 +119,7 @@ fn plan_join_input_source_filters(
     stats: Option<&RewriteStatsCell>,
     select: &Select,
     analysis: &SelectAnalysis,
+    context: &RewriteContext,
     plan: &mut SelectRewritePlan,
 ) -> Result<(), crate::diagnostics::RewriteError> {
     if (!select_has_full_join(select) && !select_has_anti_join(select)) || store.is_empty() {
@@ -146,7 +148,7 @@ fn plan_join_input_source_filters(
                 };
                 relation_filters.push((
                     TableFactorFilterTarget::FromRelation { from_index },
-                    join_pushdown_expr(policy, &constraint_ctx, &base, None, catalog)?,
+                    join_pushdown_expr(policy, &constraint_ctx, &base, None, catalog, context)?,
                 ));
                 *pushed_counts.entry(index).or_default() += 1;
             }
@@ -171,7 +173,7 @@ fn plan_join_input_source_filters(
                             from_index,
                             join_index,
                         },
-                        join_pushdown_expr(policy, &constraint_ctx, &base, None, catalog)?,
+                        join_pushdown_expr(policy, &constraint_ctx, &base, None, catalog, context)?,
                     ));
                     *pushed_counts.entry(index).or_default() += 1;
                 }
@@ -198,6 +200,7 @@ fn plan_join_policy_pushdown(
     stats: Option<&RewriteStatsCell>,
     select: &Select,
     analysis: &SelectAnalysis,
+    context: &RewriteContext,
     plan: &mut SelectRewritePlan,
 ) -> Result<(), crate::diagnostics::RewriteError> {
     let occurrence_counts = &analysis.source_occurrence_counts;
@@ -224,6 +227,7 @@ fn plan_join_policy_pushdown(
                     base,
                     alias.clone(),
                     catalog,
+                    context,
                 )?);
                 *pushed_counts.entry(index).or_default() += 1;
             }
@@ -252,6 +256,7 @@ fn plan_join_policy_pushdown(
                         &base,
                         alias.clone(),
                         catalog,
+                        context,
                     )?,
                 });
                 *pushed_counts.entry(index).or_default() += 1;

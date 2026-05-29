@@ -8,6 +8,7 @@ mod write_plan;
 
 pub(crate) use actions::{
     PolicyResolutionAction, apply_policy_resolution_actions, plan_policy_filter_actions,
+    relation_udf_names, relation_violation_filters,
 };
 pub use applicability::{
     ScopePlanDiagnostics, StatementRewriteSummary, plan_statement_rewrite_summary,
@@ -35,7 +36,9 @@ mod tests {
         PolicyIr::Pgn {
             sources: vec![source.to_string()],
             required_sources: Vec::new(),
-            dimensions: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
             sink: None,
             sink_alias: None,
             source_aliases: std::collections::HashMap::new(),
@@ -75,10 +78,10 @@ mod tests {
         .expect("parse")
         .pop()
         .expect("statement");
-        let sqlparser::ast::Statement::Query(query) = statement else {
+        let sqlparser::ast::Statement::Query(mut query) = statement else {
             panic!("expected query");
         };
-        let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
+        let sqlparser::ast::SetExpr::Select(select) = query.body.as_mut() else {
             panic!("expected select");
         };
         let analysis = SelectAnalysis::from_select(select);
@@ -87,7 +90,7 @@ mod tests {
             rewriter.policy_store(),
             rewriter.catalog(),
             None,
-            select,
+            select.as_mut(),
             &analysis,
             &context,
             &HashSet::new(),
@@ -97,7 +100,7 @@ mod tests {
         assert_eq!(plan.diagnostics.emitted_policy_actions, 1);
         assert!(matches!(
             plan.policy_actions.first(),
-            Some(PolicyResolutionAction::Pgn { .. })
+            Some(PolicyResolutionAction::Filter { .. })
         ));
     }
 

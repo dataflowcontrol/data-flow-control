@@ -19,8 +19,12 @@ pub struct PolicySpec {
     pub sources: Vec<String>,
     #[serde(default)]
     pub required_sources: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "dimensions")]
     pub dimensions: Vec<String>,
+    #[serde(default)]
+    pub dimension_aliases: HashMap<String, String>,
+    #[serde(default)]
+    pub dimension_queries: HashMap<String, String>,
     pub sink: Option<String>,
     pub sink_alias: Option<String>,
     #[serde(default)]
@@ -172,7 +176,9 @@ fn policy_ir_from_spec(spec: &PolicySpec) -> PyResult<PolicyIr> {
     Ok(PolicyIr::Pgn {
         sources: spec.sources.clone(),
         required_sources: spec.required_sources.clone(),
-        dimensions: spec.dimensions.clone(),
+        dimension_tables: spec.dimensions.clone(),
+        dimension_aliases: spec.dimension_aliases.clone(),
+        dimension_queries: spec.dimension_queries.clone(),
         sink: spec.sink.clone(),
         sink_alias: spec.sink_alias.clone(),
         source_aliases: spec.source_aliases.clone(),

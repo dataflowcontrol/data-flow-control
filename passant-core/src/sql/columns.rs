@@ -1,6 +1,8 @@
 //! Qualified-column extraction from constraint ASTs.
 
-use sqlparser::ast::{Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments};
+use sqlparser::ast::{
+    Array, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Map, Subscript,
+};
 
 use crate::identifiers::QualifiedColumn;
 
@@ -49,7 +51,52 @@ fn visit_expr(expr: &Expr, found: &mut Vec<QualifiedColumn>) {
         }
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => visit_expr(expr, found),
         Expr::Cast { expr, .. } => visit_expr(expr, found),
+        Expr::Dictionary(fields) => {
+            for field in fields {
+                visit_expr(&field.value, found);
+            }
+        }
+        Expr::Map(map) => visit_map(map, found),
+        Expr::Array(array) => visit_array(array, found),
+        Expr::Subscript { expr, subscript } => {
+            visit_expr(expr, found);
+            visit_subscript(subscript, found);
+        }
         _ => {}
+    }
+}
+
+fn visit_map(map: &Map, found: &mut Vec<QualifiedColumn>) {
+    for entry in &map.entries {
+        visit_expr(&entry.key, found);
+        visit_expr(&entry.value, found);
+    }
+}
+
+fn visit_array(array: &Array, found: &mut Vec<QualifiedColumn>) {
+    for expr in &array.elem {
+        visit_expr(expr, found);
+    }
+}
+
+fn visit_subscript(subscript: &Subscript, found: &mut Vec<QualifiedColumn>) {
+    match subscript {
+        Subscript::Index { index } => visit_expr(index, found),
+        Subscript::Slice {
+            lower_bound,
+            upper_bound,
+            stride,
+        } => {
+            if let Some(lower_bound) = lower_bound {
+                visit_expr(lower_bound, found);
+            }
+            if let Some(upper_bound) = upper_bound {
+                visit_expr(upper_bound, found);
+            }
+            if let Some(stride) = stride {
+                visit_expr(stride, found);
+            }
+        }
     }
 }
 
