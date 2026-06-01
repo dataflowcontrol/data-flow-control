@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from dataclasses import replace
 from typing import Any
@@ -28,6 +29,10 @@ def strip_passant_comment(sql: str) -> str:
 
 
 _UI_STREAM_EXTENSION = "external"
+_DDL_STATEMENT = re.compile(
+    r"^\s*(CREATE|DROP|ALTER)\s+",
+    re.IGNORECASE,
+)
 
 
 def _duckdb_extension_loaded(conn: Any, extension_name: str) -> bool:
@@ -86,6 +91,9 @@ class Connection:
         self._ui_stream_endpoint: str | None = None
         self._ui_update_mode: UiUpdateMode = UiUpdateMode.APPROVAL_ONLY
         self._ui_stream_extension_ready = False
+        self._catalog_synced = False
+        self._catalog_has_row_counts = False
+        self._catalog_table_names: set[str] | None = None
         if adapter.capabilities.exception_udf:
             adapter.register_kill_function()
 
@@ -101,8 +109,72 @@ class Connection:
             f"Underlying connection is not exposed for dialect {self.adapter.dialect!r}"
         )
 
-    def refresh_catalog(self) -> None:
-        self.planner.sync_catalog(self.adapter.introspect_catalog())
+    def refresh_catalog(self, *, force: bool = False, include_row_counts: bool = False) -> None:
+        if force or not self._catalog_synced:
+            snapshot = self._introspect_catalog(include_row_counts=include_row_counts)
+            self._apply_catalog_snapshot(snapshot, include_row_counts=include_row_counts)
+
+    def _introspect_catalog(self, *, include_row_counts: bool = False) -> dict:
+        if isinstance(self.adapter, DuckDBAdapter):
+            return self.adapter.introspect_catalog(include_row_counts=include_row_counts)
+        return self.adapter.introspect_catalog()
+
+    def _apply_catalog_snapshot(self, snapshot: dict, *, include_row_counts: bool) -> None:
+        self.planner.sync_catalog(snapshot)
+        self._catalog_synced = True
+        self._catalog_has_row_counts = include_row_counts
+        self._catalog_table_names = set(snapshot.get("tables", {}).keys())
+
+    def _policy_referenced_tables(self, policies: list[Policy]) -> set[str]:
+        tables: set[str] = set()
+        for policy in policies:
+            tables.update(policy.sources or [])
+            if policy.sink:
+                tables.add(policy.sink)
+            for dimension in policy.dimensions or []:
+                tables.add(dimension)
+            for alias, base in (policy.dimension_aliases or {}).items():
+                tables.add(alias)
+                tables.add(base)
+        return tables
+
+    def _catalog_covers_tables(self, table_names: set[str]) -> bool:
+        if not self._catalog_table_names:
+            return False
+        known = {name.lower() for name in self._catalog_table_names}
+        for table in table_names:
+            normalized = table.lower()
+            short = normalized.split(".")[-1]
+            if normalized in known or short in known:
+                continue
+            if not any(
+                entry == normalized or entry.endswith(f".{short}") or entry.split(".")[-1] == short
+                for entry in known
+            ):
+                return False
+        return True
+
+    def _ensure_catalog_for_registration(self, policies: list[Policy]) -> None:
+        referenced = self._policy_referenced_tables(policies)
+        need_row_counts = any(p.dimensions for p in policies)
+        if (
+            self._catalog_synced
+            and (not need_row_counts or self._catalog_has_row_counts)
+            and self._catalog_covers_tables(referenced)
+        ):
+            return
+        snapshot = self._introspect_catalog(include_row_counts=need_row_counts)
+        self._apply_catalog_snapshot(snapshot, include_row_counts=need_row_counts)
+
+    def _invalidate_catalog_cache(self) -> None:
+        self._catalog_synced = False
+        self._catalog_has_row_counts = False
+        self._catalog_table_names = None
+
+    @staticmethod
+    def _statement_may_change_schema(sql: str) -> bool:
+        stripped = strip_passant_comment(sql).strip()
+        return bool(_DDL_STATEMENT.match(stripped))
 
     def register_resolution_function(
         self,
@@ -125,37 +197,47 @@ class Connection:
         self.adapter.register_relation_resolution_function(name, func)
 
     def register_policy(self, policy: Policy) -> None:
-        if isinstance(policy, Policy):
-            if policy.on_fail == Resolution.KILL:
-                if not self.adapter.capabilities.exception_udf:
-                    raise ValueError(
-                        f"Resolution {policy.on_fail.value} is not supported for dialect "
-                        f"{self.adapter.dialect!r}: missing capability exception_udf"
-                    )
-            elif policy.on_fail == Resolution.UDF:
-                if not self.adapter.capabilities.tuple_udf:
-                    raise ValueError(
-                        f"Resolution {policy.on_fail_label} is not supported for dialect "
-                        f"{self.adapter.dialect!r}: missing capability tuple_udf"
-                    )
-            elif policy.on_fail == Resolution.RELATION_UDF:
-                if not self.adapter.capabilities.relation_udf:
-                    raise ValueError(
-                        f"Resolution {policy.on_fail_label} is not supported for dialect "
-                        f"{self.adapter.dialect!r}: missing capability relation_udf"
-                    )
-            elif policy.on_fail == Resolution.UI:
-                if not self.adapter.capabilities.ui_resolution:
-                    raise ValueError(
-                        f"Resolution {policy.on_fail.value} is not supported for dialect "
-                        f"{self.adapter.dialect!r}: missing capability ui_resolution"
-                    )
-                if self._ui_handler is None:
-                    raise ValueError(
-                        "Resolution UI requires configure_ui_resolution() before register_policy()"
-                    )
-        self.refresh_catalog()
+        self._validate_policy_capabilities(policy)
+        self._ensure_catalog_for_registration([policy])
         self.planner.register_policy(policy)
+
+    def register_policies(self, policies: list[Policy]) -> None:
+        for policy in policies:
+            self._validate_policy_capabilities(policy)
+        self._ensure_catalog_for_registration(policies)
+        self.planner.register_policies(policies)
+
+    def _validate_policy_capabilities(self, policy: Policy) -> None:
+        if not isinstance(policy, Policy):
+            return
+        if policy.on_fail == Resolution.KILL:
+            if not self.adapter.capabilities.exception_udf:
+                raise ValueError(
+                    f"Resolution {policy.on_fail.value} is not supported for dialect "
+                    f"{self.adapter.dialect!r}: missing capability exception_udf"
+                )
+        elif policy.on_fail == Resolution.UDF:
+            if not self.adapter.capabilities.tuple_udf:
+                raise ValueError(
+                    f"Resolution {policy.on_fail_label} is not supported for dialect "
+                    f"{self.adapter.dialect!r}: missing capability tuple_udf"
+                )
+        elif policy.on_fail == Resolution.RELATION_UDF:
+            if not self.adapter.capabilities.relation_udf:
+                raise ValueError(
+                    f"Resolution {policy.on_fail_label} is not supported for dialect "
+                    f"{self.adapter.dialect!r}: missing capability relation_udf"
+                )
+        elif policy.on_fail == Resolution.UI:
+            if not self.adapter.capabilities.ui_resolution:
+                raise ValueError(
+                    f"Resolution {policy.on_fail.value} is not supported for dialect "
+                    f"{self.adapter.dialect!r}: missing capability ui_resolution"
+                )
+            if self._ui_handler is None:
+                raise ValueError(
+                    "Resolution UI requires configure_ui_resolution() before register_policy()"
+                )
 
     def configure_ui_resolution(
         self,
@@ -301,10 +383,15 @@ class Connection:
     def execute(self, query: str, *, params=None, options: RewriteOptions | None = None):
         if self._ui_stream_endpoint is not None:
             self.reset_ui_stream()
+        if self._statement_may_change_schema(query):
+            self._invalidate_catalog_cache()
+            return self.adapter.execute(query, params)
         rewritten = self.transform_query(query, options=options)
         executable = strip_passant_comment(rewritten)
         self._ensure_ui_stream_extension_for_execute(executable)
         result = self.adapter.execute(executable, params)
+        if self._statement_may_change_schema(query):
+            self._invalidate_catalog_cache()
         followup = self.planner.last_ui_followup_sql()
         if followup:
             self.adapter.execute(followup, params)

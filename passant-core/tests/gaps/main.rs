@@ -22,3 +22,5 @@ mod multi_source;
 mod operators;
 #[path = "query_shapes.rs"]
 mod query_shapes;
+#[path = "scalar_subquery.rs"]
+mod scalar_subquery;

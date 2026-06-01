@@ -113,8 +113,16 @@ pub(crate) fn build_policy_resolution_actions(
 
     let mut actions = Vec::new();
     for (index, policy, applicability) in applicable {
-        let skipped_dimensions =
-            inject_policy_dimensions(select, policy, catalog, &mut diagnostics.warnings)?;
+        let cached_dimension_plan = store
+            .compiled(index)
+            .and_then(|entry| entry.dimension_join_plan.as_ref());
+        let skipped_dimensions = inject_policy_dimensions(
+            select,
+            policy,
+            catalog,
+            &mut diagnostics.warnings,
+            cached_dimension_plan,
+        )?;
         let table_scope = TableScope::from_select(select);
         let constraint_ctx = ConstraintExprCtx {
             store,

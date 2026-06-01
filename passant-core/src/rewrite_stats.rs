@@ -36,7 +36,7 @@ impl From<RewriteStats> for RewriteStatsExport {
     }
 }
 
-/// Optional rewrite instrumentation counters (see `passant-perf.md`).
+/// Optional rewrite instrumentation counters (see `passant/docs/performance.md`).
 #[derive(Debug, Default, Clone)]
 pub struct RewriteStats {
     pub total_policies: usize,
@@ -51,6 +51,8 @@ pub struct RewriteStats {
     pub policy_constraints_parsed_during_rewrite: usize,
     pub elapsed_parse: Duration,
     pub elapsed_analysis: Duration,
+    pub elapsed_statement_tables: Duration,
+    pub elapsed_scope_analysis: Duration,
     pub elapsed_candidate_lookup: Duration,
     pub elapsed_planning: Duration,
     pub elapsed_rewrite: Duration,
@@ -62,6 +64,8 @@ pub struct RewriteStats {
 pub struct RewriteStatsTimings {
     pub elapsed_parse_ms: f64,
     pub elapsed_analysis_ms: f64,
+    pub elapsed_statement_tables_ms: f64,
+    pub elapsed_scope_analysis_ms: f64,
     pub elapsed_candidate_lookup_ms: f64,
     pub elapsed_planning_ms: f64,
     pub elapsed_rewrite_ms: f64,
@@ -74,6 +78,8 @@ impl RewriteStats {
         RewriteStatsTimings {
             elapsed_parse_ms: duration_to_ms(self.elapsed_parse),
             elapsed_analysis_ms: duration_to_ms(self.elapsed_analysis),
+            elapsed_statement_tables_ms: duration_to_ms(self.elapsed_statement_tables),
+            elapsed_scope_analysis_ms: duration_to_ms(self.elapsed_scope_analysis),
             elapsed_candidate_lookup_ms: duration_to_ms(self.elapsed_candidate_lookup),
             elapsed_planning_ms: duration_to_ms(self.elapsed_planning),
             elapsed_rewrite_ms: duration_to_ms(self.elapsed_rewrite),
@@ -81,6 +87,8 @@ impl RewriteStats {
             elapsed_total_ms: duration_to_ms(
                 self.elapsed_parse
                     + self.elapsed_analysis
+                    + self.elapsed_statement_tables
+                    + self.elapsed_scope_analysis
                     + self.elapsed_candidate_lookup
                     + self.elapsed_planning
                     + self.elapsed_rewrite
@@ -161,6 +169,14 @@ impl RewriteStatsCell {
 
     pub fn add_elapsed_analysis(&self, elapsed: Duration) {
         self.with_stats(|stats| stats.elapsed_analysis += elapsed);
+    }
+
+    pub fn add_elapsed_statement_tables(&self, elapsed: Duration) {
+        self.with_stats(|stats| stats.elapsed_statement_tables += elapsed);
+    }
+
+    pub fn add_elapsed_scope_analysis(&self, elapsed: Duration) {
+        self.with_stats(|stats| stats.elapsed_scope_analysis += elapsed);
     }
 
     pub fn add_elapsed_candidate_lookup(&self, elapsed: Duration) {

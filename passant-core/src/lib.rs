@@ -10,6 +10,7 @@ pub mod parser;
 pub mod partial_push;
 pub mod planner;
 pub mod policy;
+pub mod policy_compile;
 pub mod policy_index;
 pub mod policy_store;
 pub mod query_analysis;
@@ -47,7 +48,8 @@ pub use policy::{
     normalize_policy_source_aliases, normalize_policy_sources, parse_policy_text,
 };
 pub use policy_store::{
-    CompiledExpr, CompiledPolicy, MultiSourceLookupMode, PolicyStore, PolicyStoreMemoryUsage,
+    BranchPolicyEntry, CompiledExpr, CompiledPolicy, MultiSourceLookupMode, PolicyStore,
+    PolicyStoreMemoryUsage, PolicyStoreView,
 };
 pub use query_analysis::{SelectAnalysis, StatementAnalysis};
 pub use rewrite_stats::{RewriteStats, RewriteStatsExport, RewriteStatsTimings};

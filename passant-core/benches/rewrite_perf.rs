@@ -250,6 +250,131 @@ fn bench_rewrite_with_stats(c: &mut Criterion) {
     group.finish();
 }
 
+fn ui_policy(source: &str) -> PolicyIr {
+    PolicyIr::Pgn {
+        sources: vec![source.to_string()],
+        required_sources: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
+        sink: None,
+        sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
+        constraint: format!("max({source}.amount) > 0"),
+        on_fail: Resolution::Ui,
+        description: None,
+    }
+}
+
+fn bench_rewrite_no_policies(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rewrite_no_policies");
+    group.bench_function("simple_select", |bencher| {
+        let rewriter = PassantRewriter::new();
+        bencher.iter(|| {
+            black_box(
+                rewriter
+                    .rewrite(simple_scan_query())
+                    .expect("rewrite should succeed"),
+            );
+        });
+    });
+    group.finish();
+}
+
+fn bench_rewrite_one_candidate(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rewrite_one_candidate");
+    let policies = vec![pgn_policy("orders", 1)];
+    group.bench_function("single_applicable_policy", |bencher| {
+        let mut rewriter = PassantRewriter::new();
+        register_policies(&mut rewriter, &policies);
+        bencher.iter(|| {
+            black_box(
+                rewriter
+                    .rewrite(simple_scan_query())
+                    .expect("rewrite should succeed"),
+            );
+        });
+    });
+    group.finish();
+}
+
+fn bench_rewrite_no_candidates(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rewrite_no_candidates");
+    let policies = generate_policies("other_000000", 99_999);
+    group.bench_function("100k_unrelated_orders_query", |bencher| {
+        let mut rewriter = PassantRewriter::new();
+        register_policies(&mut rewriter, &policies);
+        bencher.iter(|| {
+            black_box(
+                rewriter
+                    .rewrite(simple_scan_query())
+                    .expect("rewrite should succeed"),
+            );
+        });
+    });
+    group.finish();
+}
+
+fn bench_rewrite_100k_ui_scan(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rewrite_100k_ui_scan");
+    let policies_no_ui = generate_policies("orders", 99_999);
+    group.bench_with_input(
+        BenchmarkId::new("no_ui", 100_000),
+        &policies_no_ui,
+        |bencher, policies| {
+            let mut rewriter = PassantRewriter::new();
+            register_policies(&mut rewriter, policies);
+            bencher.iter(|| {
+                black_box(
+                    rewriter
+                        .rewrite(simple_scan_query())
+                        .expect("rewrite should succeed"),
+                );
+            });
+        },
+    );
+    let mut policies_one_ui = generate_policies("orders", 99_998);
+    policies_one_ui.push(ui_policy("orders"));
+    group.bench_with_input(
+        BenchmarkId::new("one_ui", 100_000),
+        &policies_one_ui,
+        |bencher, policies| {
+            let mut rewriter = PassantRewriter::new();
+            register_policies(&mut rewriter, policies);
+            bencher.iter(|| {
+                black_box(
+                    rewriter
+                        .rewrite(simple_scan_query())
+                        .expect("rewrite should succeed"),
+                );
+            });
+        },
+    );
+    group.finish();
+}
+
+fn bench_policy_registration_compile_only(c: &mut Criterion) {
+    use passant_core::policy_store::PolicyStore;
+    let mut group = c.benchmark_group("policy_registration_compile_only");
+    for policy_count in [1_000_usize, 10_000] {
+        let policies = generate_policies("orders", policy_count.saturating_sub(1));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(policy_count),
+            &policies,
+            |bencher, policies| {
+                bencher.iter(|| {
+                    let mut store = PolicyStore::default();
+                    for policy in policies {
+                        store.register(policy.clone());
+                    }
+                    black_box(store);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 fn bench_rewrite_cte_chain(c: &mut Criterion) {
     let mut group = c.benchmark_group("rewrite_cte_chain");
     for policy_count in [1_000_usize, 10_000_usize] {
@@ -275,12 +400,17 @@ fn bench_rewrite_cte_chain(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_rewrite_no_policies,
+    bench_rewrite_one_candidate,
+    bench_rewrite_no_candidates,
+    bench_rewrite_100k_ui_scan,
     bench_rewrite_fixed_applicable,
     bench_hot_multi_source_subset,
     bench_sink_only_registry,
     bench_partial_push,
     bench_join_with_unrelated_policies,
     bench_policy_registration,
+    bench_policy_registration_compile_only,
     bench_rewrite_with_stats,
     bench_rewrite_cte_chain
 );

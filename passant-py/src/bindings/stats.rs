@@ -9,6 +9,10 @@ pub struct PyRewriteStatsTimings {
     #[pyo3(get)]
     pub elapsed_analysis_ms: f64,
     #[pyo3(get)]
+    pub elapsed_statement_tables_ms: f64,
+    #[pyo3(get)]
+    pub elapsed_scope_analysis_ms: f64,
+    #[pyo3(get)]
     pub elapsed_candidate_lookup_ms: f64,
     #[pyo3(get)]
     pub elapsed_planning_ms: f64,
@@ -25,6 +29,8 @@ impl From<RewriteStatsTimings> for PyRewriteStatsTimings {
         Self {
             elapsed_parse_ms: timings.elapsed_parse_ms,
             elapsed_analysis_ms: timings.elapsed_analysis_ms,
+            elapsed_statement_tables_ms: timings.elapsed_statement_tables_ms,
+            elapsed_scope_analysis_ms: timings.elapsed_scope_analysis_ms,
             elapsed_candidate_lookup_ms: timings.elapsed_candidate_lookup_ms,
             elapsed_planning_ms: timings.elapsed_planning_ms,
             elapsed_rewrite_ms: timings.elapsed_rewrite_ms,

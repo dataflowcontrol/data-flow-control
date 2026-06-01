@@ -105,11 +105,23 @@ pub fn prune_dominated_remove_policies(policies: &[PolicyIr]) -> Vec<PolicyIr> {
         .collect()
 }
 
-fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<ThresholdPredicate> {
-    let expr = parse_constraint_expr(constraint).ok()?;
+pub(crate) fn threshold_predicate_from_expr(expr: &Expr) -> Option<ThresholdPredicate> {
     let Expr::BinaryOp { left, op, right } = expr else {
         return None;
     };
+    threshold_predicate_from_comparison(left, op, right)
+}
+
+fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<ThresholdPredicate> {
+    let expr = parse_constraint_expr(constraint).ok()?;
+    threshold_predicate_from_expr(&expr)
+}
+
+fn threshold_predicate_from_comparison(
+    left: &Expr,
+    op: &sqlparser::ast::BinaryOperator,
+    right: &Expr,
+) -> Option<ThresholdPredicate> {
     let (direction, strict) = match op {
         BinaryOperator::Gt => (ThresholdDirection::Greater, true),
         BinaryOperator::GtEq => (ThresholdDirection::Greater, false),
@@ -119,7 +131,7 @@ fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<Thresh
         BinaryOperator::NotEq => (ThresholdDirection::NotEqual, true),
         _ => return None,
     };
-    let Expr::Value(value) = *right else {
+    let Expr::Value(value) = right else {
         return None;
     };
     let value = value.to_string().parse::<f64>().ok()?;
@@ -127,7 +139,7 @@ fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<Thresh
         direction,
         ThresholdDirection::Greater | ThresholdDirection::Less
     ) {
-        strip_supported_aggregates(*left).to_string()
+        strip_supported_aggregates(left.clone()).to_string()
     } else {
         left.to_string()
     };

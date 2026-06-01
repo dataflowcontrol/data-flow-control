@@ -4,16 +4,17 @@
 //! Partial-Push is used only for non-semiring policy constraints.
 
 use sqlparser::ast::{Query, SetExpr, Statement};
+use std::sync::OnceLock;
 use std::time::Instant;
 
+use crate::full_push::FullPushEngine;
 use crate::optimizer::RewriteStrategy;
 use crate::parser::parse_query_with_dialect;
-use crate::policy::Resolution;
+use crate::partial_push::PartialPushEngine;
 use crate::policy_store::PolicyStore;
 use crate::query_analysis::StatementAnalysis;
 use crate::rewriter::{PassantRewriter, RewriteError, RewriteOptions};
 use crate::semiring::SemiringAnalysis;
-use crate::statement_tables::{statement_sink_key, statement_table_keys};
 
 /// Planner-visible strategy label (re-exported for engine implementations).
 pub use crate::optimizer::RewriteStrategy as StrategyKind;
@@ -75,12 +76,20 @@ impl<'a> RewriteRequest<'a> {
         store: &PolicyStore,
         stats: Option<&crate::rewrite_stats::RewriteStatsCell>,
     ) -> Self {
+        let analysis_start = Instant::now();
+        let analysis = StatementAnalysis::from_statement_with_stats(statement, stats);
+        let (kind, select) = classify_statement(statement);
+        if let Some(stats) = stats {
+            stats.add_elapsed_analysis(analysis_start.elapsed());
+            stats.set_query_nodes(analysis.select_scopes.len());
+        }
+
         let lookup_start = Instant::now();
-        let tables = statement_table_keys(statement);
-        let sink = statement_sink_key(statement);
+        let tables = candidate_table_keys(&analysis);
+        let sink_key = analysis.sink.clone();
         let candidate_lookup = store.candidate_scope_lookup(
             &tables,
-            sink.as_ref(),
+            sink_key.as_ref(),
             crate::policy_store::MultiSourceLookupMode::Subset,
         );
         let mut candidate_count = 0usize;
@@ -88,14 +97,6 @@ impl<'a> RewriteRequest<'a> {
             .semiring_for_candidate_iter(candidate_lookup.iter().inspect(|_| candidate_count += 1));
         if let Some(stats) = stats {
             stats.add_elapsed_candidate_lookup(lookup_start.elapsed());
-        }
-
-        let analysis_start = Instant::now();
-        let analysis = StatementAnalysis::from_statement_with_stats(statement, stats);
-        let (kind, select) = classify_statement(statement);
-        if let Some(stats) = stats {
-            stats.add_elapsed_analysis(analysis_start.elapsed());
-            stats.set_query_nodes(analysis.select_scopes.len());
         }
 
         Self {
@@ -134,9 +135,20 @@ pub trait RewriteEngine: Send + Sync {
     ) -> Result<RewriteAttempt, RewriteError>;
 }
 
-/// Ordered collection of rewrite engines.
+/// Ordered collection of rewrite engines (built once per process).
 pub struct RewritePipeline {
     engines: Vec<Box<dyn RewriteEngine>>,
+}
+
+static DEFAULT_PIPELINE: OnceLock<RewritePipeline> = OnceLock::new();
+
+fn default_pipeline() -> &'static RewritePipeline {
+    DEFAULT_PIPELINE.get_or_init(|| {
+        let mut engines: Vec<Box<dyn RewriteEngine>> =
+            vec![Box::new(FullPushEngine), Box::new(PartialPushEngine)];
+        engines.sort_by_key(|engine| engine.priority());
+        RewritePipeline { engines }
+    })
 }
 
 impl RewritePipeline {
@@ -151,9 +163,14 @@ impl RewritePipeline {
         sql: &str,
         options: RewriteOptions,
     ) -> Result<String, RewriteError> {
+        let store = rewriter.policy_store();
+        if store.is_empty() {
+            return Ok(sql.to_string());
+        }
+
         let collect_stats = options.collect_stats;
         if collect_stats {
-            rewriter.stats.reset(rewriter.policy_store().active_count());
+            rewriter.stats.reset(store.active_count());
         }
         rewriter.statement_summary.reset();
 
@@ -172,7 +189,19 @@ impl RewritePipeline {
             rewriter.policy_store(),
             stats,
         );
-        ensure_ui_statement_supported(rewriter.policy_store(), &request)?;
+        ensure_ui_statement_supported(store, &request)?;
+
+        if request.candidate_count == 0 {
+            if rewriter.has_registered_policies() && request.kind == StatementKind::Passthrough {
+                return Err(RewriteError::unsupported_statement(format!(
+                    "unsupported statement form with registered policies: {}",
+                    crate::parser::statement_label(request.statement)
+                )));
+            }
+            if !store.has_enforcement_resolution_policies() {
+                return Ok(sql.to_string());
+            }
+        }
 
         let rewrite_start = Instant::now();
         for engine in &self.engines {
@@ -200,20 +229,28 @@ impl RewritePipeline {
         }
         Ok(sql.to_string())
     }
+
+    /// Shared process-wide pipeline (FullPush then PartialPush).
+    pub fn shared() -> &'static RewritePipeline {
+        default_pipeline()
+    }
 }
 
-fn store_has_ui_policies(store: &PolicyStore) -> bool {
-    store
-        .policies_vec()
-        .iter()
-        .any(|policy| policy.resolution() == Resolution::Ui)
+fn candidate_table_keys(
+    analysis: &StatementAnalysis,
+) -> std::collections::HashSet<crate::identifiers::TableKey> {
+    let mut tables = analysis.table_keys.clone();
+    for scope in &analysis.select_scopes {
+        tables.extend(scope.scope.direct_base_tables.iter().cloned());
+    }
+    tables
 }
 
 fn ensure_ui_statement_supported(
     store: &PolicyStore,
     request: &RewriteRequest<'_>,
 ) -> Result<(), RewriteError> {
-    if !store_has_ui_policies(store) {
+    if !store.has_ui_policies() {
         return Ok(());
     }
     if request.options.use_partial_push {

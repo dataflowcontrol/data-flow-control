@@ -115,6 +115,7 @@ pub(crate) fn plan_update_scope(
     Ok(plan)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_update_scope_plan(
     plan: &UpdateScopePlan,
     assignments: &mut [sqlparser::ast::Assignment],

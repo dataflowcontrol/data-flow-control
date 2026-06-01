@@ -3,15 +3,18 @@ use std::sync::Arc;
 
 use crate::identifiers::{ColumnKey, TableKey, normalize_key};
 use crate::intern::StringInterner;
-use crate::policy::{PolicyIr, Resolution};
+use crate::policy::PolicyIr;
+use crate::policy_compile::ParsedPolicyConstraint;
 use crate::policy_index::PolicyIndex;
 use crate::source_set_index::SourceSetPolicyIndex;
 
+mod branch;
 mod compiled;
 mod delete;
 mod indexes;
 mod memory;
 
+pub use branch::{BranchPolicyEntry, PolicyStoreView};
 pub use compiled::{CompiledExpr, CompiledPolicy};
 pub use memory::PolicyStoreMemoryUsage;
 
@@ -42,6 +45,9 @@ pub struct PolicyStore {
     multi_source: SourceSetPolicyIndex,
     policy_indices: Vec<usize>,
     remove_policy_count: usize,
+    ui_policy_count: usize,
+    tuple_resolution_policy_count: usize,
+    relation_resolution_policy_count: usize,
     active_policy_count: usize,
     table_key_cache: HashMap<String, TableKey>,
     column_key_cache: HashMap<String, ColumnKey>,
@@ -62,12 +68,39 @@ impl PolicyStore {
     }
 
     pub fn register(&mut self, policy: PolicyIr) -> usize {
+        self.register_maybe_parsed(policy, None)
+    }
+
+    pub(crate) fn register_with_parsed(
+        &mut self,
+        policy: PolicyIr,
+        parsed: ParsedPolicyConstraint,
+    ) -> usize {
+        self.register_maybe_parsed(policy, Some(parsed))
+    }
+
+    fn register_maybe_parsed(
+        &mut self,
+        policy: PolicyIr,
+        parsed: Option<ParsedPolicyConstraint>,
+    ) -> usize {
         let index = self.entries.len();
-        let compiled = Arc::new(self.compile_policy(index, policy));
+        let compiled = Arc::new(self.compile_policy(index, policy, parsed));
         self.index_entry(&compiled);
         self.entries.push(compiled);
         self.active_policy_count += 1;
         index
+    }
+
+    /// Register multiple policies without re-building indexes between each insert.
+    pub fn register_policies(
+        &mut self,
+        policies: impl IntoIterator<Item = PolicyIr>,
+    ) -> Vec<usize> {
+        policies
+            .into_iter()
+            .map(|policy| self.register(policy))
+            .collect()
     }
 
     pub(crate) fn intern_table_key(&mut self, name: &str) -> TableKey {
@@ -95,20 +128,22 @@ impl PolicyStore {
     }
 
     pub fn deactivate(&mut self, index: usize) -> bool {
-        let Some(entry) = self.entries.get_mut(index) else {
+        let Some(entry) = self.entries.get(index) else {
             return false;
         };
         if !entry.active {
             return false;
         }
-        if entry.policy.resolution() == Resolution::Remove {
+        if entry.policy.resolution() == crate::policy::Resolution::Remove {
             self.remove_policy_count = self.remove_policy_count.saturating_sub(1);
         }
+        let resolution = entry.policy.resolution();
         let updated = Arc::new(CompiledPolicy {
             active: false,
             ..(**entry).clone()
         });
-        *entry = updated;
+        self.adjust_resolution_counts(resolution, -1);
+        self.entries[index] = updated;
         self.active_policy_count = self.active_policy_count.saturating_sub(1);
         true
     }
@@ -161,6 +196,7 @@ mod tests {
 
     use super::*;
     use crate::policy::Resolution;
+    use crate::sql::parse_projection_expr;
 
     fn pgn_policy(source: &str, constraint: &str) -> PolicyIr {
         PolicyIr::Pgn {
@@ -242,6 +278,66 @@ mod tests {
             MultiSourceLookupMode::Subset,
         );
         assert_eq!(indexed, vec![0]);
+    }
+
+    #[test]
+    fn resolution_counters_track_register_and_deactivate() {
+        let mut store = PolicyStore::default();
+        assert!(!store.has_ui_policies());
+        assert!(!store.has_tuple_resolution_policies());
+        assert!(!store.has_relation_resolution_policies());
+
+        let ui_index = store.register(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 0".to_string(),
+            on_fail: Resolution::Ui,
+            description: None,
+        });
+        assert!(store.has_ui_policies());
+
+        let kill_index = store.register(PolicyIr::Pgn {
+            sources: vec!["bar".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "bar.id > 0".to_string(),
+            on_fail: Resolution::Kill,
+            description: None,
+        });
+        assert!(store.has_tuple_resolution_policies());
+
+        let rel_index = store.register(PolicyIr::Pgn {
+            sources: vec![],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: Some("reports".to_string()),
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(reports.amount) <= 0".to_string(),
+            on_fail: Resolution::RelationUdf("gate".to_string()),
+            description: None,
+        });
+        assert!(store.has_relation_resolution_policies());
+
+        assert!(store.deactivate(ui_index));
+        assert!(!store.has_ui_policies());
+        assert!(store.deactivate(kill_index));
+        assert!(!store.has_tuple_resolution_policies());
+        assert!(store.deactivate(rel_index));
+        assert!(!store.has_relation_resolution_policies());
     }
 
     #[test]
@@ -628,6 +724,21 @@ mod tests {
         assert_eq!(usage.unique_column_keys, 1);
         assert_eq!(usage.referenced_column_pairs, 128);
         assert!(usage.compiled_constraint_shared_bytes >= 128 * "max(source.amount) > 1".len());
+    }
+
+    #[test]
+    fn branch_store_reuses_parent_table_key_interner() {
+        let mut parent = PolicyStore::default();
+        let parent_index = parent.register(pgn_policy("orders", "max(orders.amount) > 1"));
+        let parent_key = parent.compiled(parent_index).expect("policy").source_keys[0].clone();
+
+        let mut branch = PolicyStore::with_shared_interners(&parent);
+        let branch_index = branch.register_branch_entries(vec![BranchPolicyEntry {
+            policy: pgn_policy("orders", "max(orders.amount) > 2"),
+            constraint_ast: parse_projection_expr("max(orders.amount) > 2").expect("parse"),
+        }])[0];
+        let branch_key = branch.compiled(branch_index).expect("policy").source_keys[0].clone();
+        assert!(parent_key.same_allocation_as(&branch_key));
     }
 
     #[test]

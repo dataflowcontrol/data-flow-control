@@ -53,9 +53,30 @@ pub fn analyze_policies(policies: &[PolicyIr]) -> SemiringAnalysis {
 
 pub fn analyze_constraint(constraint: &str) -> Result<Vec<AggregateAnalysis>, String> {
     let expr = crate::sql::parse_policy_expr_duckdb(constraint).map_err(|err| err.to_string())?;
+    Ok(analyze_constraint_expr(&expr))
+}
+
+pub fn analyze_constraint_expr(expr: &Expr) -> Vec<AggregateAnalysis> {
     let mut aggregates = Vec::new();
-    collect_aggregates(&expr, &mut aggregates);
-    Ok(aggregates)
+    collect_aggregates(expr, &mut aggregates);
+    aggregates
+}
+
+pub fn semiring_analysis_from_expr(expr: &Expr) -> SemiringAnalysis {
+    let aggregates = analyze_constraint_expr(expr);
+    let mut non_distributive_aggregates = Vec::new();
+    let mut all_distributive = true;
+    for aggregate in &aggregates {
+        if !aggregate.distributive {
+            all_distributive = false;
+            non_distributive_aggregates.push(aggregate.expression.clone());
+        }
+    }
+    SemiringAnalysis {
+        aggregate_count: aggregates.len(),
+        all_distributive,
+        non_distributive_aggregates,
+    }
 }
 
 fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {

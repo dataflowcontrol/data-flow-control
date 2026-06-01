@@ -12,7 +12,7 @@ use sqlparser::ast::{Expr, Function, FunctionArguments, ObjectName};
 use crate::diagnostics::{ErrorKind, RewriteError};
 use crate::identifiers::{ColumnName, QualifiedColumn, SinkName, SourceName, TableKey};
 use crate::policy::{PolicyIr, Resolution};
-use crate::sql::parse_projection_expr;
+use crate::policy_compile::{ParsedPolicyConstraint, parse_policy_constraint};
 
 /// Catalog facts supplied at policy registration time (from any adapter snapshot).
 #[derive(Debug, Default, Clone)]
@@ -159,9 +159,8 @@ impl TableCatalog {
         let mut columns: Vec<String> = self
             .unique_columns
             .iter()
-            .filter_map(|(table_key, column_key)| {
-                (table_key == &key).then(|| column_key.as_str().to_string())
-            })
+            .filter(|(table_key, _)| table_key == &key)
+            .map(|(_, column_key)| column_key.as_str().to_string())
             .collect();
         columns.sort();
         columns.dedup();
@@ -184,7 +183,8 @@ impl TableCatalog {
             on_fail,
             ..
         } = policy;
-        validate_pgn_policy(
+        let parsed = parse_policy_constraint(constraint)?;
+        validate_pgn_policy_parsed(
             self,
             sources,
             dimension_tables,
@@ -193,8 +193,41 @@ impl TableCatalog {
             sink.as_deref(),
             sink_alias.as_deref(),
             source_aliases,
-            constraint,
             on_fail.clone(),
+            &parsed,
+        )
+    }
+
+    pub(crate) fn validate_pgn_policy_parsed(
+        &self,
+        policy: &PolicyIr,
+        parsed: &ParsedPolicyConstraint,
+    ) -> Result<(), RewriteError> {
+        if !self.loaded {
+            return Ok(());
+        }
+        let PolicyIr::Pgn {
+            sources,
+            dimension_tables,
+            dimension_aliases,
+            dimension_queries,
+            sink,
+            sink_alias,
+            source_aliases,
+            on_fail,
+            ..
+        } = policy;
+        validate_pgn_policy_parsed(
+            self,
+            sources,
+            dimension_tables,
+            dimension_aliases,
+            dimension_queries,
+            sink.as_deref(),
+            sink_alias.as_deref(),
+            source_aliases,
+            on_fail.clone(),
+            parsed,
         )
     }
 }
@@ -203,12 +236,27 @@ impl TableCatalog {
 ///
 /// Parses the expression as SQL and requires all column references to be qualified.
 pub fn validate_constraint_expression(sql: &str, label: &str) -> Result<(), RewriteError> {
-    let sql = crate::rewriter::preprocess_policy_constraint(sql);
-    validate_qualified_columns(&sql, label)
+    let parsed = parse_policy_constraint(sql)?;
+    if parsed.unqualified_columns.is_empty() {
+        return Ok(());
+    }
+    let _ = label;
+    Err(RewriteError::catalog_with_context(
+        ErrorKind::UnqualifiedColumn,
+        format!(
+            "All columns in constraints and dimensions must be qualified with table names. \
+             Unqualified columns found: {}",
+            parsed.unqualified_columns.join(", ")
+        ),
+        None,
+        None,
+        Some(parsed.sql),
+        Some("constraint_syntax"),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_pgn_policy(
+fn validate_pgn_policy_parsed(
     catalog: &TableCatalog,
     sources: &[String],
     dimension_tables: &[String],
@@ -217,10 +265,25 @@ fn validate_pgn_policy(
     sink: Option<&str>,
     sink_alias: Option<&str>,
     source_aliases: &HashMap<String, String>,
-    constraint: &str,
     _on_fail: Resolution,
+    parsed: &ParsedPolicyConstraint,
 ) -> Result<(), RewriteError> {
-    let constraint = crate::rewriter::preprocess_policy_constraint(constraint);
+    if !parsed.unqualified_columns.is_empty() {
+        return Err(RewriteError::catalog_with_context(
+            ErrorKind::UnqualifiedColumn,
+            format!(
+                "All columns in constraints and dimensions must be qualified with table names. \
+                 Unqualified columns found: {}",
+                parsed.unqualified_columns.join(", ")
+            ),
+            None,
+            None,
+            Some(parsed.sql.clone()),
+            Some("catalog_validation"),
+        ));
+    }
+    let constraint = parsed.sql.clone();
+    let expr = &parsed.expr;
     let mut source_columns = HashMap::new();
     for source in sources {
         let source_name = SourceName::parse(source);
@@ -269,8 +332,6 @@ fn validate_pgn_policy(
     } else {
         None
     };
-
-    validate_qualified_columns(&constraint, "constraint")?;
 
     let mut dimension_columns = HashMap::new();
     for table in dimension_tables {
@@ -342,11 +403,11 @@ fn validate_pgn_policy(
 
     if !sources.is_empty() && sink.is_none() {
         let sink_equality_sources =
-            source_columns_in_sink_equality(&constraint, &source_qualifier_names, &sink_names);
+            source_columns_in_sink_equality_expr(expr, &source_qualifier_names, &sink_names);
         let implicit_uniqueness_columns =
-            implicit_uniqueness_source_columns(&constraint, &source_qualifier_names);
+            implicit_uniqueness_source_columns_expr(expr, &source_qualifier_names);
         let unaggregated =
-            unaggregated_source_columns(&constraint, &source_qualifier_names, source_aliases)?
+            unaggregated_source_columns_expr(expr, &source_qualifier_names, source_aliases)?
                 .into_iter()
                 .filter(|qualified| !is_catalog_unique_source_column(catalog, qualified))
                 .filter(|qualified| {
@@ -370,10 +431,10 @@ fn validate_pgn_policy(
             ));
         }
     } else if !sources.is_empty() {
-        let _ = source_columns_in_sink_equality(&constraint, &source_qualifier_names, &sink_names);
+        let _ = source_columns_in_sink_equality_expr(expr, &source_qualifier_names, &sink_names);
     }
 
-    let referenced_columns = qualified_columns(&constraint)?;
+    let referenced_columns = parsed.qualified_columns.clone();
 
     for column in referenced_columns {
         let table_name = column.table.as_str();
@@ -459,38 +520,6 @@ fn validate_pgn_policy(
     Ok(())
 }
 
-fn parse_constraint_expr(sql: &str) -> Result<Expr, RewriteError> {
-    parse_projection_expr(sql).map_err(|_| {
-        RewriteError::unsupported_statement(format!("Invalid constraint SQL expression '{sql}'"))
-    })
-}
-
-fn validate_qualified_columns(sql: &str, label: &str) -> Result<(), RewriteError> {
-    let expr = parse_constraint_expr(sql)?;
-    let unqualified = UnqualifiedColumnCollector::collect(&expr);
-    if !unqualified.is_empty() {
-        return Err(RewriteError::catalog_with_context(
-            ErrorKind::UnqualifiedColumn,
-            format!(
-                "All columns in constraints and dimensions must be qualified with table names. \
-                 Unqualified columns found: {}",
-                unqualified.join(", ")
-            ),
-            None,
-            None,
-            Some(sql.to_string()),
-            Some("constraint_syntax"),
-        ));
-    }
-    let _ = label;
-    Ok(())
-}
-
-fn qualified_columns(sql: &str) -> Result<Vec<QualifiedColumn>, RewriteError> {
-    let expr = parse_constraint_expr(sql)?;
-    Ok(crate::sql::collect_qualified_columns_from_expr(&expr))
-}
-
 fn is_catalog_unique_source_column(catalog: &TableCatalog, qualified: &str) -> bool {
     let Some((table, column)) = qualified.rsplit_once('.') else {
         return false;
@@ -530,16 +559,13 @@ fn resolve_source_table_key(
         .filter(|base| source_names.contains(base))
 }
 
-fn source_columns_in_sink_equality(
-    sql: &str,
+fn source_columns_in_sink_equality_expr(
+    expr: &Expr,
     source_qualifier_names: &HashSet<TableKey>,
     sink_names: &HashSet<TableKey>,
 ) -> HashSet<String> {
-    let Ok(expr) = parse_constraint_expr(sql) else {
-        return HashSet::new();
-    };
     let mut found = HashSet::new();
-    collect_source_sink_equality_pairs(&expr, source_qualifier_names, sink_names, &mut found);
+    collect_source_sink_equality_pairs(expr, source_qualifier_names, sink_names, &mut found);
     found
 }
 
@@ -603,15 +629,12 @@ fn qualified_sink_column(expr: &Expr, sink_names: &HashSet<TableKey>) -> Option<
     }
 }
 
-fn implicit_uniqueness_source_columns(
-    sql: &str,
+fn implicit_uniqueness_source_columns_expr(
+    expr: &Expr,
     source_qualifier_names: &HashSet<TableKey>,
 ) -> HashSet<String> {
-    let Ok(expr) = parse_constraint_expr(sql) else {
-        return HashSet::new();
-    };
     let mut found = HashSet::new();
-    collect_implicit_uniqueness_source_columns(&expr, source_qualifier_names, &mut found);
+    collect_implicit_uniqueness_source_columns(expr, source_qualifier_names, &mut found);
     found
 }
 
@@ -675,40 +698,16 @@ fn column_value_comparison_source(
     None
 }
 
-fn unaggregated_source_columns(
-    sql: &str,
+fn unaggregated_source_columns_expr(
+    expr: &Expr,
     source_qualifier_names: &HashSet<TableKey>,
     source_aliases: &HashMap<String, String>,
 ) -> Result<Vec<String>, RewriteError> {
-    let expr = parse_constraint_expr(sql)?;
     Ok(UnaggregatedSourceColumnCollector::collect(
-        &expr,
+        expr,
         source_qualifier_names,
         source_aliases,
     ))
-}
-
-struct UnqualifiedColumnCollector {
-    found: Vec<String>,
-}
-
-impl UnqualifiedColumnCollector {
-    fn collect(expr: &Expr) -> Vec<String> {
-        let mut collector = Self { found: Vec::new() };
-        collector.visit(expr, false);
-        collector.found
-    }
-
-    fn visit(&mut self, expr: &Expr, inside_aggregate: bool) {
-        if let Expr::Identifier(ident) = expr {
-            self.found.push(ident.value.clone());
-        }
-        expr_visit_children(
-            expr,
-            |child, inside| self.visit(child, inside),
-            inside_aggregate,
-        );
-    }
 }
 
 struct UnaggregatedSourceColumnCollector {

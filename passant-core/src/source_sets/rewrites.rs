@@ -4,7 +4,9 @@ use sqlparser::ast::{Expr, SetExpr};
 
 use crate::identifiers::TableKey;
 use crate::policy::{PolicyIr, Resolution};
-use crate::policy_store::PolicyStore;
+use crate::policy_store::{BranchPolicyEntry, PolicyStore};
+
+use super::branch::branch_entry;
 
 use super::analysis::{policy_requires_set_split, policy_source_keys, set_expr_source_tables};
 use super::split::{
@@ -14,7 +16,7 @@ use super::split::{
 pub fn cross_source_policies_for_branch_indexed(
     store: &PolicyStore,
     branch_tables: &HashSet<TableKey>,
-) -> Vec<PolicyIr> {
+) -> Vec<BranchPolicyEntry> {
     store
         .multi_source_policy_indices()
         .into_iter()
@@ -26,7 +28,7 @@ pub fn cross_source_policies_for_branch_indexed(
                     .iter()
                     .any(|source| branch_tables.contains(&TableKey::new(source)))
             {
-                Some(policy.clone())
+                Some(branch_entry(store, Some(index), policy.clone(), None))
             } else {
                 None
             }
@@ -55,7 +57,7 @@ pub fn split_set_operation_policies_for_store(
     store: &PolicyStore,
     left: &SetExpr,
     right: &SetExpr,
-) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
+) -> Option<(Vec<BranchPolicyEntry>, Vec<BranchPolicyEntry>)> {
     let left_tables = set_expr_source_tables(left);
     let right_tables = set_expr_source_tables(right);
     let mut all_tables = left_tables.clone();
@@ -94,7 +96,7 @@ fn split_set_operation_policy_entries(
     store: &PolicyStore,
     left: &SetExpr,
     right: &SetExpr,
-) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
+) -> Option<(Vec<BranchPolicyEntry>, Vec<BranchPolicyEntry>)> {
     let left_tables = set_expr_source_tables(left);
     let right_tables = set_expr_source_tables(right);
     let mut left_policies = Vec::new();
@@ -103,8 +105,9 @@ fn split_set_operation_policy_entries(
     for (index, policy) in policies {
         let compiled = store.compiled(*index);
         if !multi_source_policy_needs_set_split(policy, compiled, &left_tables, &right_tables) {
-            left_policies.push(policy.clone());
-            right_policies.push(policy.clone());
+            let entry = branch_entry(store, Some(*index), policy.clone(), None);
+            left_policies.push(entry.clone());
+            right_policies.push(entry);
             continue;
         }
         let constraint_ast = store.clone_constraint_ast(*index);
@@ -114,11 +117,25 @@ fn split_set_operation_policy_entries(
             &left_tables,
             &right_tables,
         )?;
-        left_policies.extend(left_split);
-        right_policies.extend(right_split);
+        left_policies.extend(branch_entries_from_split_policies(left_split));
+        right_policies.extend(branch_entries_from_split_policies(right_split));
     }
 
     Some((left_policies, right_policies))
+}
+
+fn branch_entries_from_split_policies(policies: Vec<PolicyIr>) -> Vec<BranchPolicyEntry> {
+    policies
+        .into_iter()
+        .map(|policy| {
+            let ast = parse_constraint_expr(policy.constraint())
+                .expect("split set-operation policy constraint must parse");
+            BranchPolicyEntry {
+                policy,
+                constraint_ast: ast,
+            }
+        })
+        .collect()
 }
 
 fn multi_source_policy_needs_set_split(

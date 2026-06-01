@@ -8,7 +8,6 @@ use sqlparser::ast::{BinaryOperator, Expr, Ident, Query, Select, SelectItem, Set
 use crate::identifiers::TableKey;
 use crate::optimizer::RewriteStrategy;
 use crate::policy::Resolution;
-use crate::query_analysis::SelectAnalysis;
 use crate::rewrite_strategy::{RewriteAttempt, RewriteEngine, RewriteRequest, StatementKind};
 use crate::rewriter::{
     PassantRewriter, PolicyResolutionAction, RewriteContext, RewriteError, TableScope,
@@ -85,13 +84,22 @@ impl RewriteEngine for PartialPushEngine {
             )));
         }
 
-        if !has_applicable_enforcement_policies(rewriter, select) {
+        if !has_applicable_enforcement_policies(rewriter, request, select) {
             return Ok(RewriteAttempt::Skipped);
         }
 
-        let is_aggregation = select_is_aggregation(select);
-        let has_limit = query_has_limit(query);
-        let has_remove = select_has_applicable_remove_policy(rewriter, select);
+        let is_aggregation = request
+            .analysis
+            .select_scopes
+            .first()
+            .map(|scope| scope.is_aggregation)
+            .unwrap_or_else(|| select_is_aggregation(select));
+        let has_limit = request
+            .select
+            .as_ref()
+            .map(|shape| shape.has_limit)
+            .unwrap_or_else(|| query_has_limit(query));
+        let has_remove = select_has_applicable_remove_policy(rewriter, request, select);
 
         let rewritten = if has_limit && has_remove {
             if is_aggregation {
@@ -109,12 +117,20 @@ impl RewriteEngine for PartialPushEngine {
     }
 }
 
-fn has_applicable_enforcement_policies(rewriter: &PassantRewriter, select: &Select) -> bool {
-    let analysis = SelectAnalysis::from_select(select);
-    let main_tables = &analysis.scope.direct_base_tables;
+fn has_applicable_enforcement_policies(
+    rewriter: &PassantRewriter,
+    request: &RewriteRequest<'_>,
+    select: &Select,
+) -> bool {
+    let main_tables = request
+        .analysis
+        .select_scopes
+        .first()
+        .map(|scope| scope.scope.direct_base_tables.clone())
+        .unwrap_or_default();
     scope_has_enforcement_policies(
         rewriter.policy_store(),
-        main_tables,
+        &main_tables,
         &exists_subquery_policy_tables(select),
     )
 }
@@ -149,7 +165,7 @@ fn exists_subquery_policy_tables(select: &Select) -> HashSet<TableKey> {
 }
 
 fn select_direct_base_tables(select: &Select) -> HashSet<TableKey> {
-    SelectAnalysis::from_select(select).scope.direct_base_tables
+    TableScope::from_select(select).direct_base_tables
 }
 
 fn flatten_and(expr: &Expr) -> Vec<Expr> {
@@ -167,12 +183,20 @@ fn flatten_and(expr: &Expr) -> Vec<Expr> {
     }
 }
 
-fn select_has_applicable_remove_policy(rewriter: &PassantRewriter, select: &Select) -> bool {
-    let analysis = SelectAnalysis::from_select(select);
-    let tables = &analysis.scope.direct_base_tables;
+fn select_has_applicable_remove_policy(
+    rewriter: &PassantRewriter,
+    request: &RewriteRequest<'_>,
+    select: &Select,
+) -> bool {
+    let tables = request
+        .analysis
+        .select_scopes
+        .first()
+        .map(|scope| scope.scope.direct_base_tables.clone())
+        .unwrap_or_else(|| TableScope::from_select(select).direct_base_tables);
     rewriter
         .policy_store()
-        .candidate_scope_lookup(tables, None, crate::MultiSourceLookupMode::AnyOverlap)
+        .candidate_scope_lookup(&tables, None, crate::MultiSourceLookupMode::AnyOverlap)
         .iter()
         .any(|index| {
             rewriter

@@ -60,10 +60,7 @@ fn explain_does_not_expand_policy_permutations_for_self_join() {
 
 #[test]
 fn self_join_execution_remove_filters_each_alias() {
-    #[path = "../common/duckdb.rs"]
-    mod duckdb;
-
-    use duckdb::TestDb;
+    use crate::duckdb::TestDb;
 
     let db = TestDb::new();
     db.exec("CREATE TABLE foo (id INT)");

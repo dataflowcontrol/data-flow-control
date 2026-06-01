@@ -3,6 +3,7 @@
 
 mod analysis;
 mod annotations;
+mod branch;
 mod rewrites;
 mod split;
 
@@ -109,10 +110,10 @@ mod tests {
         let split = split_policy_by_source_local_conjuncts(&policy, None, None, &available)
             .expect("policy should split");
         assert_eq!(split.len(), 2);
-        assert!(split.iter().any(|policy| {
+        assert!(split.iter().any(|(policy, _)| {
             policy.sources() == ["bar"] && policy.constraint().contains("max(bar.id) > 1")
         }));
-        assert!(split.iter().any(|policy| {
+        assert!(split.iter().any(|(policy, _)| {
             policy.sources() == ["foo"] && policy.constraint().contains("max(foo.id) > 1")
         }));
     }

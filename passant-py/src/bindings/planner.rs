@@ -44,9 +44,10 @@ impl PyPlanner {
     }
 
     fn transform_query(&self, query: String) -> PyResult<String> {
-        PassantRewriter::new()
-            .rewrite(&query)
-            .map_err(map_rewrite_error)
+        if !self.rewriter.has_registered_policies() {
+            return Ok(query);
+        }
+        self.rewriter.rewrite(&query).map_err(map_rewrite_error)
     }
 
     fn register_policy_specs(&mut self, policies_json: String) -> PyResult<()> {

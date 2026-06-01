@@ -7,7 +7,9 @@ pub use crate::diagnostics::RewriteError;
 use crate::identifiers::TableKey;
 use crate::partial_push::ExtraDfcFilter;
 use crate::policy::{PolicyIr, Resolution, parse_policy_text};
-use crate::policy_store::{PolicyStore, PolicyStoreMemoryUsage};
+use crate::policy_store::{
+    BranchPolicyEntry, PolicyStore, PolicyStoreMemoryUsage, PolicyStoreView,
+};
 use crate::rewrite_stats::{RewriteStats, RewriteStatsCell};
 use crate::sql::SqlDialect;
 
@@ -23,7 +25,7 @@ pub(crate) use aggregates::decompose_composed_aggregates;
 mod columns;
 pub(crate) mod constraint_preprocess;
 pub(crate) use constraint_preprocess::preprocess_policy_constraint;
-mod dimensions;
+pub(crate) mod dimensions;
 mod exists;
 mod expr;
 mod helpers;
@@ -82,13 +84,26 @@ impl PassantRewriter {
         rewriter
     }
 
-    pub(crate) fn with_policies_and_catalog(
-        policies: Vec<PolicyIr>,
+    /// Branch-local rewriter: small `PolicyStoreView` sharing parent interners and catalog facts.
+    pub(crate) fn with_branch_view(
+        parent: &PolicyStore,
+        entries: Vec<BranchPolicyEntry>,
         catalog: TableCatalog,
+        parse_dialect: SqlDialect,
     ) -> Self {
-        let mut rewriter = Self::with_catalog(catalog);
-        for policy in policies {
-            rewriter.register_policy(policy);
+        let store = PolicyStoreView::build(parent, entries).into_store();
+        let mut rewriter = Self {
+            store,
+            catalog,
+            parse_dialect,
+            stats: RewriteStatsCell::default(),
+            statement_summary: StatementRewriteSummaryCell::default(),
+            ui_followup: UiFollowupCell::default(),
+        };
+        for index in 0..rewriter.store.len() {
+            if rewriter.store.compiled(index).is_some() {
+                rewriter.finalize_scan_ready_expr(index);
+            }
         }
         rewriter
     }
@@ -115,10 +130,12 @@ impl PassantRewriter {
     }
 
     pub fn register_validated_policy(&mut self, policy: PolicyIr) -> Result<(), RewriteError> {
+        let PolicyIr::Pgn { constraint, .. } = &policy;
+        let parsed = crate::policy_compile::parse_policy_constraint(constraint)?;
         if self.catalog.is_loaded() {
-            self.catalog.validate_policy(&policy)?;
+            self.catalog.validate_pgn_policy_parsed(&policy, &parsed)?;
         }
-        let index = self.store.register(policy);
+        let index = self.store.register_with_parsed(policy, parsed);
         self.finalize_scan_ready_expr(index);
         Ok(())
     }
@@ -199,14 +216,10 @@ impl PassantRewriter {
         sql: &str,
         options: RewriteOptions,
     ) -> Result<String, RewriteError> {
-        use crate::full_push::FullPushEngine;
-        use crate::partial_push::PartialPushEngine;
         use crate::rewrite_strategy::RewritePipeline;
 
         self.ui_followup.set(None);
-        let pipeline =
-            RewritePipeline::new(vec![Box::new(FullPushEngine), Box::new(PartialPushEngine)]);
-        pipeline.rewrite(self, sql, options)
+        RewritePipeline::shared().rewrite(self, sql, options)
     }
 
     /// When the last rewrite was an edited UI UPDATE, returns the follow-up `UPDATE ... FROM` SQL.
@@ -215,10 +228,7 @@ impl PassantRewriter {
     }
 
     pub(crate) fn has_ui_policies(&self) -> bool {
-        self.store
-            .policies_vec()
-            .iter()
-            .any(|policy| policy.resolution() == Resolution::Ui)
+        self.store.has_ui_policies()
     }
 
     /// Counters from the most recent rewrite when `RewriteOptions::collect_stats` was enabled.

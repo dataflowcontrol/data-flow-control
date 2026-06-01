@@ -5,8 +5,10 @@ use sqlparser::ast::{BinaryOperator, Expr, FunctionArg, FunctionArgExpr, Functio
 
 use crate::identifiers::TableKey;
 use crate::policy::{PolicyIr, Resolution};
-use crate::policy_store::PolicyStore;
+use crate::policy_store::{BranchPolicyEntry, PolicyStore};
 use crate::sql::parse_projection_expr;
+
+use super::branch::branch_entry;
 
 use super::analysis::policy_source_keys;
 
@@ -15,7 +17,7 @@ pub fn split_select_policies_for_nullable_joins_for_store(
     select: &sqlparser::ast::Select,
     direct_base_tables: &HashSet<TableKey>,
     sink: Option<&TableKey>,
-) -> Option<Vec<PolicyIr>> {
+) -> Option<Vec<BranchPolicyEntry>> {
     if super::analysis::select_nullable_source_tables(select).is_empty() {
         return None;
     }
@@ -50,7 +52,7 @@ pub fn split_select_policies_for_nullable_joins(
             continue;
         };
         changed = true;
-        split_policies.extend(split);
+        split_policies.extend(split.into_iter().map(|(policy, _)| policy));
     }
     changed.then_some(split_policies)
 }
@@ -60,13 +62,13 @@ fn split_select_policy_entries_for_nullable_joins(
     store: &PolicyStore,
     select: &sqlparser::ast::Select,
     direct_base_tables: &HashSet<TableKey>,
-) -> Option<Vec<PolicyIr>> {
+) -> Option<Vec<BranchPolicyEntry>> {
     let _ = select;
     let mut split_policies = Vec::new();
     let mut changed = false;
     for (index, policy) in policies {
         if policy.sources().len() <= 1 {
-            split_policies.push(policy.clone());
+            split_policies.push(branch_entry(store, Some(*index), policy.clone(), None));
             continue;
         }
         let Some(split) = split_policy_by_source_local_conjuncts(
@@ -77,11 +79,14 @@ fn split_select_policy_entries_for_nullable_joins(
             store.clone_constraint_ast(*index).as_ref(),
             direct_base_tables,
         ) else {
-            split_policies.push(policy.clone());
+            split_policies.push(branch_entry(store, Some(*index), policy.clone(), None));
             continue;
         };
         changed = true;
-        split_policies.extend(split);
+        split_policies.extend(split.into_iter().map(|(policy, ast)| BranchPolicyEntry {
+            policy,
+            constraint_ast: ast,
+        }));
     }
     changed.then_some(split_policies)
 }
@@ -91,7 +96,7 @@ pub fn split_policy_by_source_local_conjuncts(
     cached_conjuncts: Option<&SmallVec<[(TableKey, Expr); 4]>>,
     constraint_ast: Option<&Expr>,
     available_tables: &HashSet<TableKey>,
-) -> Option<Vec<PolicyIr>> {
+) -> Option<Vec<(PolicyIr, Expr)>> {
     if let Some(conjuncts) = cached_conjuncts
         && let Some(split) = split_policy_from_cached_conjuncts(policy, conjuncts, available_tables)
     {
@@ -146,7 +151,7 @@ fn split_policy_from_cached_conjuncts(
     policy: &PolicyIr,
     conjuncts: &SmallVec<[(TableKey, Expr); 4]>,
     available_tables: &HashSet<TableKey>,
-) -> Option<Vec<PolicyIr>> {
+) -> Option<Vec<(PolicyIr, Expr)>> {
     let PolicyIr::Pgn {
         sources,
         required_sources,
@@ -177,22 +182,25 @@ fn split_policy_from_cached_conjuncts(
         let Some((_, expr)) = conjuncts.iter().find(|(key, _)| key == &source_key) else {
             continue;
         };
-        split.push(PolicyIr::Pgn {
-            sources: vec![source.clone()],
-            required_sources: Vec::new(),
-            dimension_tables: dimension_tables.clone(),
-            dimension_aliases: dimension_aliases.clone(),
-            dimension_queries: dimension_queries.clone(),
-            sink: None,
-            sink_alias: sink_alias.clone(),
-            source_aliases: aliases_for_sources(
-                policy.source_aliases(),
-                std::slice::from_ref(source),
-            ),
-            constraint: expr.to_string(),
-            on_fail: on_fail.clone(),
-            description: description.clone(),
-        });
+        split.push((
+            PolicyIr::Pgn {
+                sources: vec![source.clone()],
+                required_sources: Vec::new(),
+                dimension_tables: dimension_tables.clone(),
+                dimension_aliases: dimension_aliases.clone(),
+                dimension_queries: dimension_queries.clone(),
+                sink: None,
+                sink_alias: sink_alias.clone(),
+                source_aliases: aliases_for_sources(
+                    policy.source_aliases(),
+                    std::slice::from_ref(source),
+                ),
+                constraint: expr.to_string(),
+                on_fail: on_fail.clone(),
+                description: description.clone(),
+            },
+            expr.clone(),
+        ));
     }
     (!split.is_empty()).then_some(split)
 }
@@ -201,7 +209,7 @@ fn split_policy_by_source_local_conjuncts_from_ast(
     policy: &PolicyIr,
     constraint_ast: Option<&Expr>,
     available_tables: &HashSet<TableKey>,
-) -> Option<Vec<PolicyIr>> {
+) -> Option<Vec<(PolicyIr, Expr)>> {
     let PolicyIr::Pgn {
         sources,
         required_sources,
@@ -251,19 +259,23 @@ fn split_policy_by_source_local_conjuncts_from_ast(
         let Some(constraints) = constraints_by_source.remove(&source_key) else {
             continue;
         };
-        split.push(PolicyIr::Pgn {
-            sources: vec![source.clone()],
-            required_sources: Vec::new(),
-            dimension_tables: dimension_tables.clone(),
-            dimension_aliases: dimension_aliases.clone(),
-            dimension_queries: dimension_queries.clone(),
-            sink: None,
-            sink_alias: sink_alias.clone(),
-            source_aliases: aliases_for_sources(source_aliases, std::slice::from_ref(source)),
-            constraint: join_conjuncts(constraints).to_string(),
-            on_fail: on_fail.clone(),
-            description: description.clone(),
-        });
+        let expr = join_conjuncts(constraints);
+        split.push((
+            PolicyIr::Pgn {
+                sources: vec![source.clone()],
+                required_sources: Vec::new(),
+                dimension_tables: dimension_tables.clone(),
+                dimension_aliases: dimension_aliases.clone(),
+                dimension_queries: dimension_queries.clone(),
+                sink: None,
+                sink_alias: sink_alias.clone(),
+                source_aliases: aliases_for_sources(source_aliases, std::slice::from_ref(source)),
+                constraint: expr.to_string(),
+                on_fail: on_fail.clone(),
+                description: description.clone(),
+            },
+            expr,
+        ));
     }
     (!split.is_empty()).then_some(split)
 }

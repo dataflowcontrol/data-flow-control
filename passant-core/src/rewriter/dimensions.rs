@@ -32,6 +32,7 @@ pub(crate) fn inject_policy_dimensions(
     policy: &PolicyIr,
     catalog: &TableCatalog,
     warnings: &mut Vec<String>,
+    cached_join_plan: Option<&DimensionJoinPlan>,
 ) -> Result<Vec<String>, RewriteError> {
     let PolicyIr::Pgn {
         sources,
@@ -48,12 +49,16 @@ pub(crate) fn inject_policy_dimensions(
 
     let mut skipped = Vec::new();
     let source_keys: HashSet<TableKey> = sources.iter().map(|s| TableKey::new(s)).collect();
-    let (source_join_conditions, dimension_edges) = dimension_join_graph(
-        constraint,
-        dimension_tables,
-        dimension_aliases,
-        &source_keys,
-    )?;
+    let (source_join_conditions, dimension_edges) = if let Some(plan) = cached_join_plan {
+        (plan.source_conditions.clone(), plan.dimension_edges.clone())
+    } else {
+        dimension_join_graph(
+            constraint,
+            dimension_tables,
+            dimension_aliases,
+            &source_keys,
+        )?
+    };
     let mut scope = TableScope::from_select(select);
     let mut joined_keys: HashSet<TableKey> = scope.base_tables.clone();
     for alias in scope.alias_by_base.as_map().values() {
@@ -382,10 +387,51 @@ fn derived_dimension_factor(query_sql: &str, alias: &str) -> Result<TableFactor,
     })
 }
 
-struct DimensionJoinEdge {
+#[derive(Debug, Clone)]
+pub(crate) struct DimensionJoinEdge {
     left: TableKey,
     right: TableKey,
     on: Expr,
+}
+
+/// Equalities extracted from a policy constraint for dimension injection (cached at registration).
+#[derive(Debug, Clone)]
+pub(crate) struct DimensionJoinPlan {
+    pub source_conditions: HashMap<TableKey, Expr>,
+    pub dimension_edges: Vec<DimensionJoinEdge>,
+}
+
+pub(crate) fn compile_dimension_join_plan(
+    constraint_ast: &Expr,
+    dimension_tables: &[String],
+    dimension_aliases: &HashMap<String, String>,
+    source_keys: &HashSet<TableKey>,
+) -> Option<DimensionJoinPlan> {
+    if dimension_tables.is_empty() {
+        return None;
+    }
+    let mut dimension_keys = HashSet::new();
+    for table in dimension_tables {
+        dimension_keys.insert(TableKey::new(table));
+        for (alias, base) in dimension_aliases {
+            if base.eq_ignore_ascii_case(table) {
+                dimension_keys.insert(TableKey::new(alias));
+            }
+        }
+    }
+    let mut source_conditions = HashMap::new();
+    let mut dimension_edges = Vec::new();
+    collect_dimension_join_graph(
+        constraint_ast,
+        &dimension_keys,
+        source_keys,
+        &mut source_conditions,
+        &mut dimension_edges,
+    );
+    Some(DimensionJoinPlan {
+        source_conditions,
+        dimension_edges,
+    })
 }
 
 fn reverse_equality(on: &Expr) -> Expr {
@@ -410,29 +456,16 @@ fn dimension_join_graph(
     dimension_aliases: &HashMap<String, String>,
     source_keys: &HashSet<TableKey>,
 ) -> Result<(HashMap<TableKey, Expr>, Vec<DimensionJoinEdge>), RewriteError> {
-    let mut dimension_keys = HashSet::new();
-    for table in dimension_tables {
-        dimension_keys.insert(TableKey::new(table));
-        for (alias, base) in dimension_aliases {
-            if base.eq_ignore_ascii_case(table) {
-                dimension_keys.insert(TableKey::new(alias));
-            }
-        }
-    }
     let constraint = preprocess_policy_constraint(constraint);
     let expr = parse_projection_expr(&constraint).map_err(|err| {
         RewriteError::unsupported_statement(format!("dimension join analysis: {err}"))
     })?;
-    let mut source_conditions = HashMap::new();
-    let mut dimension_edges = Vec::new();
-    collect_dimension_join_graph(
-        &expr,
-        &dimension_keys,
-        source_keys,
-        &mut source_conditions,
-        &mut dimension_edges,
-    );
-    Ok((source_conditions, dimension_edges))
+    let plan = compile_dimension_join_plan(&expr, dimension_tables, dimension_aliases, source_keys)
+        .unwrap_or(DimensionJoinPlan {
+            source_conditions: HashMap::new(),
+            dimension_edges: Vec::new(),
+        });
+    Ok((plan.source_conditions, plan.dimension_edges))
 }
 
 fn table_key_from_qualified(expr: &Expr) -> Option<TableKey> {
@@ -717,7 +750,8 @@ mod tests {
             "max(foo.id) > 0",
         );
         let mut warnings = Vec::new();
-        inject_policy_dimensions(&mut select, &policy, &catalog, &mut warnings).expect("inject");
+        inject_policy_dimensions(&mut select, &policy, &catalog, &mut warnings, None)
+            .expect("inject");
         let sql = select.to_string();
         assert!(sql.contains("CROSS JOIN"));
         assert!(sql.contains("session_user"));
@@ -735,7 +769,8 @@ mod tests {
             "max(foo.id) > 0 AND regions.code = 'US'",
         );
         let mut warnings = Vec::new();
-        inject_policy_dimensions(&mut select, &policy, &catalog, &mut warnings).expect("inject");
+        inject_policy_dimensions(&mut select, &policy, &catalog, &mut warnings, None)
+            .expect("inject");
         let sql = select.to_string();
         assert!(!sql.contains("regions"));
         assert!(warnings.iter().any(|w| w.contains("was not joined")));
@@ -753,7 +788,8 @@ mod tests {
             "max(foo.id) > 0 AND foo.region_id = regions.id AND regions.code = 'US'",
         );
         let mut warnings = Vec::new();
-        inject_policy_dimensions(&mut select, &policy, &catalog, &mut warnings).expect("inject");
+        inject_policy_dimensions(&mut select, &policy, &catalog, &mut warnings, None)
+            .expect("inject");
         let sql = select.to_string();
         assert!(sql.contains("INNER JOIN") || sql.contains("JOIN regions"));
         assert!(!sql.contains("CROSS JOIN regions"));

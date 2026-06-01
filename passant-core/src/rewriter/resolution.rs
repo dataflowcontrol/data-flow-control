@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{
-    Assignment, Expr, Ident, Query, Select, SelectItem, SetExpr, SetOperator, SetQuantifier,
-    TableFactor, TableWithJoins, WildcardAdditionalOptions,
+    Assignment, Expr, Ident, Join, JoinOperator, Query, Select, SelectItem, SetExpr, SetOperator,
+    SetQuantifier, TableFactor, TableWithJoins, WildcardAdditionalOptions,
 };
 
 use crate::catalog::TableCatalog;
@@ -30,6 +30,8 @@ pub(crate) const T4_CTE: &str = "t4";
 pub(crate) const PASS_COLUMN: &str = "__passant_policy_pass";
 pub(crate) const RELATION_VIOLATION_COLUMN: &str = "__passant_relation_violation";
 pub(crate) const RELATION_INPUT_CTE: &str = "__passant_relation_input";
+pub(crate) const RELATION_AGG_CTE: &str = "__passant_relation_agg";
+pub(crate) const RELATION_BATCH_VIOLATION_COLUMN: &str = "__passant_batch_violation";
 pub(crate) const PASSANT_KILL_UDF: &str = "passant_kill";
 pub(crate) const UI_ADDRESS_VIOLATING_ROWS_UDF: &str = "address_violating_rows";
 pub(crate) const PASSANT_UI_APPROVE_UDF: &str = "passant_ui_approve";
@@ -78,7 +80,7 @@ pub(crate) fn wrap_select_with_tuple_resolution(
     if is_kill {
         let kill_filter = passant_kill_pass_filter(qualified_column(T1_CTE, PASS_COLUMN));
         let final_select = grouped_select(
-            t2_projection,
+            t2_projection.clone(),
             vec![TableWithJoins {
                 relation: table_factor(T1_CTE),
                 joins: Vec::new(),
@@ -96,7 +98,7 @@ pub(crate) fn wrap_select_with_tuple_resolution(
             relation: TableFactor::Derived {
                 lateral: false,
                 subquery: Box::new(final_query),
-                alias: Some(crate::sql::table_alias("__passant_tuple_resolution")),
+                alias: Some(crate::sql::table_alias("__passant_kill")),
             },
             joins: Vec::new(),
         }];
@@ -233,33 +235,24 @@ pub(crate) fn wrap_query_with_relation_resolution(
         .push(alias_expr(violation_expr, RELATION_VIOLATION_COLUMN));
     let annotated_query = query_from_select(annotated);
 
-    let bool_or_subquery = Expr::Subquery(Box::new(Query {
-        with: None,
-        body: Box::new(SetExpr::Select(Box::new(grouped_select(
-            vec![SelectItem::UnnamedExpr(function_call(
+    let agg_select = grouped_select(
+        vec![alias_expr(
+            function_call(
                 "bool_or",
                 vec![qualified_column(
                     RELATION_INPUT_CTE,
                     RELATION_VIOLATION_COLUMN,
                 )],
-            ))],
-            vec![TableWithJoins {
-                relation: table_factor(RELATION_INPUT_CTE),
-                joins: Vec::new(),
-            }],
-            None,
-            Vec::new(),
-        )))),
-        order_by: None,
-        limit: None,
-        limit_by: Vec::new(),
-        offset: None,
-        fetch: None,
-        locks: Vec::new(),
-        for_clause: None,
-        settings: None,
-        format_clause: None,
-    }));
+            ),
+            RELATION_BATCH_VIOLATION_COLUMN,
+        )],
+        vec![TableWithJoins {
+            relation: table_factor(RELATION_INPUT_CTE),
+            joins: Vec::new(),
+        }],
+        None,
+        Vec::new(),
+    );
 
     let mut resolved = empty_select();
     resolved.projection = output_columns
@@ -268,12 +261,25 @@ pub(crate) fn wrap_query_with_relation_resolution(
         .collect();
     resolved.from = vec![TableWithJoins {
         relation: table_factor(RELATION_INPUT_CTE),
-        joins: Vec::new(),
+        joins: vec![Join {
+            relation: table_factor(RELATION_AGG_CTE),
+            global: false,
+            join_operator: JoinOperator::CrossJoin,
+        }],
     }];
-    resolved.selection = Some(function_call(udf_name, vec![bool_or_subquery]));
+    resolved.selection = Some(function_call(
+        udf_name,
+        vec![qualified_column(
+            RELATION_AGG_CTE,
+            RELATION_BATCH_VIOLATION_COLUMN,
+        )],
+    ));
 
     Ok(with_ctes(
-        vec![cte(RELATION_INPUT_CTE, annotated_query)],
+        vec![
+            cte(RELATION_INPUT_CTE, annotated_query),
+            cte(RELATION_AGG_CTE, query_from_select(agg_select)),
+        ],
         SetExpr::Select(Box::new(resolved)),
     ))
 }
@@ -292,6 +298,7 @@ pub(crate) fn combine_violation_exprs(exprs: Vec<Expr>) -> Expr {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ui_pass_filter(
     pass_expr: Expr,
     select: &mut Select,
@@ -304,7 +311,7 @@ pub(crate) fn ui_pass_filter(
 ) -> Result<Expr, RewriteError> {
     ensure_projection_aliases(select);
     let (column_names, column_exprs) = collect_ui_udf_columns(
-        select,
+        &*select,
         store,
         spec.policy_index,
         policy,
@@ -389,7 +396,7 @@ pub(crate) fn collect_ui_update_udf_columns(
     }
     let context = RewriteContext::default();
     collect_ui_udf_columns(
-        &mut select,
+        &select,
         store,
         policy_index,
         policy,
@@ -603,6 +610,68 @@ fn output_column_names(select: &Select) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::sql::{binary_comparison, render_statement};
+
+    #[test]
+    fn relation_resolution_fuses_bool_or_into_agg_cte() {
+        let mut inner = empty_select();
+        inner.projection = vec![alias_expr(qualified_column("expenses", "amount"), "amount")];
+        inner.from = vec![TableWithJoins {
+            relation: table_factor("expenses"),
+            joins: Vec::new(),
+        }];
+        let query = query_from_select(inner);
+        let wrapped = wrap_query_with_relation_resolution(
+            query,
+            binary_comparison(
+                qualified_column("expenses", "amount"),
+                sqlparser::ast::BinaryOperator::Gt,
+                crate::sql::int_literal(100),
+            ),
+            "abort_batch",
+        )
+        .expect("wrap");
+        let sql = render_statement(&crate::sql::statement_from_query(wrapped), None);
+        assert!(sql.contains(RELATION_INPUT_CTE));
+        assert!(sql.contains(RELATION_AGG_CTE));
+        assert!(sql.contains(RELATION_BATCH_VIOLATION_COLUMN));
+        assert!(sql.contains("bool_or"));
+        assert!(sql.contains("abort_batch"));
+        assert!(sql.contains(&format!(
+            "{RELATION_AGG_CTE}.{RELATION_BATCH_VIOLATION_COLUMN}"
+        )));
+    }
+
+    #[test]
+    fn kill_resolution_uses_single_cte_without_union_branches() {
+        let mut inner = empty_select();
+        inner.projection = vec![alias_expr(qualified_column("foo", "id"), "id")];
+        inner.from = vec![TableWithJoins {
+            relation: table_factor("foo"),
+            joins: Vec::new(),
+        }];
+        let wrapped = wrap_select_with_tuple_resolution(
+            inner,
+            binary_comparison(
+                qualified_column("foo", "id"),
+                sqlparser::ast::BinaryOperator::Gt,
+                crate::sql::int_literal(0),
+            ),
+            PASSANT_KILL_UDF,
+        )
+        .expect("wrap");
+        let sql = render_statement(
+            &crate::sql::statement_from_query(query_from_select(wrapped)),
+            None,
+        );
+        assert!(sql.contains("t1 AS"));
+        assert!(sql.contains("passant_kill"));
+        assert!(!sql.contains("t2 AS"));
+        assert!(!sql.contains("t3 AS"));
+        assert!(!sql.contains("t4 AS"));
+        assert!(!sql.contains("UNION ALL"));
+        assert!(!sql.contains("__passant_tuple_resolution"));
+        assert!(sql.contains("__passant_kill"));
+    }
 
     #[test]
     fn tuple_resolution_emits_t1_through_t4_ctes() {

@@ -1,12 +1,9 @@
 //! UNIQUE / NOT UNIQUE provenance semantics: scan vs grouped rewrites and execution.
 
-#[path = "../common/duckdb.rs"]
-mod duckdb;
-
 use passant_core::{PolicyIr, Resolution, TableCatalog};
 
 use crate::common::{assert_rewrite, pgn_policy, rewrite, rewrite_with_catalog};
-use duckdb::TestDb;
+use crate::duckdb::TestDb;
 
 fn not_unique_policy() -> PolicyIr {
     pgn_policy(&["Receipts"], "NOT UNIQUE Receipts.uid")
@@ -191,7 +188,10 @@ fn unique_equality_grouped_with_catalog_unique_adds_having_guard() {
 #[test]
 fn count_distinct_eq_one_scan_global_cardinality_empty_when_many_ids() {
     let policy = pgn_policy(&["foo"], "count(distinct foo.id) = 1");
-    let sql = rewrite("SELECT id FROM foo ORDER BY id", &[policy.clone()]);
+    let sql = rewrite(
+        "SELECT id FROM foo ORDER BY id",
+        std::slice::from_ref(&policy),
+    );
     assert!(
         sql.contains("count(DISTINCT foo.id) = 1"),
         "expected global cardinality predicate: {sql}"

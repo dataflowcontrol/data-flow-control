@@ -401,6 +401,44 @@ impl PolicyStore {
         if entry.policy.resolution() == Resolution::Remove {
             self.remove_policy_count += 1;
         }
+        self.adjust_resolution_counts(entry.policy.resolution(), 1);
+    }
+
+    pub(crate) fn adjust_resolution_counts(&mut self, resolution: Resolution, delta: i32) {
+        let apply = |count: &mut usize| {
+            if delta > 0 {
+                *count += usize::try_from(delta).unwrap_or(0);
+            } else {
+                *count = count.saturating_sub(usize::try_from(-delta).unwrap_or(0));
+            }
+        };
+        if resolution.is_ui_resolution() {
+            apply(&mut self.ui_policy_count);
+        }
+        if resolution.is_tuple_resolution() {
+            apply(&mut self.tuple_resolution_policy_count);
+        }
+        if resolution.is_relation_resolution() {
+            apply(&mut self.relation_resolution_policy_count);
+        }
+    }
+
+    pub fn has_ui_policies(&self) -> bool {
+        self.ui_policy_count > 0
+    }
+
+    pub fn has_tuple_resolution_policies(&self) -> bool {
+        self.tuple_resolution_policy_count > 0
+    }
+
+    pub fn has_relation_resolution_policies(&self) -> bool {
+        self.relation_resolution_policy_count > 0
+    }
+
+    pub fn has_enforcement_resolution_policies(&self) -> bool {
+        self.has_ui_policies()
+            || self.has_tuple_resolution_policies()
+            || self.has_relation_resolution_policies()
     }
 
     pub(crate) fn active_ids<'a>(&'a self, ids: &'a [usize]) -> impl Iterator<Item = usize> + 'a {

@@ -111,10 +111,20 @@ impl PassantRewriter {
             cross_source_policies_for_branch_indexed(self.policy_store(), &right_tables);
         let mut branch_context = context.clone();
         branch_context.allow_partial_source_visibility = true;
-        PassantRewriter::with_policies_and_catalog(left_policies, self.catalog.clone())
-            .rewrite_set_expr(left, &branch_context)?;
-        PassantRewriter::with_policies_and_catalog(right_policies, self.catalog.clone())
-            .rewrite_set_expr(right, &branch_context)
+        PassantRewriter::with_branch_view(
+            self.policy_store(),
+            left_policies,
+            self.catalog.clone(),
+            self.parse_dialect,
+        )
+        .rewrite_set_expr(left, &branch_context)?;
+        PassantRewriter::with_branch_view(
+            self.policy_store(),
+            right_policies,
+            self.catalog.clone(),
+            self.parse_dialect,
+        )
+        .rewrite_set_expr(right, &branch_context)
     }
 
     fn rewrite_select(
@@ -134,14 +144,19 @@ impl PassantRewriter {
             self.stats.record_select_scope();
         }
         let sink_key = context.sink.as_ref().map(|sink| TableKey::new(sink));
-        if let Some(policies) = split_select_policies_for_nullable_joins_for_store(
+        if let Some(entries) = split_select_policies_for_nullable_joins_for_store(
             &self.store,
             select,
             &select_analysis.scope.direct_base_tables,
             sink_key.as_ref(),
         ) {
-            return PassantRewriter::with_policies_and_catalog(policies, self.catalog.clone())
-                .rewrite_select(select, context);
+            return PassantRewriter::with_branch_view(
+                self.policy_store(),
+                entries,
+                self.catalog.clone(),
+                self.parse_dialect,
+            )
+            .rewrite_select(select, context);
         }
 
         let stats = context.collect_stats.then_some(&self.stats);
@@ -280,11 +295,18 @@ impl PassantRewriter {
                         }
                         return Ok(());
                     };
-                    PassantRewriter::with_policies_and_catalog(left_policies, self.catalog.clone())
-                        .rewrite_set_expr(left, context)?;
-                    PassantRewriter::with_policies_and_catalog(
+                    PassantRewriter::with_branch_view(
+                        self.policy_store(),
+                        left_policies,
+                        self.catalog.clone(),
+                        self.parse_dialect,
+                    )
+                    .rewrite_set_expr(left, context)?;
+                    PassantRewriter::with_branch_view(
+                        self.policy_store(),
                         right_policies,
                         self.catalog.clone(),
+                        self.parse_dialect,
                     )
                     .rewrite_set_expr(right, context)?;
                     return Ok(());

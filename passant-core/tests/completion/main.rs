@@ -1,5 +1,7 @@
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../common/duckdb.rs"]
+mod duckdb;
 
 mod conformance;
 mod partial_push;

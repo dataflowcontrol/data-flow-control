@@ -15,6 +15,8 @@ use crate::rewriter::{TableScope, direct_source_occurrence_counts, select_is_agg
 /// Precomputed metadata for a single SELECT scope.
 #[derive(Debug, Clone)]
 pub struct SelectAnalysis {
+    /// Stable index assigned during statement analysis (depth-first order).
+    pub scope_id: u32,
     pub(crate) scope: TableScope,
     pub nullable_sources: HashSet<TableKey>,
     pub is_aggregation: bool,
@@ -25,7 +27,12 @@ pub struct SelectAnalysis {
 
 impl SelectAnalysis {
     pub fn from_select(select: &Select) -> Self {
+        Self::from_select_with_id(select, 0)
+    }
+
+    pub(crate) fn from_select_with_id(select: &Select, scope_id: u32) -> Self {
         Self {
+            scope_id,
             scope: TableScope::from_select(select),
             nullable_sources: select_nullable_source_tables(select),
             is_aggregation: select_is_aggregation(select),
@@ -35,8 +42,9 @@ impl SelectAnalysis {
         }
     }
 
-    pub(crate) fn from_table_scope(scope: TableScope) -> Self {
+    pub(crate) fn from_table_scope_with_id(scope: TableScope, scope_id: u32) -> Self {
         Self {
+            scope_id,
             scope,
             nullable_sources: HashSet::new(),
             is_aggregation: false,
@@ -65,25 +73,39 @@ impl StatementAnalysis {
         statement: &Statement,
         stats: Option<&RewriteStatsCell>,
     ) -> Self {
+        let table_start = std::time::Instant::now();
+        let table_keys = statement_table_keys(statement);
+        let sink = statement_sink_key(statement);
+        if let Some(stats) = stats {
+            stats.add_elapsed_statement_tables(table_start.elapsed());
+        }
         let mut analysis = Self {
-            table_keys: statement_table_keys(statement),
-            sink: statement_sink_key(statement),
+            table_keys,
+            sink,
             select_scopes: Vec::new(),
         };
-        collect_select_scopes(statement, &mut analysis.select_scopes);
+        let scope_start = std::time::Instant::now();
+        collect_select_scopes(statement, &mut analysis.select_scopes, 0);
         if let Some(stats) = stats {
+            stats.add_elapsed_scope_analysis(scope_start.elapsed());
             stats.add_ast_nodes_visited_analysis(count_statement(statement));
         }
         analysis
     }
 }
 
-fn collect_select_scopes(statement: &Statement, scopes: &mut Vec<SelectAnalysis>) {
+fn collect_select_scopes(
+    statement: &Statement,
+    scopes: &mut Vec<SelectAnalysis>,
+    next_id: u32,
+) -> u32 {
     match statement {
-        Statement::Query(query) => collect_query_scopes(query, scopes),
+        Statement::Query(query) => collect_query_scopes(query, scopes, next_id),
         Statement::Insert(insert) => {
             if let Some(source) = &insert.source {
-                collect_query_scopes(source, scopes);
+                collect_query_scopes(source, scopes, next_id)
+            } else {
+                next_id
             }
         }
         Statement::Update { table, from, .. } => {
@@ -92,75 +114,98 @@ fn collect_select_scopes(statement: &Statement, scopes: &mut Vec<SelectAnalysis>
             if let Some(from) = from {
                 scope.add_table_with_joins(from);
             }
-            scopes.push(SelectAnalysis::from_table_scope(scope));
+            scopes.push(SelectAnalysis::from_table_scope_with_id(scope, next_id));
+            next_id + 1
         }
         Statement::Merge {
             source: sqlparser::ast::TableFactor::Derived { subquery, .. },
             ..
-        } => collect_query_scopes(subquery, scopes),
-        _ => {}
+        } => collect_query_scopes(subquery, scopes, next_id),
+        _ => next_id,
     }
 }
 
-fn collect_query_scopes(query: &Query, scopes: &mut Vec<SelectAnalysis>) {
+fn collect_query_scopes(query: &Query, scopes: &mut Vec<SelectAnalysis>, mut next_id: u32) -> u32 {
     if let Some(with) = &query.with {
         for cte in &with.cte_tables {
-            collect_query_scopes(&cte.query, scopes);
+            next_id = collect_query_scopes(&cte.query, scopes, next_id);
         }
     }
-    collect_set_expr_scopes(query.body.as_ref(), scopes);
+    collect_set_expr_scopes(query.body.as_ref(), scopes, next_id)
 }
 
-fn collect_set_expr_scopes(set_expr: &SetExpr, scopes: &mut Vec<SelectAnalysis>) {
+fn collect_set_expr_scopes(
+    set_expr: &SetExpr,
+    scopes: &mut Vec<SelectAnalysis>,
+    next_id: u32,
+) -> u32 {
     match set_expr {
         SetExpr::Select(select) => {
-            scopes.push(SelectAnalysis::from_select(select));
-            collect_select_nested_scopes(select, scopes);
+            let id = next_id;
+            scopes.push(SelectAnalysis::from_select_with_id(select, id));
+            collect_select_nested_scopes(select, scopes, id + 1)
         }
-        SetExpr::Query(query) => collect_query_scopes(query, scopes),
+        SetExpr::Query(query) => collect_query_scopes(query, scopes, next_id),
         SetExpr::SetOperation { left, right, .. } => {
-            collect_set_expr_scopes(left, scopes);
-            collect_set_expr_scopes(right, scopes);
+            let next_id = collect_set_expr_scopes(left, scopes, next_id);
+            collect_set_expr_scopes(right, scopes, next_id)
         }
-        _ => {}
+        _ => next_id,
     }
 }
 
-fn collect_select_nested_scopes(select: &Select, scopes: &mut Vec<SelectAnalysis>) {
+fn collect_select_nested_scopes(
+    select: &Select,
+    scopes: &mut Vec<SelectAnalysis>,
+    next_id: u32,
+) -> u32 {
+    let mut next_id = next_id;
     for table in &select.from {
-        collect_table_factor_scopes(&table.relation, scopes);
+        next_id = collect_table_factor_scopes(&table.relation, scopes, next_id);
         for join in &table.joins {
-            collect_table_factor_scopes(&join.relation, scopes);
+            next_id = collect_table_factor_scopes(&join.relation, scopes, next_id);
         }
     }
-    collect_expr_scopes(select.selection.as_ref(), scopes);
-    collect_expr_scopes(select.having.as_ref(), scopes);
+    next_id = collect_expr_scopes(select.selection.as_ref(), scopes, next_id);
+    next_id = collect_expr_scopes(select.having.as_ref(), scopes, next_id);
     for item in &select.projection {
         if let sqlparser::ast::SelectItem::UnnamedExpr(expr)
         | sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } = item
         {
-            collect_expr_scopes(Some(expr), scopes);
+            next_id = collect_expr_scopes(Some(expr), scopes, next_id);
         }
     }
+    next_id
 }
 
 fn collect_table_factor_scopes(
     factor: &sqlparser::ast::TableFactor,
     scopes: &mut Vec<SelectAnalysis>,
-) {
+    next_id: u32,
+) -> u32 {
     if let sqlparser::ast::TableFactor::Derived { subquery, .. } = factor {
-        collect_query_scopes(subquery, scopes);
+        collect_query_scopes(subquery, scopes, next_id)
+    } else {
+        next_id
     }
 }
 
-fn collect_expr_scopes(expr: Option<&sqlparser::ast::Expr>, scopes: &mut Vec<SelectAnalysis>) {
+fn collect_expr_scopes(
+    expr: Option<&sqlparser::ast::Expr>,
+    scopes: &mut Vec<SelectAnalysis>,
+    next_id: u32,
+) -> u32 {
     let Some(expr) = expr else {
-        return;
+        return next_id;
     };
-    walk_expr_subqueries(expr, scopes);
+    walk_expr_subqueries(expr, scopes, next_id)
 }
 
-fn walk_expr_subqueries(expr: &sqlparser::ast::Expr, scopes: &mut Vec<SelectAnalysis>) {
+fn walk_expr_subqueries(
+    expr: &sqlparser::ast::Expr,
+    scopes: &mut Vec<SelectAnalysis>,
+    next_id: u32,
+) -> u32 {
     match expr {
         sqlparser::ast::Expr::Subquery(query)
         | sqlparser::ast::Expr::Exists {
@@ -168,12 +213,10 @@ fn walk_expr_subqueries(expr: &sqlparser::ast::Expr, scopes: &mut Vec<SelectAnal
         }
         | sqlparser::ast::Expr::InSubquery {
             subquery: query, ..
-        } => {
-            collect_query_scopes(query, scopes);
-        }
+        } => collect_query_scopes(query, scopes, next_id),
         sqlparser::ast::Expr::BinaryOp { left, right, .. } => {
-            walk_expr_subqueries(left, scopes);
-            walk_expr_subqueries(right, scopes);
+            let next_id = walk_expr_subqueries(left, scopes, next_id);
+            walk_expr_subqueries(right, scopes, next_id)
         }
         sqlparser::ast::Expr::Nested(inner)
         | sqlparser::ast::Expr::UnaryOp { expr: inner, .. }
@@ -182,8 +225,9 @@ fn walk_expr_subqueries(expr: &sqlparser::ast::Expr, scopes: &mut Vec<SelectAnal
         | sqlparser::ast::Expr::IsTrue(inner)
         | sqlparser::ast::Expr::IsNotTrue(inner)
         | sqlparser::ast::Expr::IsNull(inner)
-        | sqlparser::ast::Expr::IsNotNull(inner) => walk_expr_subqueries(inner, scopes),
+        | sqlparser::ast::Expr::IsNotNull(inner) => walk_expr_subqueries(inner, scopes, next_id),
         sqlparser::ast::Expr::Function(function) => {
+            let mut next_id = next_id;
             if let sqlparser::ast::FunctionArguments::List(args) = &function.args {
                 for arg in &args.args {
                     if let sqlparser::ast::FunctionArg::Unnamed(
@@ -198,15 +242,25 @@ fn walk_expr_subqueries(expr: &sqlparser::ast::Expr, scopes: &mut Vec<SelectAnal
                         ..
                     } = arg
                     {
-                        walk_expr_subqueries(inner, scopes);
+                        next_id = walk_expr_subqueries(inner, scopes, next_id);
                     }
                 }
             }
             if let Some(filter) = function.filter.as_ref() {
-                walk_expr_subqueries(filter, scopes);
+                next_id = walk_expr_subqueries(filter, scopes, next_id);
             }
+            next_id
         }
-        _ => {}
+        _ => next_id,
+    }
+}
+
+impl StatementAnalysis {
+    /// Lookup precomputed scope analysis by stable scope id.
+    pub fn select_scope_by_id(&self, scope_id: u32) -> Option<&SelectAnalysis> {
+        self.select_scopes
+            .iter()
+            .find(|scope| scope.scope_id == scope_id)
     }
 }
 

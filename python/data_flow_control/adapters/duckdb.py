@@ -75,24 +75,27 @@ class DuckDBAdapter:
         """Register a scalar UDF invoked with bool_or(violation) over the relation input."""
         self._conn.create_function(name, func, ["BOOLEAN"], "BOOLEAN")
 
-    def introspect_catalog(self) -> dict:
+    def introspect_catalog(self, *, include_row_counts: bool = False) -> dict:
+        table_names = self._list_catalog_tables()
+        columns_by_table = self._fetch_all_table_columns(table_names)
+        primary_keys = self._fetch_all_primary_keys(table_names)
         tables: dict[str, dict] = {}
         unique_columns: list[list[str]] = []
-        for table_name in self._list_catalog_tables():
-            column_types = self._get_table_columns(table_name)
+        for table_name in table_names:
+            column_types = columns_by_table.get(table_name)
             if column_types is None:
-                # Extension-internal tables (e.g. Flock) may appear in duckdb_tables()
-                # but are not describable with DESCRIBE; skip them for policy catalog sync.
                 continue
-            row_count = self._table_row_count(table_name)
             entry: dict = {
                 "columns": list(column_types.keys()),
                 "types": column_types,
             }
-            if row_count is not None:
-                entry["row_count"] = row_count
+            if include_row_counts:
+                row_count = self._table_row_count(table_name)
+                if row_count is not None:
+                    entry["row_count"] = row_count
             tables[table_name] = entry
-            unique_columns.extend(self._primary_key_columns(table_name))
+            for column in primary_keys.get(table_name, []):
+                unique_columns.append([table_name, column])
         return build_catalog_snapshot(
             dialect=self.dialect,
             tables=tables,
@@ -100,6 +103,20 @@ class DuckDBAdapter:
             search_path=["main"],
             unique_columns=unique_columns,
         )
+
+    def _query_duckdb_columns(self) -> list | None:
+        queries = (
+            "SELECT database_name, schema_name, table_name, column_name, data_type "
+            "FROM duckdb_columns() WHERE NOT internal",
+            "SELECT table_catalog, table_schema, table_name, column_name, data_type "
+            "FROM duckdb_columns() WHERE NOT internal",
+        )
+        for sql in queries:
+            try:
+                return self.execute(sql).fetchall()
+            except duckdb.Error:
+                continue
+        return None
 
     def _list_catalog_tables(self) -> list[str]:
         try:
@@ -117,19 +134,50 @@ class DuckDBAdapter:
                 tables.append(name)
         return tables
 
-    def _primary_key_columns(self, table_name: str) -> list[list[str]]:
+    def _fetch_all_table_columns(self, table_names: list[str]) -> dict[str, dict[str, str]]:
+        if not table_names:
+            return {}
+        rows = self._query_duckdb_columns()
+        if rows is None:
+            return {
+                name: cols
+                for name in table_names
+                if (cols := self._get_table_columns(name)) is not None
+            }
+        columns: dict[str, dict[str, str]] = {}
+        known = {name.lower() for name in table_names}
+        for _db, schema, table, column, data_type in rows:
+            if schema and schema.lower() not in ("main", "temp", ""):
+                qualified = f"{schema}.{table}"
+            else:
+                qualified = table
+            if qualified.lower() not in known and table.lower() not in known:
+                continue
+            key = (
+                qualified
+                if qualified.lower() in known
+                else next((n for n in table_names if n.lower() == table.lower()), qualified)
+            )
+            columns.setdefault(key, {})[column] = str(data_type).upper()
+        return columns
+
+    def _fetch_all_primary_keys(self, table_names: list[str]) -> dict[str, list[str]]:
         try:
             rows = self.execute(
-                "SELECT constraint_column_names FROM duckdb_constraints() "
-                "WHERE constraint_type = 'PRIMARY KEY' AND table_name = ?",
-                [table_name.split(".")[-1]],
+                "SELECT table_name, constraint_column_names FROM duckdb_constraints() "
+                "WHERE constraint_type = 'PRIMARY KEY'"
             ).fetchall()
         except duckdb.Error:
-            return []
-        keys: list[list[str]] = []
-        for (column_names,) in rows:
+            return {}
+        by_short: dict[str, list[str]] = {}
+        for table_name, column_names in rows:
             for column in column_names:
-                keys.append([table_name, column])
+                by_short.setdefault(table_name.lower(), []).append(column)
+        keys: dict[str, list[str]] = {}
+        for qualified in table_names:
+            short = qualified.split(".")[-1].lower()
+            if short in by_short:
+                keys[qualified] = by_short[short]
         return keys
 
     def _table_row_count(self, table_name: str) -> int | None:

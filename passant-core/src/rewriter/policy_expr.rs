@@ -534,11 +534,7 @@ pub(crate) fn scan_policy_expr(
 }
 
 pub(crate) fn non_distributive_aggregates(expr: &Expr) -> Result<Vec<String>, RewriteError> {
-    let aggregates =
-        semiring::analyze_constraint(&crate::sql::render_expr(expr, None)).map_err(|err| {
-            RewriteError::unsupported_statement(format!("policy aggregate analysis: {err}"))
-        })?;
-    Ok(aggregates
+    Ok(semiring::analyze_constraint_expr(expr)
         .into_iter()
         .filter(|aggregate| !aggregate.distributive)
         .map(|aggregate| aggregate.expression)
@@ -572,8 +568,19 @@ fn scalar_policy_subquery_expr(expr: Expr, sources: &[String]) -> Result<Expr, R
         let left_sources = referenced_source_tables(left, sources);
         let right_sources = referenced_source_tables(right, sources);
         if left_sources.len() == 1 && right_sources.len() == 1 {
+            let source = &left_sources[0];
+            if right_sources[0] == *source {
+                return Ok(scalar_subquery(
+                    Expr::BinaryOp {
+                        left: Box::new(*left.clone()),
+                        op: op.clone(),
+                        right: Box::new(*right.clone()),
+                    },
+                    source,
+                ));
+            }
             return Ok(Expr::BinaryOp {
-                left: Box::new(scalar_subquery(*left.clone(), &left_sources[0])),
+                left: Box::new(scalar_subquery(*left.clone(), source)),
                 op: op.clone(),
                 right: Box::new(scalar_subquery(*right.clone(), &right_sources[0])),
             });

@@ -186,6 +186,15 @@ stats = conn.last_rewrite_stats()
 summary = conn.last_statement_rewrite_summary()
 ```
 
+Bulk policy registration (one catalog sync):
+
+```python
+conn.register_policies([policy_a, policy_b])
+conn.refresh_catalog(force=True)  # after DDL changes
+```
+
+Performance benchmarks and budgets: [docs/performance.md](docs/performance.md).
+
 Available public imports:
 
 ```python

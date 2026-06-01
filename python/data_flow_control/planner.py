@@ -25,6 +25,11 @@ class Planner:
     def register_policy(self, policy: Policy) -> None:
         self._planner.register_policy_specs(_policy_specs_json([policy]))
 
+    def register_policies(self, policies: list[Policy]) -> None:
+        if not policies:
+            return
+        self._planner.register_policy_specs(_policy_specs_json(policies))
+
     def delete_policy(
         self,
         *,
