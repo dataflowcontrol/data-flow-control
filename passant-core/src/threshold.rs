@@ -1,8 +1,10 @@
 use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, SelectItem, SetExpr, Statement};
 use std::collections::HashMap;
 
+use crate::aggregate_registry::AggregateRegistry;
 use crate::parser::parse_query;
 use crate::policy::{PolicyIr, Resolution};
+use crate::sql::SqlDialect;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ThresholdKey {
@@ -106,10 +108,18 @@ pub fn prune_dominated_remove_policies(policies: &[PolicyIr]) -> Vec<PolicyIr> {
 }
 
 pub(crate) fn threshold_predicate_from_expr(expr: &Expr) -> Option<ThresholdPredicate> {
+    let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+    threshold_predicate_from_expr_with_registry(expr, &registry)
+}
+
+pub(crate) fn threshold_predicate_from_expr_with_registry(
+    expr: &Expr,
+    registry: &AggregateRegistry,
+) -> Option<ThresholdPredicate> {
     let Expr::BinaryOp { left, op, right } = expr else {
         return None;
     };
-    threshold_predicate_from_comparison(left, op, right)
+    threshold_predicate_from_comparison(left, op, right, registry)
 }
 
 fn threshold_predicate_from_policy_constraint(constraint: &str) -> Option<ThresholdPredicate> {
@@ -121,6 +131,7 @@ fn threshold_predicate_from_comparison(
     left: &Expr,
     op: &sqlparser::ast::BinaryOperator,
     right: &Expr,
+    registry: &AggregateRegistry,
 ) -> Option<ThresholdPredicate> {
     let (direction, strict) = match op {
         BinaryOperator::Gt => (ThresholdDirection::Greater, true),
@@ -139,7 +150,7 @@ fn threshold_predicate_from_comparison(
         direction,
         ThresholdDirection::Greater | ThresholdDirection::Less
     ) {
-        strip_supported_aggregates(left.clone()).to_string()
+        strip_supported_aggregates(left.clone(), registry).to_string()
     } else {
         left.to_string()
     };
@@ -166,30 +177,23 @@ fn parse_constraint_expr(sql: &str) -> Result<Expr, ()> {
     }
 }
 
-fn strip_supported_aggregates(expr: Expr) -> Expr {
+fn strip_supported_aggregates(expr: Expr, registry: &AggregateRegistry) -> Expr {
     match expr {
-        Expr::Function(function) if is_aggregate_name(&function.name.to_string()) => {
+        Expr::Function(function) if registry.is_aggregate_call(&function) => {
             first_function_expr(&function).unwrap_or(Expr::Function(function))
         }
         Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
-            left: Box::new(strip_supported_aggregates(*left)),
+            left: Box::new(strip_supported_aggregates(*left, registry)),
             op,
-            right: Box::new(strip_supported_aggregates(*right)),
+            right: Box::new(strip_supported_aggregates(*right, registry)),
         },
-        Expr::Nested(expr) => Expr::Nested(Box::new(strip_supported_aggregates(*expr))),
+        Expr::Nested(expr) => Expr::Nested(Box::new(strip_supported_aggregates(*expr, registry))),
         Expr::UnaryOp { op, expr } => Expr::UnaryOp {
             op,
-            expr: Box::new(strip_supported_aggregates(*expr)),
+            expr: Box::new(strip_supported_aggregates(*expr, registry)),
         },
         other => other,
     }
-}
-
-fn is_aggregate_name(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "count" | "sum" | "avg" | "min" | "max" | "array_agg" | "bool_and" | "bool_or"
-    )
 }
 
 fn first_function_expr(function: &sqlparser::ast::Function) -> Option<Expr> {

@@ -27,3 +27,5 @@ predicates = "3.1"
 pretty_assertions = "1.4"
 criterion = { version = "0.5", features = ["html_reports"] }
 roaring = "0.10"
+pest = "2.8"
+pest_derive = "2.8"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..aggregate_introspection import introspect_clickhouse_aggregates
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
 from .duckdb import quote_sql_identifier
@@ -87,7 +88,11 @@ class ClickHouseAdapter:
             tables=tables,
             default_schema=database,
             search_path=[database],
+            aggregate_functions=self.introspect_aggregate_functions(),
         )
+
+    def introspect_aggregate_functions(self) -> list[dict]:
+        return introspect_clickhouse_aggregates(self._client)
 
     def close(self) -> None:
         self._client.close()

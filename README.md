@@ -32,7 +32,7 @@ relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutio
 - rewrite optimizer with `FullPush` / `PartialPush` and explain output
 - `Policy` parsing: paper PGN syntax — `SOURCE`/`SOURCES`, `REQUIRED`, `SINK`, aliases (`SOURCE R R`),
   `DIMENSION` (table+alias or subquery), `UNIQUE`/`NOT UNIQUE`, `_OUTPUT_`, `CONSTRAINT`, `ON FAIL`,
-  `DESCRIPTION`, and `PGN OVER`/`PGN UPDATE`
+  and `DESCRIPTION`
 - `SELECT`, `INSERT ... SELECT`, `UPDATE`, and `MERGE` rewrites; **`DELETE` passthrough** (no rewrite)
 - `REMOVE`, `KILL` (`passant_kill` UDF), tuple UDF, and relation-level UDF resolutions
 - recursive rewriting for CTEs, subqueries, and set operations
@@ -40,7 +40,7 @@ relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutio
 - threshold dominance, source-set splitting, semiring join decomposition
 - CLI: `rewrite`, `explain`, `plan`, `parse-policy`
 
-Aggregate policies, invalidation (`valid` columns), and legacy `compat` APIs are **not** supported.
+Aggregate policies and invalidation (`valid` columns) are **not** supported.
 
 ## Python API
 

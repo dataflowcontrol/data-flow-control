@@ -13,6 +13,8 @@ sqlparser.workspace = true
 thiserror.workspace = true
 roaring.workspace = true
 smallvec = { workspace = true }
+pest.workspace = true
+pest_derive.workspace = true
 
 [features]
 default = []

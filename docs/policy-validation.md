@@ -7,6 +7,12 @@ Passant validates policies in two phases:
 
 ## Paper PGN shape
 
+PGN clause structure is parsed with a `pest` grammar (`policy_pgn.pest`). The grammar
+extracts raw SQL spans for `CONSTRAINT`, dimension subqueries, and `DESCRIPTION`, while
+skipping over single-quoted strings, double-quoted identifiers, and balanced parentheses so
+clause keywords inside SQL do not terminate spans early. Full SQL validation still uses
+`sqlparser` after extraction.
+
 ```
 [SOURCE[S] …] [REQUIRED …] [SINK …] [DIMENSION …] CONSTRAINT … ON FAIL … [DESCRIPTION …]
 ```
@@ -25,6 +31,24 @@ Passant validates policies in two phases:
 | `KILL` | `exception_udf` (`passant_kill` / `kill`) |
 | Tuple `UDF` | `tuple_udf` (DuckDB) |
 | Relation `UDF` | `relation_udf` (DuckDB); rejected on `UPDATE` initially |
+
+## Aggregate detection
+
+Source-column constraints must reference aggregated source columns (for example
+`max(foo.amount) > 10`). Passant uses a connection-aware **aggregate registry**:
+
+- **Static dialect fallbacks** for built-ins such as `count`, `sum`, `median`, `string_agg`,
+  `list` / `array_agg`, and ClickHouse combinator suffixes (`sumIf`, `groupArrayDistinct`).
+- **Adapter introspection** at catalog sync (`duckdb_functions()`, SQLite
+  `PRAGMA function_list`, Postgres `pg_aggregate`, ClickHouse `system.functions`, DataFusion
+  `SHOW FUNCTIONS`).
+- **Explicit overrides** via `Connection.register_aggregate_function_name(...)` when
+  introspection is incomplete.
+
+Register custom UDAFs **before** `dfc(conn)` when possible, or call
+`Connection.refresh_aggregate_functions()` after registering a UDAF on the connection.
+Scalar functions such as `abs(foo.amount)` or `lower(foo.name)` are **not** treated as
+aggregates; unqualified source columns inside them are rejected.
 
 ## Extension predicates
 
@@ -56,8 +80,8 @@ llm_filter(
 Install Flock locally with `passant/scripts/setup_flock.sh`. Optional execution tests require
 `OPENAI_API_KEY` or `FLOCK_OPENAI_API_KEY`.
 
-## Unsupported (by design)
+## Unsupported resolutions and policy shapes
 
-- LLM resolution intrinsics
+- `ON FAIL LLM` / `ON FAIL INVALIDATE` (use `REMOVE`, `KILL`, `UDF`, `RELATION UDF`, or `UI`)
 - Invalidation / `valid` columns
-- Aggregate DFC policies
+- Aggregate DFC policies (`AGGREGATE` prefix)

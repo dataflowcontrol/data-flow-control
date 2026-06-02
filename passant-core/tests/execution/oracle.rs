@@ -123,9 +123,32 @@ fn full_push_remove_with_limit_matches_naive_oracle() {
         .rewrite("SELECT id FROM foo ORDER BY id LIMIT 2")
         .expect("rewrite");
     let actual = db.fetchall_i64(&rewritten);
-    let oracle = db.fetchall_i64("SELECT id FROM foo WHERE foo.id > 1 ORDER BY id LIMIT 2");
+    let oracle = db.fetchall_i64(
+        "WITH base AS (SELECT id FROM foo ORDER BY id LIMIT 2) SELECT id FROM base WHERE id > 1",
+    );
     assert_eq!(actual, oracle);
-    assert_eq!(actual, vec![2, 3]);
+    assert_eq!(actual, vec![2]);
+}
+
+#[test]
+fn full_push_remove_with_limit_on_aggregate_matches_base_limit_oracle() {
+    let mut db = TestDb::new();
+    db.exec("CREATE TABLE foo (category VARCHAR, amount INTEGER)");
+    db.exec("INSERT INTO foo VALUES ('a', 1), ('b', 5), ('c', 10)");
+    db.register_policy(pgn_policy(&["foo"], "max(foo.amount) > 1"));
+
+    let rewritten = db
+        .rewrite(
+            "SELECT category, sum(amount) FROM foo GROUP BY category ORDER BY category LIMIT 1",
+        )
+        .expect("rewrite");
+    assert!(rewritten.contains("WITH __passant_limited AS"));
+    // LIMIT 1 picks category 'a' (max amount 1); policy removes it after the limit boundary.
+    let actual = db.fetchall_strings(&rewritten);
+    let base_only =
+        db.fetchall_strings("SELECT category FROM foo GROUP BY category ORDER BY category LIMIT 1");
+    assert_eq!(base_only, vec!["a"]);
+    assert_eq!(actual, Vec::<String>::new());
 }
 
 #[test]

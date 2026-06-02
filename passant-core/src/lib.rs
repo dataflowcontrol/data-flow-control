@@ -1,3 +1,4 @@
+pub mod aggregate_registry;
 pub mod catalog;
 pub mod diagnostics;
 pub mod explain;
@@ -12,6 +13,7 @@ pub mod planner;
 pub mod policy;
 pub mod policy_compile;
 pub mod policy_index;
+mod policy_parser;
 pub mod policy_store;
 pub mod query_analysis;
 pub mod rewrite_stats;
@@ -24,6 +26,10 @@ pub mod sql;
 pub mod statement_tables;
 pub mod threshold;
 
+pub use aggregate_registry::{
+    AggregateClassification, AggregateFunction, AggregateFunctionSnapshot, AggregateFunctionSource,
+    AggregateRegistry,
+};
 pub use catalog::{
     CatalogSnapshot, CatalogTableInfo, TableCatalog, validate_constraint_expression,
 };

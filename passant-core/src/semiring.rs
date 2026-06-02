@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments};
 
+use crate::aggregate_registry::{AggregateRegistry, function_name};
 use crate::policy::PolicyIr;
+use crate::sql::SqlDialect;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AggregateAnalysis {
@@ -29,9 +31,19 @@ impl Default for SemiringAnalysis {
 }
 
 pub fn analyze_policies(policies: &[PolicyIr]) -> SemiringAnalysis {
+    analyze_policies_with_registry(
+        policies,
+        &AggregateRegistry::for_dialect(SqlDialect::DuckDb),
+    )
+}
+
+pub fn analyze_policies_with_registry(
+    policies: &[PolicyIr],
+    registry: &AggregateRegistry,
+) -> SemiringAnalysis {
     let mut result = SemiringAnalysis::default();
     for policy in policies {
-        let Ok(aggregates) = analyze_constraint(policy.constraint()) else {
+        let Ok(aggregates) = analyze_constraint_with_registry(policy.constraint(), registry) else {
             result.all_distributive = false;
             result
                 .non_distributive_aggregates
@@ -52,18 +64,42 @@ pub fn analyze_policies(policies: &[PolicyIr]) -> SemiringAnalysis {
 }
 
 pub fn analyze_constraint(constraint: &str) -> Result<Vec<AggregateAnalysis>, String> {
+    let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+    analyze_constraint_with_registry(constraint, &registry)
+}
+
+pub fn analyze_constraint_with_registry(
+    constraint: &str,
+    registry: &AggregateRegistry,
+) -> Result<Vec<AggregateAnalysis>, String> {
     let expr = crate::sql::parse_policy_expr_duckdb(constraint).map_err(|err| err.to_string())?;
-    Ok(analyze_constraint_expr(&expr))
+    Ok(analyze_constraint_expr_with_registry(&expr, registry))
 }
 
 pub fn analyze_constraint_expr(expr: &Expr) -> Vec<AggregateAnalysis> {
+    let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+    analyze_constraint_expr_with_registry(expr, &registry)
+}
+
+pub fn analyze_constraint_expr_with_registry(
+    expr: &Expr,
+    registry: &AggregateRegistry,
+) -> Vec<AggregateAnalysis> {
     let mut aggregates = Vec::new();
-    collect_aggregates(expr, &mut aggregates);
+    collect_aggregates(expr, registry, &mut aggregates);
     aggregates
 }
 
 pub fn semiring_analysis_from_expr(expr: &Expr) -> SemiringAnalysis {
-    let aggregates = analyze_constraint_expr(expr);
+    let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+    semiring_analysis_from_expr_with_registry(expr, &registry)
+}
+
+pub fn semiring_analysis_from_expr_with_registry(
+    expr: &Expr,
+    registry: &AggregateRegistry,
+) -> SemiringAnalysis {
+    let aggregates = analyze_constraint_expr_with_registry(expr, registry);
     let mut non_distributive_aggregates = Vec::new();
     let mut all_distributive = true;
     for aggregate in &aggregates {
@@ -79,14 +115,18 @@ pub fn semiring_analysis_from_expr(expr: &Expr) -> SemiringAnalysis {
     }
 }
 
-fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
+fn collect_aggregates(
+    expr: &Expr,
+    registry: &AggregateRegistry,
+    aggregates: &mut Vec<AggregateAnalysis>,
+) {
     match expr {
         Expr::Function(function) => {
-            let function_name = function.name.to_string();
-            if is_known_aggregate(&function_name) {
-                let distributive = is_semiring_distributive_aggregate(&function_name);
+            let function_name = function_name(function);
+            if registry.is_aggregate_name(&function_name) {
+                let distributive = registry.is_semiring_distributive(&function_name);
                 aggregates.push(AggregateAnalysis {
-                    function_name,
+                    function_name: function_name.clone(),
                     expression: crate::sql::render_expr(expr, None),
                     distributive,
                     reason: (!distributive).then_some(
@@ -94,11 +134,11 @@ fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
                     ),
                 });
             }
-            collect_function_args(function, aggregates);
+            collect_function_args(function, registry, aggregates);
         }
         Expr::BinaryOp { left, right, .. } => {
-            collect_aggregates(left, aggregates);
-            collect_aggregates(right, aggregates);
+            collect_aggregates(left, registry, aggregates);
+            collect_aggregates(right, registry, aggregates);
         }
         Expr::Nested(expr)
         | Expr::UnaryOp { expr, .. }
@@ -107,18 +147,18 @@ fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
         | Expr::IsTrue(expr)
         | Expr::IsNotTrue(expr)
         | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr) => collect_aggregates(expr, aggregates),
+        | Expr::IsNotNull(expr) => collect_aggregates(expr, registry, aggregates),
         Expr::Between {
             expr, low, high, ..
         } => {
-            collect_aggregates(expr, aggregates);
-            collect_aggregates(low, aggregates);
-            collect_aggregates(high, aggregates);
+            collect_aggregates(expr, registry, aggregates);
+            collect_aggregates(low, registry, aggregates);
+            collect_aggregates(high, registry, aggregates);
         }
         Expr::InList { expr, list, .. } => {
-            collect_aggregates(expr, aggregates);
+            collect_aggregates(expr, registry, aggregates);
             for item in list {
-                collect_aggregates(item, aggregates);
+                collect_aggregates(item, registry, aggregates);
             }
         }
         Expr::Case {
@@ -128,13 +168,13 @@ fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
             else_result,
         } => {
             if let Some(operand) = operand {
-                collect_aggregates(operand, aggregates);
+                collect_aggregates(operand, registry, aggregates);
             }
             for expr in conditions.iter().chain(results.iter()) {
-                collect_aggregates(expr, aggregates);
+                collect_aggregates(expr, registry, aggregates);
             }
             if let Some(else_result) = else_result {
-                collect_aggregates(else_result, aggregates);
+                collect_aggregates(else_result, registry, aggregates);
             }
         }
         _ => {}
@@ -143,6 +183,7 @@ fn collect_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateAnalysis>) {
 
 fn collect_function_args(
     function: &sqlparser::ast::Function,
+    registry: &AggregateRegistry,
     aggregates: &mut Vec<AggregateAnalysis>,
 ) {
     let FunctionArguments::List(args) = &function.args else {
@@ -158,44 +199,15 @@ fn collect_function_args(
             | FunctionArg::ExprNamed {
                 arg: FunctionArgExpr::Expr(expr),
                 ..
-            } => collect_aggregates(expr, aggregates),
+            } => collect_aggregates(expr, registry, aggregates),
             _ => {}
         }
     }
 }
 
-fn is_known_aggregate(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "count"
-            | "sum"
-            | "min"
-            | "max"
-            | "bool_and"
-            | "bool_or"
-            | "avg"
-            | "array_agg"
-            | "string_agg"
-            | "list"
-    )
-}
-
-/// Native semiring aggregates (decompose across joins without a second pass).
-fn is_native_distributive_aggregate(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "count" | "sum" | "min" | "max" | "bool_and" | "bool_or"
-    )
-}
-
-/// Aggregates treated as semiring-distributive via sum/count (or similar) decomposition.
-fn is_decomposable_aggregate(name: &str) -> bool {
-    matches!(name.to_ascii_lowercase().as_str(), "avg")
-}
-
 /// Whether Full-Push may inline this aggregate using distributive semiring laws.
 pub fn is_semiring_distributive_aggregate(name: &str) -> bool {
-    is_native_distributive_aggregate(name) || is_decomposable_aggregate(name)
+    AggregateRegistry::for_dialect(SqlDialect::DuckDb).is_semiring_distributive(name)
 }
 
 #[cfg(test)]
@@ -211,21 +223,21 @@ mod tests {
         assert!(
             aggregates
                 .iter()
-                .find(|a| a.function_name == "sum")
+                .find(|a| a.function_name.contains("sum"))
                 .unwrap()
                 .distributive
         );
         assert!(
             aggregates
                 .iter()
-                .find(|a| a.function_name == "avg")
+                .find(|a| a.function_name.contains("avg"))
                 .unwrap()
                 .distributive
         );
         assert!(
             aggregates
                 .iter()
-                .find(|a| a.function_name == "max")
+                .find(|a| a.function_name.contains("max"))
                 .unwrap()
                 .distributive
         );
@@ -260,6 +272,15 @@ mod tests {
     fn string_agg_is_non_distributive() {
         let aggregates = analyze_constraint("string_agg(foo.name, ',') = 'x'")
             .expect("constraint should analyze");
+        assert_eq!(aggregates.len(), 1);
+        assert!(!aggregates[0].distributive);
+    }
+
+    #[test]
+    fn median_is_non_distributive() {
+        let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+        let aggregates =
+            analyze_constraint_with_registry("median(foo.amount) > 10", &registry).unwrap();
         assert_eq!(aggregates.len(), 1);
         assert!(!aggregates[0].distributive);
     }

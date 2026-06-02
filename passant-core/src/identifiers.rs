@@ -183,7 +183,7 @@ impl TableKey {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
-    /// First character of the normalized key plus `_`, for legacy column-prefix heuristics.
+    /// First character of the normalized table key plus `_` (e.g. `orders` → `o_`).
     pub fn single_char_prefix(name: &str) -> String {
         Self::new(name)
             .as_str()

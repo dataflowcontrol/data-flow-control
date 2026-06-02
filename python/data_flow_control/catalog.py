@@ -10,6 +10,7 @@ def build_catalog_snapshot(
     default_schema: str | None = None,
     search_path: list[str] | None = None,
     unique_columns: list[list[str]] | None = None,
+    aggregate_functions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a normalized catalog snapshot for Rust validation."""
     snapshot: dict[str, Any] = {
@@ -33,4 +34,6 @@ def build_catalog_snapshot(
         if "row_count" in info:
             entry["row_count"] = info["row_count"]
         snapshot["tables"][table_name] = entry
+    if aggregate_functions:
+        snapshot["aggregate_functions"] = aggregate_functions
     return snapshot

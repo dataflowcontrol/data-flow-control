@@ -151,7 +151,10 @@ fn catalog_rejects_unknown_dimension_table() {
     });
     let policy = dimension_policy(&["foo"], &["missing_dim"], &[], "max(foo.id) > 0");
     let err = catalog
-        .validate_policy(&policy)
+        .validate_policy(
+            &policy,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
         .expect_err("missing dimension table");
     assert!(err.to_string().contains("Dimension table 'missing_dim'"));
 }

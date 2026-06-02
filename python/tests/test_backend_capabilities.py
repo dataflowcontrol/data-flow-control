@@ -23,6 +23,9 @@ class _DisabledKillAdapter:
     def execute(self, sql: str, params: Any = None):
         return duckdb.connect().execute(sql, params)
 
+    def introspect_aggregate_functions(self) -> list[dict]:
+        return []
+
     def introspect_catalog(self) -> dict:
         return build_catalog_snapshot(
             dialect=self.dialect,

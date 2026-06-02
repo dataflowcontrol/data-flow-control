@@ -1,6 +1,10 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+#[path = "derived_policy.rs"]
+mod derived_policy;
+#[path = "in_semijoin.rs"]
+mod in_semijoin;
 #[path = "insert.rs"]
 mod insert;
 #[path = "joins.rs"]

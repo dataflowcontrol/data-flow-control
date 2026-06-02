@@ -94,6 +94,7 @@ class Connection:
         self._catalog_synced = False
         self._catalog_has_row_counts = False
         self._catalog_table_names: set[str] | None = None
+        self._user_aggregate_functions: list[dict] = []
         if adapter.capabilities.exception_udf:
             adapter.register_kill_function()
 
@@ -116,8 +117,57 @@ class Connection:
 
     def _introspect_catalog(self, *, include_row_counts: bool = False) -> dict:
         if isinstance(self.adapter, DuckDBAdapter):
-            return self.adapter.introspect_catalog(include_row_counts=include_row_counts)
-        return self.adapter.introspect_catalog()
+            snapshot = self.adapter.introspect_catalog(include_row_counts=include_row_counts)
+        else:
+            snapshot = self.adapter.introspect_catalog()
+        snapshot = self._merge_aggregate_functions(snapshot)
+        return snapshot
+
+    def _merge_aggregate_functions(self, snapshot: dict) -> dict:
+        introspected = list(snapshot.get("aggregate_functions") or [])
+        if self._user_aggregate_functions:
+            seen = {entry.get("name", "").lower() for entry in introspected}
+            for entry in self._user_aggregate_functions:
+                name = str(entry.get("name", "")).lower()
+                if name and name not in seen:
+                    introspected.append(entry)
+                    seen.add(name)
+        if introspected:
+            snapshot["aggregate_functions"] = introspected
+        return snapshot
+
+    def refresh_aggregate_functions(self) -> None:
+        """Re-sync aggregate metadata from the adapter (refreshes the catalog snapshot)."""
+        snapshot = self._introspect_catalog(
+            include_row_counts=self._catalog_has_row_counts,
+        )
+        self._apply_catalog_snapshot(
+            snapshot,
+            include_row_counts=self._catalog_has_row_counts,
+        )
+
+    def register_aggregate_function_name(
+        self,
+        name: str,
+        *,
+        schema: str | None = None,
+        classification: str = "unknown_custom",
+    ) -> None:
+        """Declare a custom aggregate when introspection is unavailable or incomplete."""
+        from .aggregate_introspection import normalize_aggregate_entry
+
+        entry = normalize_aggregate_entry(
+            name,
+            schema=schema,
+            classification=classification,
+            source="user_declared",
+        )
+        self._user_aggregate_functions.append(entry)
+        self.planner.register_aggregate_function_name(
+            name,
+            schema=schema,
+            classification=classification,
+        )
 
     def _apply_catalog_snapshot(self, snapshot: dict, *, include_row_counts: bool) -> None:
         self.planner.sync_catalog(snapshot)

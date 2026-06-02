@@ -6,6 +6,8 @@ use crate::diagnostics::RewriteError;
 use crate::sql::ExprKey;
 
 use super::PassantRewriter;
+use crate::aggregate_registry::AggregateRegistry;
+
 use super::expr::{expr_contains_aggregate, projected_column_name, projection_expr_and_name};
 use super::plan::{apply_policy_resolution_actions, plan_policy_filter_actions};
 use super::scope::TableScope;
@@ -71,16 +73,19 @@ impl GroupByEmpty for GroupByExpr {
     }
 }
 
-pub(crate) fn select_is_aggregation(select: &Select) -> bool {
+pub(crate) fn select_is_aggregation(select: &Select, registry: &AggregateRegistry) -> bool {
     !select.group_by.is_empty()
         || select.having.is_some()
-        || select.projection.iter().any(select_item_contains_aggregate)
+        || select
+            .projection
+            .iter()
+            .any(|item| select_item_contains_aggregate(item, registry))
 }
 
-fn select_item_contains_aggregate(item: &SelectItem) -> bool {
+fn select_item_contains_aggregate(item: &SelectItem, registry: &AggregateRegistry) -> bool {
     match item {
         SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-            expr_contains_aggregate(expr)
+            expr_contains_aggregate(expr, registry)
         }
         _ => false,
     }

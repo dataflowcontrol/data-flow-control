@@ -27,12 +27,6 @@ impl Resolution {
         if upper == "UI" {
             return Ok(Self::Ui);
         }
-        if upper.starts_with("LLM") {
-            return Err(PolicyParseError::InvalidResolution(trimmed.to_string()));
-        }
-        if upper.starts_with("INVALIDATE") {
-            return Err(PolicyParseError::InvalidResolution(trimmed.to_string()));
-        }
         if let Some(name) = trimmed
             .strip_prefix("UDF ")
             .or_else(|| trimmed.strip_prefix("udf "))
@@ -260,35 +254,18 @@ pub fn normalize_policy_dimension_queries(
 
 pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return Err(PolicyParseError::Empty);
-    }
+    let raw = crate::policy_parser::parse_raw_pgn(&normalized)?;
 
-    reject_legacy_policy_keywords(&normalized)?;
-
-    let sources = clause_value(
-        &normalized,
-        &["SOURCE", "SOURCES"],
-        &["SINK", "DIMENSION", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
-    )
-    .unwrap_or_default();
-    let raw_sink = clause_value(
-        &normalized,
-        &["SINK"],
-        &["DIMENSION", "CONSTRAINT", "ON FAIL", "DESCRIPTION"],
-    )
-    .and_then(blank_to_none);
-    let (sink, sink_alias) = raw_sink
+    let sources = raw.sources.unwrap_or_default();
+    let (sink, sink_alias) = raw
+        .sink
+        .and_then(blank_to_none)
         .as_deref()
         .map(parse_name_alias)
         .transpose()?
         .unwrap_or((None, None));
-    let dimension_clause = clause_value(
-        &normalized,
-        &["DIMENSION", "DIMENSIONS"],
-        &["CONSTRAINT", "ON FAIL", "DESCRIPTION"],
-    );
-    let parsed_dimensions = dimension_clause
+    let parsed_dimensions = raw
+        .dimensions
         .as_deref()
         .map(parse_dimensions)
         .transpose()?
@@ -297,13 +274,9 @@ pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
             aliases: HashMap::new(),
             queries: HashMap::new(),
         });
-    let constraint = clause_value(&normalized, &["CONSTRAINT"], &["ON FAIL", "DESCRIPTION"])
-        .and_then(blank_to_none)
-        .ok_or(PolicyParseError::MissingClause("CONSTRAINT"))?;
-    let resolution = clause_value(&normalized, &["ON FAIL"], &["DESCRIPTION"])
-        .and_then(blank_to_none)
-        .ok_or(PolicyParseError::MissingClause("ON FAIL"))?;
-    let description = clause_value(&normalized, &["DESCRIPTION"], &[]).and_then(blank_to_none);
+    let constraint = raw.constraint;
+    let resolution = raw.on_fail;
+    let description = raw.description.and_then(blank_to_none);
 
     let parsed_sources = parse_sources(&sources)?;
     validate_required_sources(&parsed_sources)?;
@@ -338,55 +311,6 @@ fn validate_required_sources(parsed: &ParsedSources) -> Result<(), PolicyParseEr
         }
     }
     Ok(())
-}
-
-fn reject_legacy_policy_keywords(normalized: &str) -> Result<(), PolicyParseError> {
-    let upper = normalized.to_ascii_uppercase();
-    if upper.starts_with("PGN ") || upper == "PGN" {
-        return Err(PolicyParseError::InvalidSyntax(
-            "the PGN keyword prefix was removed; policies begin with SOURCE, SINK, or CONSTRAINT clauses".into(),
-        ));
-    }
-    if upper.starts_with("AGGREGATE ") || upper == "AGGREGATE" {
-        return Err(PolicyParseError::InvalidSyntax(
-            "the AGGREGATE clause was removed; put aggregate expressions in CONSTRAINT".into(),
-        ));
-    }
-    if upper.starts_with("OVER ") || upper == "OVER" {
-        return Err(PolicyParseError::InvalidSyntax(
-            "the OVER keyword was removed; applicability is determined by SOURCE and SINK".into(),
-        ));
-    }
-    if upper.starts_with("UPDATE ") || upper == "UPDATE" {
-        return Err(PolicyParseError::InvalidSyntax(
-            "the UPDATE keyword was removed; applicability is determined by SOURCE and SINK".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn clause_value(text: &str, starts: &[&str], ends: &[&str]) -> Option<String> {
-    let upper = text.to_ascii_uppercase();
-    let mut start_pos = None;
-    let mut start_len = 0;
-    for keyword in starts {
-        let pattern = format!("{keyword} ");
-        if let Some(pos) = upper.find(&pattern)
-            && start_pos.is_none_or(|current| pos < current)
-        {
-            start_pos = Some(pos);
-            start_len = pattern.len();
-        }
-    }
-    let start = start_pos? + start_len;
-    let mut end = text.len();
-    for keyword in ends {
-        let pattern = format!(" {keyword} ");
-        if let Some(relative) = upper[start..].find(&pattern) {
-            end = end.min(start + relative);
-        }
-    }
-    Some(text[start..end].trim().to_string())
 }
 
 fn blank_to_none(value: String) -> Option<String> {

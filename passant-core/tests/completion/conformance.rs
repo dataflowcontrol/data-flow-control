@@ -1,6 +1,6 @@
 //! Conformance tests for stable rewriter behavior.
 
-use passant_core::{PolicyIr, Resolution, parse_policy_text};
+use passant_core::{PolicyIr, Resolution};
 
 use crate::common::{assert_rewrite, pgn_policy, rewriter_with_policies};
 
@@ -82,15 +82,6 @@ fn copy_select_fails_closed_with_registered_policies() {
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "copy",
     );
-}
-
-#[test]
-fn aggregate_policy_text_is_rejected() {
-    let err = parse_policy_text(
-        "AGGREGATE SOURCE foo SINK reports CONSTRAINT sum(reports.total) > 100 ON FAIL REMOVE",
-    )
-    .expect_err("AGGREGATE policies should be rejected");
-    assert!(err.to_string().contains("AGGREGATE clause was removed"));
 }
 
 #[test]

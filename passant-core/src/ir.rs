@@ -79,11 +79,23 @@ impl PassantSelect {
     }
 
     pub fn is_aggregation(&self) -> bool {
-        !self.group_by.is_empty()
-            || self
-                .projection
-                .iter()
-                .any(|item| contains_aggregate(&item.expr.sql))
+        self.is_aggregation_with(&crate::aggregate_registry::AggregateRegistry::for_dialect(
+            crate::sql::SqlDialect::DuckDb,
+        ))
+    }
+
+    pub fn is_aggregation_with(
+        &self,
+        registry: &crate::aggregate_registry::AggregateRegistry,
+    ) -> bool {
+        if !self.group_by.is_empty() {
+            return true;
+        }
+        self.projection.iter().any(|item| {
+            crate::sql::parse_projection_expr(&item.expr.sql)
+                .map(|expr| registry.expr_contains_aggregate(&expr))
+                .unwrap_or(false)
+        })
     }
 }
 
@@ -139,22 +151,6 @@ impl QueryIr {
             QueryIr::Passthrough { .. } => Vec::new(),
         }
     }
-}
-
-fn contains_aggregate(sql: &str) -> bool {
-    let upper = sql.to_ascii_uppercase();
-    [
-        "COUNT(",
-        "SUM(",
-        "AVG(",
-        "MIN(",
-        "MAX(",
-        "ARRAY_AGG(",
-        "BOOL_AND(",
-        "BOOL_OR(",
-    ]
-    .iter()
-    .any(|needle| upper.contains(needle))
 }
 
 #[cfg(test)]

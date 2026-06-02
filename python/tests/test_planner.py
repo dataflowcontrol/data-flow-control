@@ -80,6 +80,9 @@ def test_umbra_kill_registration_fails():
                 tables={"foo": {"columns": ["id"], "types": {"id": "INTEGER"}}},
             )
 
+        def introspect_aggregate_functions(self) -> list[dict]:
+            return []
+
         def quote_identifier(self, name: str) -> str:
             return name
 

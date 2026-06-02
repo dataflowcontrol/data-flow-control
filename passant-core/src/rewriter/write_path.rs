@@ -26,7 +26,7 @@ impl PassantRewriter {
         clauses: &mut [sqlparser::ast::MergeClause],
         collect_stats: bool,
     ) -> Result<(), RewriteError> {
-        self.rewrite_derived_table_factor(source, &RewriteContext::default())?;
+        self.rewrite_derived_table_factor(source, &mut RewriteContext::default())?;
         let source_tables = table_factor_source_tables(source);
         let stats = collect_stats.then_some(&self.stats);
         let merge_plan = plan_merge_source_filters(&self.store, stats, &source_tables)?;
@@ -47,7 +47,7 @@ impl PassantRewriter {
                 for assignment in assignments {
                     self.rewrite_expr_subqueries(
                         &mut assignment.value,
-                        &RewriteContext::default(),
+                        &mut RewriteContext::default(),
                     )?;
                 }
             }
@@ -68,16 +68,19 @@ impl PassantRewriter {
                 } else {
                     UiResolutionMode::Disabled
                 };
-                let context = RewriteContext {
+                let mut context = RewriteContext {
+                    aggregate_registry: self.aggregate_registry.clone(),
                     sink: None,
                     sink_expr_by_column: HashMap::new(),
                     ambiguous_output_columns: HashSet::new(),
                     allow_partial_source_visibility: false,
+                    defer_policy_for_outer_limit: false,
                     collect_stats,
                     ui_mode,
                     ui_stream_endpoint: options.ui_stream_endpoint.clone(),
+                    ..RewriteContext::default()
                 };
-                self.rewrite_query_with_context(query, &context)
+                self.rewrite_query_with_context(query, &mut context)
             }
             Statement::Insert(insert) => {
                 let sink = insert.table_name.to_string();
@@ -86,17 +89,20 @@ impl PassantRewriter {
                 }
                 self.expand_insert_columns_from_catalog(insert, &sink);
                 let output_mapping = insert_select_mapping(insert)?;
-                let context = RewriteContext {
+                let mut context = RewriteContext {
+                    aggregate_registry: self.aggregate_registry.clone(),
                     sink: Some(sink),
                     sink_expr_by_column: output_mapping.expr_by_column,
                     ambiguous_output_columns: output_mapping.ambiguous_columns,
                     allow_partial_source_visibility: false,
+                    defer_policy_for_outer_limit: false,
                     collect_stats,
                     ui_mode: UiResolutionMode::InsertSelect,
                     ui_stream_endpoint: options.ui_stream_endpoint.clone(),
+                    ..RewriteContext::default()
                 };
                 if let Some(source) = insert.source.as_mut() {
-                    self.rewrite_query_with_context(source, &context)?;
+                    self.rewrite_query_with_context(source, &mut context)?;
                     self.apply_insert_relation_resolution(source, &context)?;
                 }
                 Ok(())
@@ -137,7 +143,8 @@ impl PassantRewriter {
         };
         let mut plan_select = select.as_ref().clone();
         let table_scope = TableScope::from_select(&plan_select);
-        let is_aggregation = super::projection::select_is_aggregation(&plan_select);
+        let is_aggregation =
+            super::projection::select_is_aggregation(&plan_select, &context.aggregate_registry);
         let stats = context.collect_stats.then_some(&self.stats);
         let (actions, _) = plan_policy_filter_actions(
             &self.store,
@@ -219,9 +226,11 @@ impl PassantRewriter {
             sink_expr_by_column: output_mapping.expr_by_column,
             ambiguous_output_columns: output_mapping.ambiguous_columns,
             allow_partial_source_visibility: false,
+            defer_policy_for_outer_limit: false,
             collect_stats,
             ui_mode,
             ui_stream_endpoint: options.ui_stream_endpoint.clone(),
+            ..RewriteContext::default()
         };
         let stats = context.collect_stats.then_some(&self.stats);
         let update_plan = plan_update_scope(

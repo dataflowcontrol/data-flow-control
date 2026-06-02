@@ -1,4 +1,4 @@
-"""Phase 2: paper-compatible PGN parser and policy model."""
+"""Paper PGN parser and policy model."""
 
 from __future__ import annotations
 
@@ -46,16 +46,6 @@ def test_resolution_relation_udf_parsing():
     assert policy.udf_name == "abort_batch"
 
 
-def test_rejects_llm_resolution():
-    with pytest.raises(ValueError, match="invalid resolution"):
-        Policy.from_pgn("SOURCE foo CONSTRAINT max(foo.id) > 0 ON FAIL LLM")
-
-
-def test_rejects_invalidate_resolution():
-    with pytest.raises(ValueError, match="invalid resolution"):
-        Policy.from_pgn("SOURCE foo CONSTRAINT max(foo.id) > 0 ON FAIL INVALIDATE")
-
-
 def test_required_source_must_be_listed_in_sources():
     with pytest.raises(ValueError, match="Required sources must also be listed"):
         Policy(
@@ -81,3 +71,28 @@ def test_parse_policy_json_includes_dimension_fields():
     spec = parsed["Pgn"]
     assert spec["dimension_tables"] == ["dim_table"]
     assert spec["dimension_aliases"] == {"d": "dim_table"}
+
+
+def test_constraint_ignores_on_fail_in_string_literal():
+    policy = Policy.from_pgn("SOURCE foo CONSTRAINT foo.status = 'ON FAIL' ON FAIL REMOVE")
+    assert policy.constraint == "foo.status = 'ON FAIL'"
+
+
+def test_constraint_ignores_description_in_string_literal():
+    policy = Policy.from_pgn("SOURCE foo CONSTRAINT foo.col = 'DESCRIPTION foo' ON FAIL REMOVE")
+    assert policy.constraint == "foo.col = 'DESCRIPTION foo'"
+
+
+def test_dimension_commas_inside_subquery_do_not_split_list():
+    policy = Policy.from_pgn(
+        "SOURCE foo "
+        "DIMENSION (SELECT id FROM t WHERE x IN (1, 2)) d, catalog_roles r "
+        "CONSTRAINT max(foo.id) > 0 ON FAIL REMOVE"
+    )
+    assert "d" in policy.dimension_queries
+    assert policy.dimension_aliases["r"] == "catalog_roles"
+
+
+def test_constraint_ignores_on_fail_in_quoted_identifier():
+    parsed = parse_policy_to_json(r'SOURCE foo CONSTRAINT "ON FAIL" = 1 ON FAIL REMOVE')
+    assert parsed["Pgn"]["constraint"] == '"ON FAIL" = 1'

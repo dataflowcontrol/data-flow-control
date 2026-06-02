@@ -66,7 +66,16 @@ impl<'a> RewriteRequest<'a> {
         options: RewriteOptions,
         store: &PolicyStore,
     ) -> Self {
-        Self::analyze_with_stats(original_sql, statement, options, store, None)
+        Self::analyze_with_stats(
+            original_sql,
+            statement,
+            options,
+            store,
+            &crate::aggregate_registry::AggregateRegistry::for_dialect(
+                crate::sql::SqlDialect::DuckDb,
+            ),
+            None,
+        )
     }
 
     pub(crate) fn analyze_with_stats(
@@ -74,11 +83,12 @@ impl<'a> RewriteRequest<'a> {
         statement: &'a Statement,
         options: RewriteOptions,
         store: &PolicyStore,
+        registry: &crate::aggregate_registry::AggregateRegistry,
         stats: Option<&crate::rewrite_stats::RewriteStatsCell>,
     ) -> Self {
         let analysis_start = Instant::now();
-        let analysis = StatementAnalysis::from_statement_with_stats(statement, stats);
-        let (kind, select) = classify_statement(statement);
+        let analysis = StatementAnalysis::from_statement_with_registry(statement, registry, stats);
+        let (kind, select) = classify_statement(statement, registry);
         if let Some(stats) = stats {
             stats.add_elapsed_analysis(analysis_start.elapsed());
             stats.set_query_nodes(analysis.select_scopes.len());
@@ -187,6 +197,7 @@ impl RewritePipeline {
             &statement,
             options.clone(),
             rewriter.policy_store(),
+            &rewriter.aggregate_registry,
             stats,
         );
         ensure_ui_statement_supported(store, &request)?;
@@ -264,9 +275,12 @@ fn ensure_ui_statement_supported(
     }
 }
 
-fn classify_statement(statement: &Statement) -> (StatementKind, Option<SelectShape>) {
+fn classify_statement(
+    statement: &Statement,
+    registry: &crate::aggregate_registry::AggregateRegistry,
+) -> (StatementKind, Option<SelectShape>) {
     match statement {
-        Statement::Query(query) => (StatementKind::SelectQuery, select_shape(query)),
+        Statement::Query(query) => (StatementKind::SelectQuery, select_shape(query, registry)),
         Statement::Insert { .. } => (StatementKind::Insert, None),
         Statement::Update { .. } => (StatementKind::Update, None),
         Statement::Merge { .. } => (StatementKind::Merge, None),
@@ -275,12 +289,15 @@ fn classify_statement(statement: &Statement) -> (StatementKind, Option<SelectSha
     }
 }
 
-fn select_shape(query: &Query) -> Option<SelectShape> {
+fn select_shape(
+    query: &Query,
+    registry: &crate::aggregate_registry::AggregateRegistry,
+) -> Option<SelectShape> {
     let SetExpr::Select(select) = query.body.as_ref() else {
         return None;
     };
     Some(SelectShape {
-        is_aggregation: crate::rewriter::select_is_aggregation(select),
+        is_aggregation: crate::rewriter::select_is_aggregation(select, registry),
         has_limit: query_has_limit(query),
     })
 }

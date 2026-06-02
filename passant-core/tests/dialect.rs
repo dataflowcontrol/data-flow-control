@@ -29,6 +29,7 @@ fn catalog_for_dialect(dialect: &str) -> CatalogSnapshot {
         search_path: Vec::new(),
         tables: HashMap::new(),
         unique_columns: vec![],
+        aggregate_functions: vec![],
     }
 }
 

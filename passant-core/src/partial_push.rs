@@ -1,7 +1,7 @@
 //! Partial-Push rewrite (Section 4): evaluate user aggregates in `base_query` and policy
 //! aggregates separately in `policy_eval`, then join the results.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use sqlparser::ast::{BinaryOperator, Expr, Ident, Query, Select, SelectItem, SetExpr, Statement};
 
@@ -10,18 +10,14 @@ use crate::optimizer::RewriteStrategy;
 use crate::policy::Resolution;
 use crate::rewrite_strategy::{RewriteAttempt, RewriteEngine, RewriteRequest, StatementKind};
 use crate::rewriter::{
-    PassantRewriter, PolicyResolutionAction, RewriteContext, RewriteError, TableScope,
-    apply_policy_having, collect_compound_columns_by_name, ensure_projection_aliases,
+    PassantRewriter, RewriteError, TableScope, apply_policy_having, ensure_projection_aliases,
     extract_policy_comparison_for_policy, group_by_join_specs, outer_limited_projection_items,
-    parse_expr, plan_policy_filter_actions, projected_column_name, replace_identifiers,
-    scope_has_enforcement_policies, select_is_aggregation, unqualify_columns,
-    wrap_select_with_tuple_resolution,
+    parse_expr, scope_has_enforcement_policies, select_is_aggregation,
 };
 use crate::sql::{
     alias_column, and_exprs, column_comparison, cte, empty_select, function_call,
-    partial_push_join_from, partial_push_split_query, passant_filter_temp_column, qualified_column,
-    qualified_wildcard, query_from_select, render_statement, statement_from_query, table_factor,
-    with_ctes,
+    partial_push_join_from, partial_push_split_query, qualified_column, qualified_wildcard,
+    query_from_select, render_statement, statement_from_query, table_factor, with_ctes,
 };
 
 const BASE_QUERY_CTE: &str = "base_query";
@@ -30,12 +26,25 @@ const LIMIT_CTE: &str = "cte";
 const PARTIAL_SCAN_CTE: &str = "__passant_partial";
 const GLOBAL_PARTIAL_PUSH_KEY: &str = "__passant_partial_push_key";
 
+#[derive(Clone)]
 pub(crate) struct ExtraDfcFilter {
     pub alias: String,
     pub subquery_alias: String,
     pub subquery_metric: String,
     pub threshold: String,
     pub op: &'static str,
+}
+
+impl std::fmt::Debug for ExtraDfcFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtraDfcFilter")
+            .field("alias", &self.alias)
+            .field("subquery_alias", &self.subquery_alias)
+            .field("subquery_metric", &self.subquery_metric)
+            .field("threshold", &self.threshold)
+            .field("op", &self.op)
+            .finish()
+    }
 }
 
 /// Partial-push engine — splits user and policy evaluation across CTE boundaries.
@@ -93,19 +102,30 @@ impl RewriteEngine for PartialPushEngine {
             .select_scopes
             .first()
             .map(|scope| scope.is_aggregation)
-            .unwrap_or_else(|| select_is_aggregation(select));
+            .unwrap_or_else(|| select_is_aggregation(select, &rewriter.aggregate_registry));
         let has_limit = request
             .select
             .as_ref()
             .map(|shape| shape.has_limit)
             .unwrap_or_else(|| query_has_limit(query));
-        let has_remove = select_has_applicable_remove_policy(rewriter, request, select);
+        let has_limit_policy =
+            has_limit && has_applicable_enforcement_policies(rewriter, request, select);
 
-        let rewritten = if has_limit && has_remove {
-            if is_aggregation {
+        let rewritten = if has_limit_policy {
+            if let Some(sql) = crate::rewriter::limit::try_render_limited_policy_wrapper(
+                rewriter,
+                request.statement,
+                PARTIAL_SCAN_CTE,
+            )? {
+                sql
+            } else if is_aggregation {
                 partial_push_limit_aggregation(rewriter, request.statement)?
             } else {
-                partial_push_limit_scan(rewriter, request.statement)?
+                crate::rewriter::limit::render_limited_policy_wrapper(
+                    rewriter,
+                    request.statement,
+                    PARTIAL_SCAN_CTE,
+                )?
             }
         } else if is_aggregation {
             partial_push_aggregation(rewriter, request.statement)?
@@ -181,28 +201,6 @@ fn flatten_and(expr: &Expr) -> Vec<Expr> {
         }
         other => vec![other.clone()],
     }
-}
-
-fn select_has_applicable_remove_policy(
-    rewriter: &PassantRewriter,
-    request: &RewriteRequest<'_>,
-    select: &Select,
-) -> bool {
-    let tables = request
-        .analysis
-        .select_scopes
-        .first()
-        .map(|scope| scope.scope.direct_base_tables.clone())
-        .unwrap_or_else(|| TableScope::from_select(select).direct_base_tables);
-    rewriter
-        .policy_store()
-        .candidate_scope_lookup(&tables, None, crate::MultiSourceLookupMode::AnyOverlap)
-        .iter()
-        .any(|index| {
-            rewriter
-                .policy_at(index)
-                .is_some_and(|policy| policy.resolution() == Resolution::Remove)
-        })
 }
 
 fn partial_push_aggregation(
@@ -363,122 +361,6 @@ fn partial_push_limit_aggregation(
     ))
 }
 
-fn partial_push_limit_scan(
-    rewriter: &PassantRewriter,
-    statement: &Statement,
-) -> Result<String, RewriteError> {
-    let Statement::Query(query) = statement else {
-        return Err(RewriteError::unsupported_statement(
-            "partial-push LIMIT scan rewrite requires a SELECT query",
-        ));
-    };
-    let SetExpr::Select(select) = query.body.as_ref() else {
-        return Err(RewriteError::unsupported_statement(
-            "partial-push LIMIT scan rewrite requires a SELECT body",
-        ));
-    };
-
-    let table_scope = TableScope::from_select(select);
-    let mut filters = Vec::new();
-    let mut propagated_filter_columns = HashMap::new();
-    let projected_names = projected_select_names(select);
-
-    let context = RewriteContext::default();
-    let mut plan_select = select.as_ref().clone();
-    let (actions, _) = plan_policy_filter_actions(
-        rewriter.policy_store(),
-        rewriter.catalog(),
-        None,
-        &mut plan_select,
-        &table_scope.direct_base_tables,
-        None,
-        &context,
-        false,
-        &HashSet::new(),
-        &HashSet::new(),
-    )?;
-
-    let mut tuple_udf_actions = Vec::new();
-    for action in actions {
-        match action {
-            PolicyResolutionAction::Filter { filter, .. } => {
-                let mut expr = filter.clone();
-                let mut source_columns = HashMap::new();
-                collect_compound_columns_by_name(&expr, &mut source_columns);
-                unqualify_columns(&mut expr);
-                for (name, source_expr) in source_columns {
-                    if !projected_names.contains(&name) {
-                        let alias = passant_filter_temp_column(&name);
-                        propagated_filter_columns
-                            .entry(name)
-                            .or_insert((source_expr, alias));
-                    }
-                }
-                let replacements = propagated_filter_columns
-                    .iter()
-                    .map(|(name, (_, alias))| (name.clone(), alias.clone()))
-                    .collect::<HashMap<_, _>>();
-                replace_identifiers(&mut expr, &replacements);
-                filters.push(expr);
-            }
-            PolicyResolutionAction::TupleUdf {
-                filter, udf_name, ..
-            } => {
-                tuple_udf_actions.push((filter.clone(), udf_name.clone()));
-            }
-            PolicyResolutionAction::RelationUdf { .. } => {}
-            PolicyResolutionAction::Ui { .. } => {
-                return Err(RewriteError::unsupported_statement(
-                    "UI resolution is not supported with partial-push rewrites yet",
-                ));
-            }
-        }
-    }
-
-    if filters.is_empty() && tuple_udf_actions.is_empty() {
-        return Err(RewriteError::unsupported_statement(
-            "partial-push LIMIT scan rewrite found no applicable filters",
-        ));
-    }
-
-    let mut inner = *query.clone();
-    if let SetExpr::Select(inner_select) = inner.body.as_mut() {
-        ensure_projection_aliases(inner_select);
-        for (_, (expr, alias)) in propagated_filter_columns {
-            inner_select.projection.push(SelectItem::ExprWithAlias {
-                expr,
-                alias: Ident::new(alias),
-            });
-        }
-    }
-
-    let outer_projection = if let SetExpr::Select(inner_select) = inner.body.as_ref() {
-        outer_limited_projection_items(inner_select)
-    } else {
-        outer_limited_projection_items(select)
-    };
-
-    let mut outer_select = empty_select();
-    outer_select.projection = outer_projection;
-    outer_select.from = vec![sqlparser::ast::TableWithJoins {
-        relation: table_factor(PARTIAL_SCAN_CTE),
-        joins: Vec::new(),
-    }];
-    outer_select.selection = and_exprs(filters);
-
-    for (filter, udf_name) in tuple_udf_actions {
-        outer_select = wrap_select_with_tuple_resolution(outer_select, filter, &udf_name)?;
-    }
-
-    Ok(render_statement(
-        &statement_from_query(with_ctes(
-            vec![cte(PARTIAL_SCAN_CTE, inner)],
-            SetExpr::Select(Box::new(outer_select)),
-        )),
-        None,
-    ))
-}
-
 fn partial_push_scan(
     rewriter: &PassantRewriter,
     statement: &Statement,
@@ -570,17 +452,4 @@ fn build_policy_eval_query(
 
 fn query_has_limit(query: &Query) -> bool {
     query.limit.is_some() || query.offset.is_some() || query.fetch.is_some()
-}
-
-fn projected_select_names(select: &Select) -> HashSet<String> {
-    select
-        .projection
-        .iter()
-        .filter_map(|item| match item {
-            SelectItem::UnnamedExpr(expr) => projected_column_name(expr),
-            SelectItem::ExprWithAlias { alias, .. } => Some(alias.value.clone()),
-            _ => None,
-        })
-        .map(|name| name.to_ascii_lowercase())
-        .collect()
 }

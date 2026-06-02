@@ -22,6 +22,15 @@ class Planner:
     def sync_catalog(self, snapshot: dict) -> None:
         self._planner.sync_catalog(json.dumps(snapshot))
 
+    def register_aggregate_function_name(
+        self,
+        name: str,
+        *,
+        schema: str | None = None,
+        classification: str | None = None,
+    ) -> None:
+        self._planner.register_aggregate_function_name(name, schema, classification)
+
     def register_policy(self, policy: Policy) -> None:
         self._planner.register_policy_specs(_policy_specs_json([policy]))
 

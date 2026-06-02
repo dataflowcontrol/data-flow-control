@@ -1,4 +1,4 @@
-"""Public API surface: intended exports and no legacy names."""
+"""Public API surface: intended exports and forbidden extra names."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ def test_public_exports():
     assert set(data_flow_control.__all__) == expected
 
 
-def test_legacy_names_not_exported():
-    legacy = {
+def test_forbidden_names_not_exported():
+    forbidden = {
         "SQLRewriter",
         "DFCPolicy",
         "AggregateDFCPolicy",
@@ -36,4 +36,4 @@ def test_legacy_names_not_exported():
         "SUPPORTED_DIALECTS",
     }
     exported = set(dir(data_flow_control))
-    assert legacy.isdisjoint(exported)
+    assert forbidden.isdisjoint(exported)

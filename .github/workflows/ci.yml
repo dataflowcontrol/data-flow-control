@@ -51,7 +51,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --extra dev
 
       - name: Build Python extension
         run: uv run maturin develop --release

@@ -14,7 +14,12 @@ use crate::source_sets::{
 use crate::sql::ast_stats::count_select;
 
 use super::RewriteError;
+use super::derived_policy::{
+    apply_derived_hidden_projections, apply_derived_parent_having, plan_derived_policy_propagations,
+};
+use super::exists::apply_in_semijoin_policy_filters;
 use super::helpers::select_output_column_mapping;
+use super::limit::wrap_limited_policy_query;
 use super::plan::{apply_select_rewrite_plan, plan_select_rewrite};
 use super::types::{PassantRewriter, RewriteContext};
 
@@ -22,7 +27,7 @@ impl PassantRewriter {
     pub(crate) fn rewrite_expr_subqueries(
         &self,
         expr: &mut Expr,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         match expr {
             Expr::Exists {
@@ -75,7 +80,7 @@ impl PassantRewriter {
     fn rewrite_function_subqueries(
         &self,
         function: &mut sqlparser::ast::Function,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         let FunctionArguments::List(args) = &mut function.args else {
             return Ok(());
@@ -101,7 +106,7 @@ impl PassantRewriter {
         &self,
         left: &mut SetExpr,
         right: &mut SetExpr,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         let left_tables = set_expr_source_tables(left);
         let right_tables = set_expr_source_tables(right);
@@ -117,29 +122,57 @@ impl PassantRewriter {
             self.catalog.clone(),
             self.parse_dialect,
         )
-        .rewrite_set_expr(left, &branch_context)?;
+        .rewrite_set_expr(left, &mut branch_context)?;
         PassantRewriter::with_branch_view(
             self.policy_store(),
             right_policies,
             self.catalog.clone(),
             self.parse_dialect,
         )
-        .rewrite_set_expr(right, &branch_context)
+        .rewrite_set_expr(right, &mut branch_context)
     }
 
     fn rewrite_select(
         &self,
         select: &mut Select,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         if context.collect_stats {
             self.stats
                 .add_ast_nodes_visited_rewrite(count_select(select));
         }
         let exists_handled = self.rewrite_exists_subqueries_as_joins_impl(select)?;
+        let (in_handled, extra_dfc) = self.rewrite_in_subqueries_as_joins_impl(select)?;
+        let mut handled = exists_handled;
+        handled.extend(in_handled.iter().copied());
+
+        let derived_prep = plan_derived_policy_propagations(
+            self.policy_store(),
+            select,
+            &self.aggregate_registry,
+        )?;
+        if let Some(ref prep) = derived_prep {
+            apply_derived_hidden_projections(
+                select,
+                prep,
+                self.policy_store(),
+                &self.aggregate_registry,
+            )?;
+            context
+                .deferred_policy_indices
+                .extend(prep.deferred_indices.iter().copied());
+        }
+
         self.rewrite_expression_subqueries(select, context)?;
         self.rewrite_derived_subqueries(select, context)?;
+
         let select_analysis = SelectAnalysis::from_select(select);
+        let is_aggregation = select_analysis.is_aggregation;
+
+        if !extra_dfc.is_empty() {
+            apply_in_semijoin_policy_filters(select, &extra_dfc, is_aggregation, context)?;
+        }
+
         if context.collect_stats {
             self.stats.record_select_scope();
         }
@@ -177,7 +210,7 @@ impl PassantRewriter {
             select,
             &select_analysis,
             &plan_context,
-            &exists_handled,
+            &handled,
         )?;
         if context.collect_stats {
             self.stats.add_elapsed_planning(plan_start.elapsed());
@@ -192,7 +225,6 @@ impl PassantRewriter {
             );
         }
 
-        let is_aggregation = select_analysis.is_aggregation;
         apply_select_rewrite_plan(
             select,
             plan,
@@ -201,13 +233,17 @@ impl PassantRewriter {
             &self.store,
             &self.catalog,
         )?;
+
+        if let Some(ref prep) = derived_prep {
+            apply_derived_parent_having(select, prep)?;
+        }
         Ok(())
     }
 
     fn rewrite_expression_subqueries(
         &self,
         select: &mut Select,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         for item in &mut select.projection {
             match item {
@@ -229,7 +265,7 @@ impl PassantRewriter {
     pub(crate) fn rewrite_derived_table_factor(
         &self,
         factor: &mut TableFactor,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         if let TableFactor::Derived {
             subquery, alias, ..
@@ -249,7 +285,7 @@ impl PassantRewriter {
     fn rewrite_derived_table_with_joins(
         &self,
         table: &mut TableWithJoins,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         self.rewrite_derived_table_factor(&mut table.relation, context)?;
         for join in &mut table.joins {
@@ -261,7 +297,7 @@ impl PassantRewriter {
     fn rewrite_derived_subqueries(
         &self,
         select: &mut Select,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         for table in &mut select.from {
             self.rewrite_derived_table_with_joins(table, context)?;
@@ -272,7 +308,7 @@ impl PassantRewriter {
     pub(crate) fn rewrite_set_expr(
         &self,
         set_expr: &mut SetExpr,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         match set_expr {
             SetExpr::Select(select) => self.rewrite_select(select, context),
@@ -321,12 +357,19 @@ impl PassantRewriter {
     pub(crate) fn rewrite_query_with_context(
         &self,
         query: &mut Query,
-        context: &RewriteContext,
+        context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         if let Some(with) = query.with.as_mut() {
             for cte in &mut with.cte_tables {
                 self.rewrite_query_with_context(&mut cte.query, context)?;
             }
+        }
+        if let Some(wrapped) = wrap_limited_policy_query(self, query, context)? {
+            *query = wrapped;
+            if context.sink.is_none() {
+                self.apply_query_relation_resolution(query, context)?;
+            }
+            return Ok(());
         }
         self.rewrite_set_expr(query.body.as_mut(), context)?;
         if context.sink.is_none() {

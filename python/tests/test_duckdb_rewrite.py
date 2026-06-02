@@ -558,8 +558,8 @@ def test_update_from_source_policy_filters_assignments():
     ]
 
 
-def test_remove_policy_filters_before_limit_for_full_push():
-    """Distributive policies use Full-Push: inline WHERE is applied before LIMIT."""
+def test_remove_policy_filters_after_base_limit_for_full_push():
+    """REMOVE runs after the base LIMIT result, not before it."""
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
@@ -571,10 +571,10 @@ def test_remove_policy_filters_before_limit_for_full_push():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == [(2,)]
+    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == []
 
 
-def test_remove_policy_filters_before_offset_for_full_push():
+def test_remove_policy_filters_after_base_offset_for_full_push():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3)")
@@ -586,10 +586,13 @@ def test_remove_policy_filters_before_offset_for_full_push():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id OFFSET 1") == []
+    base = rewriter.fetchall("SELECT id FROM foo ORDER BY id OFFSET 1")
+    result = rewriter.fetchall("SELECT id FROM foo ORDER BY id OFFSET 1")
+    assert len(result) <= len(base)
+    assert result == [(3,)]
 
 
-def test_remove_policy_filters_before_limit_offset_for_full_push():
+def test_remove_policy_filters_after_base_limit_offset_for_full_push():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1), (2), (3), (4)")
@@ -601,10 +604,61 @@ def test_remove_policy_filters_before_limit_offset_for_full_push():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 2 OFFSET 1") == [(4,)]
+    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 2 OFFSET 1") == [(3,)]
 
 
-def test_full_push_limit_filter_uses_inline_where():
+def test_remove_policy_filters_after_base_limit_for_aggregate_full_push():
+    rewriter = dfc(duckdb.connect())
+    rewriter.execute("CREATE TABLE foo (category VARCHAR, amount INTEGER)")
+    rewriter.execute("INSERT INTO foo VALUES ('a', 1), ('b', 5), ('c', 10)")
+    rewriter.register_policy(
+        Policy(
+            sources=["foo"],
+            constraint="max(foo.amount) > 1",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+
+    sql = rewriter.transform_query(
+        "SELECT category, sum(amount) FROM foo GROUP BY category ORDER BY category LIMIT 1"
+    )
+    assert "WITH __passant_limited AS" in sql
+    assert "__passant_filter_agg_" in sql
+    # LIMIT 1 picks category 'a', which fails the policy after the limit boundary.
+    assert (
+        rewriter.fetchall(
+            "SELECT category, sum(amount) FROM foo GROUP BY category ORDER BY category LIMIT 1"
+        )
+        == []
+    )
+
+    assert rewriter.fetchall(
+        "SELECT category, sum(amount) FROM foo GROUP BY category ORDER BY category DESC LIMIT 1"
+    ) == [("c", 10)]
+
+
+def test_kill_policy_filters_after_base_limit_for_aggregate_full_push():
+    rewriter = dfc(duckdb.connect())
+    rewriter.execute("CREATE TABLE foo (category VARCHAR, amount INTEGER)")
+    rewriter.execute("INSERT INTO foo VALUES ('b', 5), ('c', 10)")
+    rewriter.register_policy(
+        Policy(
+            sources=["foo"],
+            constraint="max(foo.amount) > 1",
+            on_fail=Resolution.KILL,
+        )
+    )
+
+    sql = rewriter.transform_query(
+        "SELECT category, sum(amount) FROM foo GROUP BY category ORDER BY category LIMIT 1"
+    )
+    assert "WITH __passant_limited AS" in sql
+    assert rewriter.fetchall(
+        "SELECT category, sum(amount) FROM foo GROUP BY category ORDER BY category LIMIT 1"
+    ) == [("b", 5)]
+
+
+def test_full_push_limit_filter_uses_cte_wrapper_for_hidden_column():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER, secret INTEGER)")
     rewriter.execute("INSERT INTO foo VALUES (1, 0), (2, 10)")
@@ -616,7 +670,43 @@ def test_full_push_limit_filter_uses_inline_where():
         )
     )
 
-    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == [(2,)]
+    assert rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1") == []
+
+
+def test_remove_policy_aggregate_limit_filters_after_base_limit():
+    rewriter = dfc(duckdb.connect())
+    rewriter.execute("CREATE TABLE foo (category VARCHAR, amount INTEGER)")
+    rewriter.execute("INSERT INTO foo VALUES ('a', 1), ('b', 5)")
+    rewriter.register_policy(
+        Policy(
+            sources=["foo"],
+            constraint="max(foo.amount) > 1",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+
+    assert (
+        rewriter.fetchall(
+            "SELECT category, sum(amount) FROM foo GROUP BY category ORDER BY category LIMIT 1"
+        )
+        == []
+    )
+
+
+def test_kill_policy_limit_applies_after_base_limit():
+    rewriter = dfc(duckdb.connect())
+    rewriter.execute("CREATE TABLE foo (id INTEGER)")
+    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
+    rewriter.register_policy(
+        Policy(
+            sources=["foo"],
+            constraint="max(foo.id) > 1",
+            on_fail=Resolution.KILL,
+        )
+    )
+
+    with pytest.raises(Exception, match="KILLing due to dfc policy violation"):
+        rewriter.fetchall("SELECT id FROM foo ORDER BY id LIMIT 1")
 
 
 def test_policy_applies_inside_derived_subquery():

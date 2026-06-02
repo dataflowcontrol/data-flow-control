@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..aggregate_introspection import introspect_datafusion_aggregates
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
 from .kill import python_kill
@@ -85,7 +86,11 @@ class DataFusionAdapter:
             tables=tables,
             default_schema="public",
             search_path=["public"],
+            aggregate_functions=self.introspect_aggregate_functions(),
         )
+
+    def introspect_aggregate_functions(self) -> list[dict]:
+        return introspect_datafusion_aggregates(self._ctx)
 
     def close(self) -> None:
         return

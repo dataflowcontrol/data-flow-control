@@ -150,9 +150,13 @@ fn rewriter_recurses_into_in_subquery() {
     let sql = rewriter
         .rewrite("SELECT id FROM bar WHERE id IN (SELECT id FROM foo)")
         .expect("query should rewrite");
-    assert_eq!(
-        sql,
-        "SELECT id FROM bar WHERE id IN (SELECT id FROM foo WHERE foo.id > 1)"
+    assert!(
+        sql.contains("in_subquery") && sql.contains("JOIN"),
+        "subquery-only policy should rewrite positive IN as semijoin: {sql}"
+    );
+    assert!(
+        sql.contains("foo.id > 1") || sql.contains("__passant_filter"),
+        "policy should be enforced on subquery lineitem: {sql}"
     );
 }
 

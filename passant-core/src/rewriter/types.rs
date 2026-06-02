@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::Expr;
 
+use crate::aggregate_registry::AggregateRegistry;
 use crate::catalog::TableCatalog;
 use crate::policy_store::PolicyStore;
 use crate::rewrite_stats::RewriteStatsCell;
@@ -70,14 +71,29 @@ impl RewriteOptions {
 }
 
 /// Policy storage and catalog facts for rewrite.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PassantRewriter {
     pub(crate) store: PolicyStore,
     pub(crate) catalog: TableCatalog,
+    pub(crate) aggregate_registry: AggregateRegistry,
     pub(crate) parse_dialect: crate::sql::SqlDialect,
     pub(crate) stats: RewriteStatsCell,
     pub(crate) statement_summary: StatementRewriteSummaryCell,
     pub(crate) ui_followup: UiFollowupCell,
+}
+
+impl Default for PassantRewriter {
+    fn default() -> Self {
+        Self {
+            store: PolicyStore::default(),
+            catalog: TableCatalog::default(),
+            aggregate_registry: AggregateRegistry::for_dialect(SqlDialect::default()),
+            parse_dialect: SqlDialect::default(),
+            stats: RewriteStatsCell::default(),
+            statement_summary: StatementRewriteSummaryCell::default(),
+            ui_followup: UiFollowupCell::default(),
+        }
+    }
 }
 
 impl Clone for PassantRewriter {
@@ -85,6 +101,7 @@ impl Clone for PassantRewriter {
         Self {
             store: self.store.clone(),
             catalog: self.catalog.clone(),
+            aggregate_registry: self.aggregate_registry.clone(),
             parse_dialect: self.parse_dialect,
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
@@ -96,7 +113,25 @@ impl Clone for PassantRewriter {
 impl PassantRewriter {
     pub fn apply_catalog_snapshot(&mut self, snapshot: crate::catalog::CatalogSnapshot) {
         self.parse_dialect = snapshot.sql_dialect();
+        let dialect = self.parse_dialect;
+        let introspected = snapshot.aggregate_functions.clone();
         self.catalog.load_snapshot(snapshot);
+        self.aggregate_registry =
+            AggregateRegistry::for_dialect(dialect).merge_introspected(&introspected);
+    }
+
+    pub fn aggregate_registry(&self) -> &AggregateRegistry {
+        &self.aggregate_registry
+    }
+
+    pub fn register_aggregate_function_name(
+        &mut self,
+        name: impl Into<String>,
+        schema: Option<String>,
+        classification: crate::aggregate_registry::AggregateClassification,
+    ) {
+        self.aggregate_registry
+            .register_user_aggregate(name, schema, classification);
     }
 
     pub fn sql_dialect(&self) -> crate::sql::SqlDialect {
@@ -104,15 +139,50 @@ impl PassantRewriter {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct RewriteContext {
+    pub(crate) aggregate_registry: AggregateRegistry,
     pub(crate) sink: Option<String>,
     pub(crate) sink_expr_by_column: HashMap<String, Expr>,
     pub(crate) ambiguous_output_columns: HashSet<String>,
     pub(crate) allow_partial_source_visibility: bool,
+    /// When true, policy actions are deferred for the current SELECT and applied
+    /// by an outer limit-first wrapper query.
+    pub(crate) defer_policy_for_outer_limit: bool,
+    /// Policy indices deferred to a parent aggregate scope (derived propagation).
+    pub(crate) deferred_policy_indices: HashSet<usize>,
+    /// IN semijoin policy metrics collected during rewrite for limit-first wrappers.
+    pub(crate) pending_in_semijoin_filters: Vec<crate::partial_push::ExtraDfcFilter>,
     pub(crate) collect_stats: bool,
     pub(crate) ui_mode: UiResolutionMode,
     pub(crate) ui_stream_endpoint: Option<String>,
+}
+
+impl Default for RewriteContext {
+    fn default() -> Self {
+        Self {
+            aggregate_registry: AggregateRegistry::for_dialect(SqlDialect::default()),
+            sink: None,
+            sink_expr_by_column: HashMap::new(),
+            ambiguous_output_columns: HashSet::new(),
+            allow_partial_source_visibility: false,
+            defer_policy_for_outer_limit: false,
+            deferred_policy_indices: HashSet::new(),
+            pending_in_semijoin_filters: Vec::new(),
+            collect_stats: false,
+            ui_mode: UiResolutionMode::default(),
+            ui_stream_endpoint: None,
+        }
+    }
+}
+
+impl RewriteContext {
+    pub(crate) fn from_rewriter(rewriter: &PassantRewriter) -> Self {
+        Self {
+            aggregate_registry: rewriter.aggregate_registry.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

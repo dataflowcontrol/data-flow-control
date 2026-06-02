@@ -22,17 +22,16 @@ use crate::sql::{
     scalar_subquery,
 };
 
-use super::aggregates::{is_scan_transformable_non_distributive, transform_scan_aggregates};
+use super::aggregates::transform_scan_aggregates;
 use super::columns::{
     apply_output_marker_replacements, apply_policy_sink_column_replacements,
     replace_source_alias_qualifiers, rewrite_column_qualifiers,
 };
-use super::expr::{
-    and_expr, bool_literal, expr_contains_aggregate, is_aggregate_name, join_conjuncts, parse_expr,
-};
+use super::expr::{and_expr, bool_literal, expr_contains_aggregate, join_conjuncts, parse_expr};
 use super::resolution::PASSANT_KILL_UDF;
 use super::scope::TableScope;
 use super::types::{PolicyApplicability, RewriteContext};
+use crate::aggregate_registry::AggregateRegistry;
 
 /// Registration-time constraint AST lookup for rewrite hot paths.
 pub(crate) struct ConstraintExprCtx<'a> {
@@ -165,25 +164,27 @@ fn collect_function_referenced_source_tables(
     }
 }
 
-fn expr_is_aggregate_only(expr: &Expr) -> bool {
-    !expr_has_column_outside_aggregate(expr, false)
+fn expr_is_aggregate_only(expr: &Expr, registry: &AggregateRegistry) -> bool {
+    !expr_has_column_outside_aggregate(expr, false, registry)
 }
 
-fn expr_has_column_outside_aggregate(expr: &Expr, inside_aggregate: bool) -> bool {
+fn expr_has_column_outside_aggregate(
+    expr: &Expr,
+    inside_aggregate: bool,
+    registry: &AggregateRegistry,
+) -> bool {
     match expr {
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => !inside_aggregate,
         Expr::Function(function) => {
-            let inside_aggregate =
-                inside_aggregate || is_aggregate_name(&function.name.to_string());
-            function_args_have_column_outside_aggregate(function, inside_aggregate)
-                || function
-                    .filter
-                    .as_ref()
-                    .is_some_and(|filter| expr_has_column_outside_aggregate(filter, false))
+            let inside_aggregate = inside_aggregate || registry.is_aggregate_call(function);
+            function_args_have_column_outside_aggregate(function, inside_aggregate, registry)
+                || function.filter.as_ref().is_some_and(|filter| {
+                    expr_has_column_outside_aggregate(filter, false, registry)
+                })
         }
         Expr::BinaryOp { left, right, .. } => {
-            expr_has_column_outside_aggregate(left, inside_aggregate)
-                || expr_has_column_outside_aggregate(right, inside_aggregate)
+            expr_has_column_outside_aggregate(left, inside_aggregate, registry)
+                || expr_has_column_outside_aggregate(right, inside_aggregate, registry)
         }
         Expr::Nested(expr)
         | Expr::UnaryOp { expr, .. }
@@ -192,19 +193,21 @@ fn expr_has_column_outside_aggregate(expr: &Expr, inside_aggregate: bool) -> boo
         | Expr::IsTrue(expr)
         | Expr::IsNotTrue(expr)
         | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr) => expr_has_column_outside_aggregate(expr, inside_aggregate),
+        | Expr::IsNotNull(expr) => {
+            expr_has_column_outside_aggregate(expr, inside_aggregate, registry)
+        }
         Expr::Between {
             expr, low, high, ..
         } => {
-            expr_has_column_outside_aggregate(expr, inside_aggregate)
-                || expr_has_column_outside_aggregate(low, inside_aggregate)
-                || expr_has_column_outside_aggregate(high, inside_aggregate)
+            expr_has_column_outside_aggregate(expr, inside_aggregate, registry)
+                || expr_has_column_outside_aggregate(low, inside_aggregate, registry)
+                || expr_has_column_outside_aggregate(high, inside_aggregate, registry)
         }
         Expr::InList { expr, list, .. } => {
-            expr_has_column_outside_aggregate(expr, inside_aggregate)
+            expr_has_column_outside_aggregate(expr, inside_aggregate, registry)
                 || list
                     .iter()
-                    .any(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate))
+                    .any(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate, registry))
         }
         Expr::Case {
             operand,
@@ -212,18 +215,17 @@ fn expr_has_column_outside_aggregate(expr: &Expr, inside_aggregate: bool) -> boo
             results,
             else_result,
         } => {
-            operand
-                .as_deref()
-                .is_some_and(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate))
-                || conditions
-                    .iter()
-                    .any(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate))
+            operand.as_deref().is_some_and(|expr| {
+                expr_has_column_outside_aggregate(expr, inside_aggregate, registry)
+            }) || conditions
+                .iter()
+                .any(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate, registry))
                 || results
                     .iter()
-                    .any(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate))
-                || else_result
-                    .as_deref()
-                    .is_some_and(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate))
+                    .any(|expr| expr_has_column_outside_aggregate(expr, inside_aggregate, registry))
+                || else_result.as_deref().is_some_and(|expr| {
+                    expr_has_column_outside_aggregate(expr, inside_aggregate, registry)
+                })
         }
         _ => false,
     }
@@ -232,6 +234,7 @@ fn expr_has_column_outside_aggregate(expr: &Expr, inside_aggregate: bool) -> boo
 fn function_args_have_column_outside_aggregate(
     function: &sqlparser::ast::Function,
     inside_aggregate: bool,
+    registry: &AggregateRegistry,
 ) -> bool {
     let FunctionArguments::List(args) = &function.args else {
         return false;
@@ -245,7 +248,7 @@ fn function_args_have_column_outside_aggregate(
         | FunctionArg::ExprNamed {
             arg: FunctionArgExpr::Expr(expr),
             ..
-        } => expr_has_column_outside_aggregate(expr, inside_aggregate),
+        } => expr_has_column_outside_aggregate(expr, inside_aggregate, registry),
         _ => false,
     })
 }
@@ -430,7 +433,8 @@ pub(crate) fn scan_policy_expr(
             )?,
         ));
     }
-    let non_distributive = non_distributive_aggregates(&expr)?;
+    let registry = &context.aggregate_registry;
+    let non_distributive = non_distributive_aggregates(&expr, registry)?;
     if non_distributive.is_empty() {
         if scan_ready {
             if context.sink.is_none() && !sources.is_empty() {
@@ -460,7 +464,9 @@ pub(crate) fn scan_policy_expr(
                         )?),
                     });
                 }
-                if expr_is_aggregate_only(&expr) && expr_contains_aggregate(&expr) {
+                if expr_is_aggregate_only(&expr, registry)
+                    && expr_contains_aggregate(&expr, registry)
+                {
                     rewrite_column_qualifiers(&mut expr, &inverse_alias_map(alias_by_base));
                     return scalar_policy_subquery_expr(expr, sources);
                 }
@@ -494,9 +500,9 @@ pub(crate) fn scan_policy_expr(
                     )?),
                 });
             }
-            if expr_is_aggregate_only(&expr) && expr_contains_aggregate(&expr) {
+            if expr_is_aggregate_only(&expr, registry) && expr_contains_aggregate(&expr, registry) {
                 if is_count_distinct_threshold_comparison(&expr) {
-                    return transform_scan_aggregates(expr);
+                    return transform_scan_aggregates(expr, registry);
                 }
                 if is_count_distinct_not_unique_check(&expr)
                     && context.sink.is_none()
@@ -510,15 +516,20 @@ pub(crate) fn scan_policy_expr(
                 return scalar_policy_subquery_expr(expr, sources);
             }
         }
-        return transform_scan_aggregates(expr);
+        return transform_scan_aggregates(expr, registry);
     }
-    if context.sink.is_none() && !sources.is_empty() && expr_is_aggregate_only(&expr) {
-        if non_distributive
+    if context.sink.is_none() && !sources.is_empty() && expr_is_aggregate_only(&expr, registry) {
+        let non_dist_names = semiring::analyze_constraint_expr_with_registry(&expr, registry)
+            .into_iter()
+            .filter(|aggregate| !aggregate.distributive)
+            .map(|aggregate| aggregate.function_name)
+            .collect::<Vec<_>>();
+        if non_dist_names
             .iter()
-            .all(|aggregate| is_scan_transformable_non_distributive(aggregate))
+            .all(|name| registry.is_scan_transformable(name))
         {
-            let transformed = transform_scan_aggregates(expr.clone())?;
-            if !expr_contains_aggregate(&transformed) {
+            let transformed = transform_scan_aggregates(expr.clone(), registry)?;
+            if !expr_contains_aggregate(&transformed, registry) {
                 let mut transformed = transformed;
                 rewrite_column_qualifiers(&mut transformed, &inverse_alias_map(alias_by_base));
                 return Ok(transformed);
@@ -533,12 +544,17 @@ pub(crate) fn scan_policy_expr(
     )))
 }
 
-pub(crate) fn non_distributive_aggregates(expr: &Expr) -> Result<Vec<String>, RewriteError> {
-    Ok(semiring::analyze_constraint_expr(expr)
-        .into_iter()
-        .filter(|aggregate| !aggregate.distributive)
-        .map(|aggregate| aggregate.expression)
-        .collect::<Vec<_>>())
+pub(crate) fn non_distributive_aggregates(
+    expr: &Expr,
+    registry: &AggregateRegistry,
+) -> Result<Vec<String>, RewriteError> {
+    Ok(
+        semiring::analyze_constraint_expr_with_registry(expr, registry)
+            .into_iter()
+            .filter(|aggregate| !aggregate.distributive)
+            .map(|aggregate| aggregate.expression)
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn scalar_policy_subquery_expr(expr: Expr, sources: &[String]) -> Result<Expr, RewriteError> {

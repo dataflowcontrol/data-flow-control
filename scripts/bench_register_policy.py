@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument(
         "--refresh-each",
         action="store_true",
-        help="force catalog refresh before every policy (legacy behavior)",
+        help="force catalog refresh before every policy (per-policy refresh)",
     )
     args = parser.parse_args()
 

@@ -1,3 +1,4 @@
+use crate::aggregate_registry::AggregateRegistry;
 use crate::sql::{parse_projection_expr, wrap_table_with_filter};
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, TableFactor,
@@ -5,40 +6,12 @@ use sqlparser::ast::{
 
 use crate::diagnostics::RewriteError;
 
-pub(crate) fn expr_contains_aggregate(expr: &Expr) -> bool {
-    match expr {
-        Expr::Function(function) => is_aggregate_name(&function.name.to_string()),
-        Expr::BinaryOp { left, right, .. } => {
-            expr_contains_aggregate(left) || expr_contains_aggregate(right)
-        }
-        Expr::Nested(expr)
-        | Expr::UnaryOp { expr, .. }
-        | Expr::IsFalse(expr)
-        | Expr::IsNotFalse(expr)
-        | Expr::IsTrue(expr)
-        | Expr::IsNotTrue(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr) => expr_contains_aggregate(expr),
-        Expr::Case {
-            operand,
-            conditions,
-            results,
-            else_result,
-        } => {
-            operand.as_deref().is_some_and(expr_contains_aggregate)
-                || conditions.iter().any(expr_contains_aggregate)
-                || results.iter().any(expr_contains_aggregate)
-                || else_result.as_deref().is_some_and(expr_contains_aggregate)
-        }
-        _ => false,
-    }
+pub(crate) fn expr_contains_aggregate(expr: &Expr, registry: &AggregateRegistry) -> bool {
+    registry.expr_contains_aggregate(expr)
 }
 
-pub(crate) fn is_aggregate_name(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "count" | "sum" | "avg" | "min" | "max" | "array_agg" | "bool_and" | "bool_or"
-    )
+pub(crate) fn is_aggregate_name(name: &str, registry: &AggregateRegistry) -> bool {
+    registry.is_aggregate_name(name)
 }
 
 pub(crate) fn parse_expr_or_identity(sql: &str) -> Expr {

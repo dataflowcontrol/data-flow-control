@@ -65,6 +65,22 @@ impl PyPlanner {
         Ok(())
     }
 
+    #[pyo3(signature = (name, schema=None, classification=None))]
+    fn register_aggregate_function_name(
+        &mut self,
+        name: String,
+        schema: Option<String>,
+        classification: Option<String>,
+    ) -> PyResult<()> {
+        let classification = classification
+            .as_deref()
+            .and_then(|value| value.parse::<passant_core::AggregateClassification>().ok())
+            .unwrap_or(passant_core::AggregateClassification::UnknownCustomAggregate);
+        self.rewriter
+            .register_aggregate_function_name(name, schema, classification);
+        Ok(())
+    }
+
     #[pyo3(signature = (sources=None, sink=None, constraint=None, on_fail=None, description=None))]
     fn delete_policy(
         &mut self,
@@ -150,7 +166,9 @@ impl PyPlanner {
     ) -> PyResult<String> {
         let ir = parse_query_to_ir(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
         let policies = self.rewriter.policies();
-        let mut explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
+        let registry = self.rewriter.aggregate_registry().clone();
+        let mut explanation =
+            PassantPlanner::new().explain_rewrite_with_registry(&ir, &policies, &registry);
         let statement =
             parse_query(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
         let statement_plan = self.rewriter.plan_statement_summary(&statement);

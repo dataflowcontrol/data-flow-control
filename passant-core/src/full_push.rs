@@ -6,6 +6,29 @@ use std::time::Instant;
 use crate::optimizer::RewriteStrategy;
 use crate::rewrite_strategy::{RewriteAttempt, RewriteEngine, RewriteRequest, StatementKind};
 use crate::rewriter::{PassantRewriter, RewriteError};
+use crate::semiring::SemiringAnalysis;
+
+fn semiring_allows_full_push(rewriter: &PassantRewriter, semiring: &SemiringAnalysis) -> bool {
+    if semiring.all_distributive {
+        return true;
+    }
+    semiring
+        .non_distributive_aggregates
+        .iter()
+        .all(|aggregate| count_if_style_scan_aggregate(rewriter, aggregate))
+}
+
+fn count_if_style_scan_aggregate(rewriter: &PassantRewriter, aggregate: &str) -> bool {
+    let lower = aggregate.to_ascii_lowercase();
+    if lower.contains("array_agg")
+        || lower == "list"
+        || lower.contains("string_agg")
+        || lower.contains("median")
+    {
+        return false;
+    }
+    rewriter.aggregate_registry.is_scan_transformable(aggregate)
+}
 
 /// Full-push engine — mutates the query in place, preserving its overall shape.
 pub struct FullPushEngine;
@@ -26,7 +49,7 @@ impl RewriteEngine for FullPushEngine {
         if matches!(request.kind, StatementKind::Passthrough) {
             return false;
         }
-        request.semiring.all_distributive && !request.options.use_partial_push
+        !request.options.use_partial_push && semiring_allows_full_push(rewriter, &request.semiring)
     }
 
     fn rewrite(

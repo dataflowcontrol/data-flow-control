@@ -411,16 +411,16 @@ mod tests {
         assert_eq!(merged, iter_merged);
         store.assert_candidates_match_slow_scan(&tables, None, MultiSourceLookupMode::Subset);
 
-        let mut legacy = Vec::new();
+        let mut slow_path_ids = Vec::new();
         for table in &tables {
             if let Some(source_ids) = store.by_source.get(table) {
-                legacy.extend(source_ids.collect_active_sorted(&store));
+                slow_path_ids.extend(source_ids.collect_active_sorted(&store));
             }
         }
-        legacy.extend(store.global_no_source.collect_active_sorted(&store));
-        legacy.sort_unstable();
-        legacy.dedup();
-        assert_eq!(merged, legacy);
+        slow_path_ids.extend(store.global_no_source.collect_active_sorted(&store));
+        slow_path_ids.sort_unstable();
+        slow_path_ids.dedup();
+        assert_eq!(merged, slow_path_ids);
     }
 
     #[test]

@@ -113,6 +113,10 @@ pub(crate) fn plan_select_rewrite(
     Ok(plan)
 }
 
+fn should_defer_policy_pushdown(context: &RewriteContext, _policy: &PolicyIr) -> bool {
+    context.defer_policy_for_outer_limit
+}
+
 fn plan_join_input_source_filters(
     store: &PolicyStore,
     catalog: &TableCatalog,
@@ -141,6 +145,9 @@ fn plan_join_input_source_filters(
                 let Some(policy) = store.policy(index) else {
                     continue;
                 };
+                if should_defer_policy_pushdown(context, policy) {
+                    continue;
+                }
                 let constraint_ctx = ConstraintExprCtx {
                     store,
                     index,
@@ -163,6 +170,9 @@ fn plan_join_input_source_filters(
                     let Some(policy) = store.policy(index) else {
                         continue;
                     };
+                    if should_defer_policy_pushdown(context, policy) {
+                        continue;
+                    }
                     let constraint_ctx = ConstraintExprCtx {
                         store,
                         index,
@@ -216,6 +226,9 @@ fn plan_join_policy_pushdown(
                 let Some(policy) = store.policy(index) else {
                     continue;
                 };
+                if should_defer_policy_pushdown(context, policy) {
+                    continue;
+                }
                 let constraint_ctx = ConstraintExprCtx {
                     store,
                     index,
@@ -242,6 +255,9 @@ fn plan_join_policy_pushdown(
                 let Some(policy) = store.policy(index) else {
                     continue;
                 };
+                if should_defer_policy_pushdown(context, policy) {
+                    continue;
+                }
                 let constraint_ctx = ConstraintExprCtx {
                     store,
                     index,
@@ -262,6 +278,16 @@ fn plan_join_policy_pushdown(
                 *pushed_counts.entry(index).or_default() += 1;
             }
         }
+    }
+
+    if context.defer_policy_for_outer_limit {
+        record_fully_pushed(
+            store,
+            occurrence_counts,
+            pushed_counts,
+            &mut plan.fully_pushed_indices,
+        );
+        return Ok(());
     }
 
     let candidate_ids = store.candidate_ids_for_tables(&analysis.scope.direct_base_tables);
@@ -292,7 +318,7 @@ fn plan_join_policy_pushdown(
             stats,
         };
         let expr = constraint_ctx.expr(constraint)?;
-        if !non_distributive_aggregates(&expr)?.is_empty() {
+        if !non_distributive_aggregates(&expr, &context.aggregate_registry)?.is_empty() {
             continue;
         }
         for (from_index, table) in select.from.iter().enumerate() {
@@ -306,8 +332,12 @@ fn plan_join_policy_pushdown(
             {
                 continue;
             }
-            let mut transformed = transform_scan_aggregates(expr.clone())?;
-            if super::super::expr::expr_contains_aggregate(&transformed) {
+            let mut transformed =
+                transform_scan_aggregates(expr.clone(), &context.aggregate_registry)?;
+            if context
+                .aggregate_registry
+                .expr_contains_aggregate(&transformed)
+            {
                 continue;
             }
             rewrite_column_qualifiers(&mut transformed, &table_scope.alias_by_base);

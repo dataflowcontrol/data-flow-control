@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::aggregate_registry::AggregateRegistry;
 use crate::explain::{ExplainStep, RewriteExplanation};
 use crate::identifiers::TableKey;
 use crate::ir::QueryIr;
@@ -9,6 +10,7 @@ use crate::optimizer::{CandidatePlan, RewriteOptimizer, RewriteStrategy};
 use crate::policy::PolicyIr;
 use crate::rewriter::{PassantRewriter, resolve_scope_policies};
 use crate::semiring;
+use crate::sql::SqlDialect;
 use crate::threshold;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -62,7 +64,20 @@ impl PassantPlanner {
     }
 
     pub fn plan_query(&self, query: &QueryIr, policies: &[PolicyIr]) -> PlanQueryResult {
-        let scope = self.scope_info(query, policies);
+        self.plan_query_with_registry(
+            query,
+            policies,
+            &AggregateRegistry::for_dialect(SqlDialect::DuckDb),
+        )
+    }
+
+    pub fn plan_query_with_registry(
+        &self,
+        query: &QueryIr,
+        policies: &[PolicyIr],
+        registry: &AggregateRegistry,
+    ) -> PlanQueryResult {
+        let scope = self.scope_info(query, policies, registry);
         let applicable_policies =
             threshold::prune_dominated_remove_policies(&self.matching_policies(query, policies));
         let candidate_policies = if applicable_policies.is_empty()
@@ -85,7 +100,20 @@ impl PassantPlanner {
     }
 
     pub fn explain_rewrite(&self, query: &QueryIr, policies: &[PolicyIr]) -> RewriteExplanation {
-        let result = self.plan_query(query, policies);
+        self.explain_rewrite_with_registry(
+            query,
+            policies,
+            &AggregateRegistry::for_dialect(SqlDialect::DuckDb),
+        )
+    }
+
+    pub fn explain_rewrite_with_registry(
+        &self,
+        query: &QueryIr,
+        policies: &[PolicyIr],
+        registry: &AggregateRegistry,
+    ) -> RewriteExplanation {
+        let result = self.plan_query_with_registry(query, policies, registry);
         let mut steps = vec![
             ExplainStep {
                 stage: "parse".into(),
@@ -211,13 +239,18 @@ impl PassantPlanner {
             .collect()
     }
 
-    fn scope_info(&self, query: &QueryIr, policies: &[PolicyIr]) -> ScopeInfo {
+    fn scope_info(
+        &self,
+        query: &QueryIr,
+        policies: &[PolicyIr],
+        registry: &AggregateRegistry,
+    ) -> ScopeInfo {
         let visible = visible_tables(query);
         let propagated_column_count = policies
             .iter()
             .map(|policy| policy.constraint().matches('.').count())
             .sum();
-        let semiring = semiring::analyze_policies(policies);
+        let semiring = semiring::analyze_policies_with_registry(policies, registry);
 
         let has_outer_join = raw_contains_any(
             query.raw_sql(),

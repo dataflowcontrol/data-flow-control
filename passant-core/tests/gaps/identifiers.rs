@@ -1,7 +1,8 @@
 //! Identifier stress tests for rewrite stability.
 
 use passant_core::{
-    CatalogSnapshot, CatalogTableInfo, PassantRewriter, PolicyIr, Resolution, TableCatalog,
+    AggregateRegistry, CatalogSnapshot, CatalogTableInfo, PassantRewriter, PolicyIr, Resolution,
+    SqlDialect, TableCatalog,
 };
 use std::collections::HashMap;
 
@@ -38,7 +39,7 @@ fn catalog_validates_quoted_column_references() {
         description: None,
     };
     catalog
-        .validate_policy(&policy)
+        .validate_policy(&policy, &AggregateRegistry::for_dialect(SqlDialect::DuckDb))
         .expect("quoted columns should validate");
 }
 
@@ -59,7 +60,7 @@ fn catalog_rejects_unknown_quoted_column() {
         description: None,
     };
     let err = catalog
-        .validate_policy(&policy)
+        .validate_policy(&policy, &AggregateRegistry::for_dialect(SqlDialect::DuckDb))
         .expect_err("missing column");
     assert_eq!(err.kind(), passant_core::ErrorKind::UnknownColumn);
 }

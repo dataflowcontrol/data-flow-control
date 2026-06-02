@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use sqlparser::ast::{Select, Statement};
 
+use crate::aggregate_registry::AggregateRegistry;
 use crate::catalog::TableCatalog;
 pub use crate::diagnostics::RewriteError;
 use crate::identifiers::TableKey;
@@ -25,21 +26,22 @@ pub(crate) use aggregates::decompose_composed_aggregates;
 mod columns;
 pub(crate) mod constraint_preprocess;
 pub(crate) use constraint_preprocess::preprocess_policy_constraint;
+mod derived_policy;
 pub(crate) mod dimensions;
 mod exists;
 mod expr;
 mod helpers;
+pub(crate) mod limit;
 mod plan;
 mod policy_expr;
 mod projection;
 pub(crate) mod resolution;
-pub(crate) use resolution::wrap_select_with_tuple_resolution;
 mod select;
 mod write_path;
 
 pub(crate) use plan::{
-    PolicyResolutionAction, plan_policy_filter_actions, resolve_scope_policies,
-    scope_has_enforcement_policies,
+    PolicyResolutionAction, apply_policy_resolution_actions, plan_policy_filter_actions,
+    resolve_scope_policies, scope_has_enforcement_policies,
 };
 pub use plan::{
     ScopePlanDiagnostics, SelectRewritePlan, StatementRewriteSummary,
@@ -57,7 +59,7 @@ use plan::StatementRewriteSummaryCell;
 pub(crate) use columns::{
     collect_compound_columns_by_name, replace_identifiers, unqualify_columns,
 };
-pub(crate) use expr::{parse_expr, projected_column_name};
+pub(crate) use expr::{expr_contains_aggregate, parse_expr, projected_column_name};
 pub(crate) use helpers::direct_source_occurrence_counts;
 
 impl PassantRewriter {
@@ -69,6 +71,7 @@ impl PassantRewriter {
         Self {
             store: PolicyStore::default(),
             catalog,
+            aggregate_registry: AggregateRegistry::for_dialect(SqlDialect::default()),
             parse_dialect: SqlDialect::default(),
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
@@ -95,14 +98,16 @@ impl PassantRewriter {
         let mut rewriter = Self {
             store,
             catalog,
+            aggregate_registry: AggregateRegistry::for_dialect(parse_dialect),
             parse_dialect,
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
             ui_followup: UiFollowupCell::default(),
         };
+        let registry = rewriter.aggregate_registry.clone();
         for index in 0..rewriter.store.len() {
             if rewriter.store.compiled(index).is_some() {
-                rewriter.finalize_scan_ready_expr(index);
+                rewriter.finalize_scan_ready_expr(index, &registry);
             }
         }
         rewriter
@@ -125,18 +130,24 @@ impl PassantRewriter {
     }
 
     pub fn register_policy(&mut self, policy: PolicyIr) {
+        let registry = self.aggregate_registry.clone();
         let index = self.store.register(policy);
-        self.finalize_scan_ready_expr(index);
+        self.finalize_scan_ready_expr(index, &registry);
     }
 
     pub fn register_validated_policy(&mut self, policy: PolicyIr) -> Result<(), RewriteError> {
         let PolicyIr::Pgn { constraint, .. } = &policy;
-        let parsed = crate::policy_compile::parse_policy_constraint(constraint)?;
+        let parsed = crate::policy_compile::parse_policy_constraint_with_registry(
+            constraint,
+            &self.aggregate_registry,
+        )?;
         if self.catalog.is_loaded() {
-            self.catalog.validate_pgn_policy_parsed(&policy, &parsed)?;
+            self.catalog
+                .validate_pgn_policy_parsed(&policy, &parsed, &self.aggregate_registry)?;
         }
+        let registry = self.aggregate_registry.clone();
         let index = self.store.register_with_parsed(policy, parsed);
-        self.finalize_scan_ready_expr(index);
+        self.finalize_scan_ready_expr(index, &registry);
         Ok(())
     }
 
@@ -191,8 +202,8 @@ impl PassantRewriter {
         self.store.deactivate(index)
     }
 
-    fn finalize_scan_ready_expr(&mut self, index: usize) {
-        aggregates::finalize_policy_scan_ready(&mut self.store, index);
+    fn finalize_scan_ready_expr(&mut self, index: usize, registry: &AggregateRegistry) {
+        aggregates::finalize_policy_scan_ready(&mut self.store, index, registry);
     }
 
     pub fn policies(&self) -> Vec<PolicyIr> {

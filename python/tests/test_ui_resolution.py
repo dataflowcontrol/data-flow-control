@@ -44,6 +44,9 @@ def test_register_ui_rejected_without_capability():
         def execute(self, sql: str, params=None):
             return duckdb.connect().execute(sql, params)
 
+        def introspect_aggregate_functions(self) -> list[dict]:
+            return []
+
         def introspect_catalog(self) -> dict:
             return build_catalog_snapshot(
                 dialect=self.dialect,

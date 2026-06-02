@@ -113,6 +113,10 @@ pub(crate) fn build_policy_resolution_actions(
 
     let mut actions = Vec::new();
     for (index, policy, applicability) in applicable {
+        if context.defer_policy_for_outer_limit || context.deferred_policy_indices.contains(&index)
+        {
+            continue;
+        }
         let cached_dimension_plan = store
             .compiled(index)
             .and_then(|entry| entry.dimension_join_plan.as_ref());

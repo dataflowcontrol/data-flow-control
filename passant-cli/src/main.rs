@@ -87,7 +87,12 @@ fn main() -> anyhow::Result<()> {
                     .context("failed to parse policy")?;
             }
             let ir = parse_query_to_ir(&sql).context("failed to parse SQL")?;
-            let mut explanation = PassantPlanner::new().explain_rewrite(&ir, &rewriter.policies());
+            let registry = rewriter.aggregate_registry().clone();
+            let mut explanation = PassantPlanner::new().explain_rewrite_with_registry(
+                &ir,
+                &rewriter.policies(),
+                &registry,
+            );
             if stats {
                 rewriter
                     .rewrite_with_options(

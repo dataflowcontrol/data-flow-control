@@ -4,7 +4,9 @@ use crate::diagnostics::RewriteError;
 use crate::policy_store::PolicyStore;
 use crate::sql::{case_when, duckdb_array, function_call, int_literal, is_not_null, null_literal};
 
-use super::expr::{first_function_expr, is_aggregate_name, parse_expr_or_identity};
+use crate::aggregate_registry::{AggregateClassification, AggregateRegistry};
+
+use super::expr::{first_function_expr, parse_expr_or_identity};
 
 /// Rewrite `avg(x)` to `sum(x) / count(x)` so semiring Full-Push can treat it as distributive.
 pub(crate) fn decompose_composed_aggregates(expr: Expr) -> Expr {
@@ -50,7 +52,7 @@ fn decompose_composed_aggregates_recursive(expr: Expr) -> Expr {
 
 fn decompose_composed_aggregate_function(function: Function) -> Expr {
     let name = function.name.to_string();
-    if name.eq_ignore_ascii_case("avg") {
+    if name.eq_ignore_ascii_case("avg") || name.eq_ignore_ascii_case("mean") {
         return avg_as_sum_over_count(function);
     }
     Expr::Function(decompose_composed_aggregate_function_args(function))
@@ -86,11 +88,14 @@ fn avg_as_sum_over_count(function: Function) -> Expr {
     }
 }
 
-pub(crate) fn transform_scan_aggregates(expr: Expr) -> Result<Expr, RewriteError> {
+pub(crate) fn transform_scan_aggregates(
+    expr: Expr,
+    registry: &AggregateRegistry,
+) -> Result<Expr, RewriteError> {
     if let Some(rewritten) = rewrite_count_distinct_equality(&expr)? {
         return Ok(rewritten);
     }
-    Ok(transform_scan_aggregates_recursive(expr))
+    Ok(transform_scan_aggregates_recursive(expr, registry))
 }
 
 fn rewrite_count_distinct_equality(expr: &Expr) -> Result<Option<Expr>, RewriteError> {
@@ -124,7 +129,7 @@ fn count_distinct_inner_column(expr: &Expr) -> Option<Expr> {
     first_function_expr(function)
 }
 
-fn transform_scan_aggregates_recursive(expr: Expr) -> Expr {
+fn transform_scan_aggregates_recursive(expr: Expr, registry: &AggregateRegistry) -> Expr {
     if let Expr::BinaryOp {
         left,
         op: BinaryOperator::Divide,
@@ -135,16 +140,18 @@ fn transform_scan_aggregates_recursive(expr: Expr) -> Expr {
         return expr;
     }
     match expr {
-        Expr::Function(function) => transform_scan_aggregate_function(function),
+        Expr::Function(function) => transform_scan_aggregate_function(function, registry),
         Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
-            left: Box::new(transform_scan_aggregates_recursive(*left)),
+            left: Box::new(transform_scan_aggregates_recursive(*left, registry)),
             op,
-            right: Box::new(transform_scan_aggregates_recursive(*right)),
+            right: Box::new(transform_scan_aggregates_recursive(*right, registry)),
         },
-        Expr::Nested(inner) => Expr::Nested(Box::new(transform_scan_aggregates_recursive(*inner))),
+        Expr::Nested(inner) => Expr::Nested(Box::new(transform_scan_aggregates_recursive(
+            *inner, registry,
+        ))),
         Expr::UnaryOp { op, expr } => Expr::UnaryOp {
             op,
-            expr: Box::new(transform_scan_aggregates_recursive(*expr)),
+            expr: Box::new(transform_scan_aggregates_recursive(*expr, registry)),
         },
         Expr::Case {
             operand,
@@ -152,17 +159,18 @@ fn transform_scan_aggregates_recursive(expr: Expr) -> Expr {
             results,
             else_result,
         } => Expr::Case {
-            operand: operand.map(|expr| Box::new(transform_scan_aggregates_recursive(*expr))),
+            operand: operand
+                .map(|expr| Box::new(transform_scan_aggregates_recursive(*expr, registry))),
             conditions: conditions
                 .into_iter()
-                .map(transform_scan_aggregates_recursive)
+                .map(|expr| transform_scan_aggregates_recursive(expr, registry))
                 .collect(),
             results: results
                 .into_iter()
-                .map(transform_scan_aggregates_recursive)
+                .map(|expr| transform_scan_aggregates_recursive(expr, registry))
                 .collect(),
             else_result: else_result
-                .map(|expr| Box::new(transform_scan_aggregates_recursive(*expr))),
+                .map(|expr| Box::new(transform_scan_aggregates_recursive(*expr, registry))),
         },
         other => other,
     }
@@ -185,11 +193,14 @@ fn is_sum_count_quotient(left: &Expr, right: &Expr) -> bool {
     }
 }
 
-fn transform_scan_aggregate_function(function: sqlparser::ast::Function) -> Expr {
+fn transform_scan_aggregate_function(
+    function: sqlparser::ast::Function,
+    registry: &AggregateRegistry,
+) -> Expr {
     let name = function.name.to_string();
     let lower = name.to_ascii_lowercase();
-    if lower == "avg" {
-        return transform_scan_aggregates_recursive(avg_as_sum_over_count(function));
+    if lower == "avg" || lower == "mean" {
+        return transform_scan_aggregates_recursive(avg_as_sum_over_count(function), registry);
     }
     if matches!(lower.as_str(), "count_if" | "countif") {
         if let Some(condition) = first_function_expr(&function) {
@@ -211,7 +222,13 @@ fn transform_scan_aggregate_function(function: sqlparser::ast::Function) -> Expr
         }
         return parse_expr_or_identity("1");
     }
-    if is_aggregate_name(&name) {
+    if matches!(
+        registry.classification(&lower),
+        AggregateClassification::DistributiveInline
+    ) {
+        return first_function_expr(&function).unwrap_or(Expr::Function(function));
+    }
+    if registry.is_scan_transformable(&lower) && !registry.is_semiring_distributive(&lower) {
         return first_function_expr(&function).unwrap_or(Expr::Function(function));
     }
     Expr::Function(function)
@@ -233,12 +250,11 @@ fn function_is_distinct(function: &sqlparser::ast::Function) -> bool {
     }
 }
 
-pub(crate) fn is_scan_transformable_non_distributive(aggregate: &str) -> bool {
-    let lower = aggregate.to_ascii_lowercase();
-    lower.contains("array_agg") || lower.contains("count_if") || lower.contains("countif")
-}
-
-pub(crate) fn finalize_policy_scan_ready(store: &mut PolicyStore, index: usize) {
+pub(crate) fn finalize_policy_scan_ready(
+    store: &mut PolicyStore,
+    index: usize,
+    registry: &AggregateRegistry,
+) {
     let Some(compiled) = store.compiled(index) else {
         return;
     };
@@ -251,8 +267,8 @@ pub(crate) fn finalize_policy_scan_ready(store: &mut PolicyStore, index: usize) 
     if super::policy_expr::is_count_distinct_cardinality_one_check(&constraint.ast) {
         return;
     }
-    if let Ok(scan_ready) = transform_scan_aggregates(constraint.ast.clone())
-        && !super::expr::expr_contains_aggregate(&scan_ready)
+    if let Ok(scan_ready) = transform_scan_aggregates(constraint.ast.clone(), registry)
+        && !registry.expr_contains_aggregate(&scan_ready)
     {
         store.set_scan_ready_expr(index, scan_ready);
     }
@@ -261,9 +277,11 @@ pub(crate) fn finalize_policy_scan_ready(store: &mut PolicyStore, index: usize) 
 #[cfg(test)]
 mod scan_ready_tests {
     use super::{decompose_composed_aggregates, finalize_policy_scan_ready};
+    use crate::aggregate_registry::AggregateRegistry;
     use crate::policy::{PolicyIr, Resolution};
     use crate::policy_store::PolicyStore;
     use crate::rewriter::expr::parse_expr_or_identity;
+    use crate::sql::SqlDialect;
 
     fn remove_policy(source: &str, constraint: &str) -> PolicyIr {
         PolicyIr::Pgn {
@@ -290,11 +308,29 @@ mod scan_ready_tests {
     }
 
     #[test]
+    fn decompose_mean_to_sum_over_count() {
+        let expr = parse_expr_or_identity("mean(foo.amount) > 100");
+        let decomposed = decompose_composed_aggregates(expr);
+        let sql = crate::sql::render_expr(&decomposed, None);
+        assert_eq!(sql, "sum(foo.amount) / count(foo.amount) > 100");
+    }
+
+    #[test]
+    fn mean_scan_transform_decomposes_to_sum_over_count() {
+        let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+        let expr = parse_expr_or_identity("mean(foo.amount)");
+        let transformed = super::transform_scan_aggregates(expr, &registry).unwrap();
+        let sql = crate::sql::render_expr(&transformed, None);
+        assert_eq!(sql, "sum(foo.amount) / count(foo.amount)");
+    }
+
+    #[test]
     fn finalize_policy_scan_ready_populates_scan_ready_expr() {
         let mut store = PolicyStore::default();
         let index = store.register(remove_policy("orders", "max(orders.amount) > 1"));
 
-        finalize_policy_scan_ready(&mut store, index);
+        let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+        finalize_policy_scan_ready(&mut store, index, &registry);
 
         assert!(store.scan_ready_expr(index).is_some());
     }

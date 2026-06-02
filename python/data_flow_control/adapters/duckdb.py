@@ -4,6 +4,7 @@ from typing import Any
 
 import duckdb
 
+from ..aggregate_introspection import introspect_duckdb_aggregates
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
 from .kill import python_kill
@@ -102,7 +103,11 @@ class DuckDBAdapter:
             default_schema="main",
             search_path=["main"],
             unique_columns=unique_columns,
+            aggregate_functions=self.introspect_aggregate_functions(),
         )
+
+    def introspect_aggregate_functions(self) -> list[dict]:
+        return introspect_duckdb_aggregates(self._conn)
 
     def _query_duckdb_columns(self) -> list | None:
         queries = (

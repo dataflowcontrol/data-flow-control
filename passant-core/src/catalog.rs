@@ -7,12 +7,15 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
-use sqlparser::ast::{Expr, Function, FunctionArguments, ObjectName};
+use sqlparser::ast::{Expr, FunctionArguments};
 
+use crate::aggregate_registry::{AggregateRegistry, function_name, normalize_name};
 use crate::diagnostics::{ErrorKind, RewriteError};
 use crate::identifiers::{ColumnName, QualifiedColumn, SinkName, SourceName, TableKey};
 use crate::policy::{PolicyIr, Resolution};
-use crate::policy_compile::{ParsedPolicyConstraint, parse_policy_constraint};
+use crate::policy_compile::{
+    ParsedPolicyConstraint, parse_policy_constraint, parse_policy_constraint_with_registry,
+};
 
 /// Catalog facts supplied at policy registration time (from any adapter snapshot).
 #[derive(Debug, Default, Clone)]
@@ -37,6 +40,8 @@ pub struct CatalogSnapshot {
     pub tables: HashMap<String, CatalogTableInfo>,
     #[serde(default)]
     pub unique_columns: Vec<[String; 2]>,
+    #[serde(default)]
+    pub aggregate_functions: Vec<crate::aggregate_registry::AggregateFunctionSnapshot>,
 }
 
 impl CatalogSnapshot {
@@ -167,7 +172,11 @@ impl TableCatalog {
         columns
     }
 
-    pub fn validate_policy(&self, policy: &PolicyIr) -> Result<(), RewriteError> {
+    pub fn validate_policy(
+        &self,
+        policy: &PolicyIr,
+        registry: &AggregateRegistry,
+    ) -> Result<(), RewriteError> {
         if !self.loaded {
             return Ok(());
         }
@@ -183,9 +192,10 @@ impl TableCatalog {
             on_fail,
             ..
         } = policy;
-        let parsed = parse_policy_constraint(constraint)?;
+        let parsed = parse_policy_constraint_with_registry(constraint, registry)?;
         validate_pgn_policy_parsed(
             self,
+            registry,
             sources,
             dimension_tables,
             dimension_aliases,
@@ -202,6 +212,7 @@ impl TableCatalog {
         &self,
         policy: &PolicyIr,
         parsed: &ParsedPolicyConstraint,
+        registry: &AggregateRegistry,
     ) -> Result<(), RewriteError> {
         if !self.loaded {
             return Ok(());
@@ -219,6 +230,7 @@ impl TableCatalog {
         } = policy;
         validate_pgn_policy_parsed(
             self,
+            registry,
             sources,
             dimension_tables,
             dimension_aliases,
@@ -227,7 +239,7 @@ impl TableCatalog {
             sink_alias.as_deref(),
             source_aliases,
             on_fail.clone(),
-            parsed,
+            &parsed,
         )
     }
 }
@@ -258,6 +270,7 @@ pub fn validate_constraint_expression(sql: &str, label: &str) -> Result<(), Rewr
 #[allow(clippy::too_many_arguments)]
 fn validate_pgn_policy_parsed(
     catalog: &TableCatalog,
+    registry: &AggregateRegistry,
     sources: &[String],
     dimension_tables: &[String],
     dimension_aliases: &HashMap<String, String>,
@@ -406,17 +419,17 @@ fn validate_pgn_policy_parsed(
             source_columns_in_sink_equality_expr(expr, &source_qualifier_names, &sink_names);
         let implicit_uniqueness_columns =
             implicit_uniqueness_source_columns_expr(expr, &source_qualifier_names);
-        let unaggregated =
-            unaggregated_source_columns_expr(expr, &source_qualifier_names, source_aliases)?
-                .into_iter()
-                .filter(|qualified| !is_catalog_unique_source_column(catalog, qualified))
-                .filter(|qualified| {
-                    !implicit_uniqueness_columns.contains(&qualified.to_ascii_lowercase())
-                })
-                .filter(|qualified| {
-                    !sink_equality_sources.contains(&qualified.to_ascii_lowercase())
-                })
-                .collect::<Vec<_>>();
+        let unaggregated = unaggregated_source_columns_expr(
+            expr,
+            registry,
+            &source_qualifier_names,
+            source_aliases,
+        )?
+        .into_iter()
+        .filter(|qualified| !is_catalog_unique_source_column(catalog, qualified))
+        .filter(|qualified| !implicit_uniqueness_columns.contains(&qualified.to_ascii_lowercase()))
+        .filter(|qualified| !sink_equality_sources.contains(&qualified.to_ascii_lowercase()))
+        .collect::<Vec<_>>();
         if !unaggregated.is_empty() {
             return Err(RewriteError::catalog_with_context(
                 ErrorKind::UnaggregatedSourceColumn,
@@ -700,29 +713,34 @@ fn column_value_comparison_source(
 
 fn unaggregated_source_columns_expr(
     expr: &Expr,
+    registry: &AggregateRegistry,
     source_qualifier_names: &HashSet<TableKey>,
     source_aliases: &HashMap<String, String>,
 ) -> Result<Vec<String>, RewriteError> {
     Ok(UnaggregatedSourceColumnCollector::collect(
         expr,
+        registry,
         source_qualifier_names,
         source_aliases,
     ))
 }
 
-struct UnaggregatedSourceColumnCollector {
+struct UnaggregatedSourceColumnCollector<'a> {
+    registry: &'a AggregateRegistry,
     source_qualifier_names: HashSet<TableKey>,
     found: Vec<String>,
     seen: HashSet<String>,
 }
 
-impl UnaggregatedSourceColumnCollector {
+impl<'a> UnaggregatedSourceColumnCollector<'a> {
     fn collect(
         expr: &Expr,
+        registry: &'a AggregateRegistry,
         source_qualifier_names: &HashSet<TableKey>,
         _source_aliases: &HashMap<String, String>,
     ) -> Vec<String> {
         let mut collector = Self {
+            registry,
             source_qualifier_names: source_qualifier_names.clone(),
             found: Vec::new(),
             seen: HashSet::new(),
@@ -732,13 +750,18 @@ impl UnaggregatedSourceColumnCollector {
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
-        self.visit_expr_with_context(expr, false);
+        self.visit_expr_with_context(expr, false, false);
     }
 
-    fn visit_expr_with_context(&mut self, expr: &Expr, inside_aggregate: bool) {
-        let next_inside = inside_aggregate || expr_is_aggregate(expr);
+    fn visit_expr_with_context(
+        &mut self,
+        expr: &Expr,
+        inside_aggregate: bool,
+        inside_row_level: bool,
+    ) {
+        let shielded = inside_aggregate || inside_row_level;
         if let Some(column) = QualifiedColumn::from_expr(expr)
-            && !next_inside
+            && !shielded
             && self
                 .source_qualifier_names
                 .contains(&TableKey::from_table(&column.table))
@@ -751,37 +774,87 @@ impl UnaggregatedSourceColumnCollector {
         }
         expr_visit_children(
             expr,
-            |child, inside| {
-                self.visit_expr_with_context(child, inside);
+            self.registry,
+            |child, inside_aggregate, inside_row_level| {
+                self.visit_expr_with_context(child, inside_aggregate, inside_row_level);
             },
-            next_inside,
+            inside_aggregate,
+            inside_row_level,
         );
     }
 }
 
-fn expr_visit_children(expr: &Expr, mut visit: impl FnMut(&Expr, bool), inside_aggregate: bool) {
+/// Built-in scalar functions that do not make source-column arguments row-level.
+fn is_known_scalar_builtin(name: &str) -> bool {
+    const KNOWN: &[&str] = &[
+        "abs",
+        "ceil",
+        "ceiling",
+        "char_length",
+        "coalesce",
+        "concat",
+        "date_trunc",
+        "day",
+        "extract",
+        "floor",
+        "greatest",
+        "ifnull",
+        "isnull",
+        "least",
+        "len",
+        "length",
+        "lower",
+        "ltrim",
+        "md5",
+        "month",
+        "nullif",
+        "nvl",
+        "octet_length",
+        "regexp_replace",
+        "replace",
+        "round",
+        "rtrim",
+        "sha256",
+        "sqrt",
+        "strpos",
+        "substr",
+        "substring",
+        "to_char",
+        "to_date",
+        "to_timestamp",
+        "trim",
+        "try_cast",
+        "upper",
+        "year",
+        "cast",
+    ];
+    let key = normalize_name(name);
+    KNOWN.iter().any(|builtin| key == *builtin)
+}
+
+fn expr_visit_children(
+    expr: &Expr,
+    registry: &AggregateRegistry,
+    mut visit: impl FnMut(&Expr, bool, bool),
+    inside_aggregate: bool,
+    inside_row_level: bool,
+) {
     match expr {
-        Expr::UnaryOp { expr, .. } => visit(expr, inside_aggregate),
+        Expr::UnaryOp { expr, .. } => visit(expr, inside_aggregate, inside_row_level),
         Expr::BinaryOp { left, right, .. } => {
-            visit(left, inside_aggregate);
-            visit(right, inside_aggregate);
+            visit(left, inside_aggregate, inside_row_level);
+            visit(right, inside_aggregate, inside_row_level);
         }
-        Expr::Nested(inner) => visit(inner, inside_aggregate),
-        Expr::Function(Function { args, .. }) => {
-            let inside = true;
-            match args {
-                FunctionArguments::None => {}
-                FunctionArguments::Subquery(_) => {}
-                FunctionArguments::List(list) => {
-                    for arg in &list.args {
-                        if let sqlparser::ast::FunctionArg::Unnamed(
-                            sqlparser::ast::FunctionArgExpr::Expr(inner),
-                        ) = arg
-                        {
-                            visit(inner, inside);
-                        }
-                    }
-                }
+        Expr::Nested(inner) => visit(inner, inside_aggregate, inside_row_level),
+        Expr::Function(function) => {
+            let name = function_name(function);
+            if registry.is_aggregate_call(function) {
+                visit_function_args(&function.args, &mut visit, true, false);
+            } else if is_known_scalar_builtin(&name) {
+                visit_function_args(&function.args, &mut visit, inside_aggregate, false);
+            } else {
+                // Extension / unknown scalars: arguments are row-level predicate inputs.
+                visit_function_args(&function.args, &mut visit, inside_aggregate, true);
             }
         }
         Expr::Case {
@@ -791,67 +864,72 @@ fn expr_visit_children(expr: &Expr, mut visit: impl FnMut(&Expr, bool), inside_a
             else_result,
         } => {
             if let Some(operand) = operand {
-                visit(operand, inside_aggregate);
+                visit(operand, inside_aggregate, inside_row_level);
             }
             for (condition, result) in conditions.iter().zip(results.iter()) {
-                visit(condition, inside_aggregate);
-                visit(result, inside_aggregate);
+                visit(condition, inside_aggregate, inside_row_level);
+                visit(result, inside_aggregate, inside_row_level);
             }
             if let Some(else_result) = else_result {
-                visit(else_result, inside_aggregate);
+                visit(else_result, inside_aggregate, inside_row_level);
             }
         }
-        Expr::InSubquery { expr, .. } | Expr::InList { expr, .. } => visit(expr, inside_aggregate),
+        Expr::InSubquery { expr, .. } | Expr::InList { expr, .. } => {
+            visit(expr, inside_aggregate, inside_row_level);
+        }
         Expr::Between {
             expr, low, high, ..
         } => {
-            visit(expr, inside_aggregate);
-            visit(low, inside_aggregate);
-            visit(high, inside_aggregate);
+            visit(expr, inside_aggregate, inside_row_level);
+            visit(low, inside_aggregate, inside_row_level);
+            visit(high, inside_aggregate, inside_row_level);
         }
-        Expr::IsNull(expr) | Expr::IsNotNull(expr) => visit(expr, inside_aggregate),
-        Expr::Cast { expr, .. } => visit(expr, inside_aggregate),
+        Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+            visit(expr, inside_aggregate, inside_row_level)
+        }
+        Expr::Cast { expr, .. } => visit(expr, inside_aggregate, inside_row_level),
         _ => {}
     }
 }
 
-fn expr_is_aggregate(expr: &Expr) -> bool {
-    matches!(expr, Expr::Function(function) if is_aggregate_name(&function_name(function)))
-}
-
-fn function_name(function: &Function) -> String {
-    match &function.name {
-        ObjectName(parts) => parts
-            .iter()
-            .map(|part| part.value.clone())
-            .collect::<Vec<_>>()
-            .join("."),
+fn visit_function_args(
+    args: &FunctionArguments,
+    visit: &mut impl FnMut(&Expr, bool, bool),
+    inside_aggregate: bool,
+    inside_row_level: bool,
+) {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr};
+    match args {
+        FunctionArguments::None | FunctionArguments::Subquery(_) => {}
+        FunctionArguments::List(list) => {
+            for arg in &list.args {
+                match arg {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                    | FunctionArg::Named {
+                        arg: FunctionArgExpr::Expr(expr),
+                        ..
+                    }
+                    | FunctionArg::ExprNamed {
+                        arg: FunctionArgExpr::Expr(expr),
+                        ..
+                    } => visit(expr, inside_aggregate, inside_row_level),
+                    _ => {}
+                }
+            }
+        }
     }
-}
-
-fn is_aggregate_name(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "sum"
-            | "count"
-            | "avg"
-            | "min"
-            | "max"
-            | "array_agg"
-            | "string_agg"
-            | "count_if"
-            | "countif"
-            | "list"
-            | "any_value"
-            | "bool_and"
-            | "bool_or"
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aggregate_registry::AggregateRegistry;
     use crate::policy::PolicyIr;
+    use crate::sql::SqlDialect;
+
+    fn sample_registry() -> AggregateRegistry {
+        AggregateRegistry::for_dialect(SqlDialect::DuckDb)
+    }
 
     fn sample_catalog() -> TableCatalog {
         let mut catalog = TableCatalog::new();
@@ -902,7 +980,9 @@ mod tests {
             on_fail: Resolution::Remove,
             description: None,
         };
-        let err = catalog.validate_policy(&policy).unwrap_err();
+        let err = catalog
+            .validate_policy(&policy, &sample_registry())
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnknownTable);
     }
 
@@ -922,7 +1002,9 @@ mod tests {
             on_fail: Resolution::Remove,
             description: None,
         };
-        let err = catalog.validate_policy(&policy).unwrap_err();
+        let err = catalog
+            .validate_policy(&policy, &sample_registry())
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnaggregatedSourceColumn);
     }
 
@@ -942,7 +1024,9 @@ mod tests {
             on_fail: Resolution::Remove,
             description: None,
         };
-        let err = catalog.validate_policy(&policy).unwrap_err();
+        let err = catalog
+            .validate_policy(&policy, &sample_registry())
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnknownColumn);
     }
 
@@ -966,7 +1050,7 @@ mod tests {
             description: None,
         };
         catalog
-            .validate_policy(&policy)
+            .validate_policy(&policy, &sample_registry())
             .expect("dimension alias column should validate");
     }
 
@@ -987,8 +1071,75 @@ mod tests {
             on_fail: Resolution::Remove,
             description: None,
         };
-        let err = catalog.validate_policy(&policy).unwrap_err();
+        let err = catalog
+            .validate_policy(&policy, &sample_registry())
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnknownColumn);
+    }
+
+    #[test]
+    fn accepts_median_aggregate_on_source() {
+        let catalog = sample_catalog();
+        let policy = PolicyIr::Pgn {
+            sources: vec!["foo".into()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "median(foo.id) > 10".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        catalog
+            .validate_policy(&policy, &sample_registry())
+            .expect("median should be recognized as aggregate");
+    }
+
+    #[test]
+    fn rejects_unaggregated_source_inside_scalar_function() {
+        let catalog = sample_catalog();
+        let policy = PolicyIr::Pgn {
+            sources: vec!["foo".into()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "abs(foo.id) > 10".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        let err = catalog
+            .validate_policy(&policy, &sample_registry())
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnaggregatedSourceColumn);
+    }
+
+    #[test]
+    fn accepts_row_level_extension_scalar_on_source_column() {
+        let mut catalog = sample_catalog();
+        catalog.register_table("docs", vec!["id".into(), "text".into()]);
+        let policy = PolicyIr::Pgn {
+            sources: vec!["docs".into()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: HashMap::new(),
+            constraint: "is_safe(docs.text)".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        catalog
+            .validate_policy(&policy, &sample_registry())
+            .expect("unknown scalar UDF args are row-level, not aggregate context");
     }
 
     #[test]
@@ -1010,7 +1161,7 @@ mod tests {
             description: None,
         };
         catalog
-            .validate_policy(&policy)
+            .validate_policy(&policy, &sample_registry())
             .expect("alias-qualified source column should validate");
     }
 }

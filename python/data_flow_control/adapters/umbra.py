@@ -4,7 +4,7 @@ from typing import Any
 
 from .base import Capabilities
 from .duckdb import quote_sql_identifier
-from .pg_catalog import introspect_pg_catalog
+from .pg_catalog import introspect_pg_aggregates, introspect_pg_catalog
 
 try:
     import psycopg
@@ -50,6 +50,12 @@ class UmbraAdapter:
 
     def introspect_catalog(self) -> dict:
         return introspect_pg_catalog(self._conn, dialect=self.dialect)
+
+    def introspect_aggregate_functions(self) -> list[dict]:
+        try:
+            return introspect_pg_aggregates(self._conn)
+        except Exception:
+            return []
 
     def close(self) -> None:
         self._conn.close()

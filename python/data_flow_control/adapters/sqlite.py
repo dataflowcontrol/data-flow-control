@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from ..aggregate_introspection import introspect_sqlite_aggregates
 from ..catalog import build_catalog_snapshot
 from .base import Capabilities
 from .duckdb import quote_sql_identifier
@@ -58,7 +59,15 @@ class SQLiteAdapter:
                 "columns": list(column_types.keys()),
                 "types": column_types,
             }
-        return build_catalog_snapshot(dialect=self.dialect, tables=tables, default_schema="main")
+        return build_catalog_snapshot(
+            dialect=self.dialect,
+            tables=tables,
+            default_schema="main",
+            aggregate_functions=self.introspect_aggregate_functions(),
+        )
+
+    def introspect_aggregate_functions(self) -> list[dict]:
+        return introspect_sqlite_aggregates(self._conn)
 
     def close(self) -> None:
         self._conn.close()

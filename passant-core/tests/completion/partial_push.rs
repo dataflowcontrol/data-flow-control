@@ -30,24 +30,24 @@ fn partial_push_limit_aggregation_aliases_outer_projection() {
         )],
     );
     assert!(
-        sql.contains("WITH base_query AS ("),
-        "expected base_query CTE: {sql}"
+        sql.contains("WITH __passant_partial AS ("),
+        "expected limit-first inner CTE: {sql}"
     );
     assert!(
-        sql.contains("policy_eval AS ("),
-        "expected policy_eval CTE: {sql}"
-    );
-    assert!(
-        sql.contains("cte AS ("),
-        "expected limit boundary CTE: {sql}"
+        sql.contains("GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 10"),
+        "expected limit inside inner CTE: {sql}"
     );
     assert!(
         sql.contains("sum_l_quantity"),
         "expected aggregate alias: {sql}"
     );
     assert!(
-        sql.contains("FROM cte WHERE"),
-        "expected outer filter after limit: {sql}"
+        sql.contains("FROM __passant_partial WHERE"),
+        "expected outer policy filter after limit: {sql}"
+    );
+    assert!(
+        sql.contains("__passant_filter_agg_"),
+        "expected hidden aggregate policy column: {sql}"
     );
 }
 
