@@ -19,6 +19,15 @@ use crate::sql::{
 
 pub(crate) const LIMITED_POLICY_CTE: &str = "__passant_limited";
 
+type OuterPolicyActionsResult = Result<
+    (
+        Vec<PolicyResolutionAction>,
+        Query,
+        HashMap<String, (Expr, String)>,
+    ),
+    RewriteError,
+>;
+
 pub(crate) fn wrap_limited_policy_query(
     rewriter: &PassantRewriter,
     query: &Query,
@@ -230,14 +239,7 @@ fn collect_outer_policy_actions(
     inner: Query,
     projected_names: HashSet<String>,
     registry: &crate::aggregate_registry::AggregateRegistry,
-) -> Result<
-    (
-        Vec<PolicyResolutionAction>,
-        Query,
-        HashMap<String, (Expr, String)>,
-    ),
-    RewriteError,
-> {
+) -> OuterPolicyActionsResult {
     let is_aggregation = select_is_aggregation(inner_select, registry);
     let mut outer_actions = Vec::new();
     let mut propagated_filter_columns = HashMap::new();

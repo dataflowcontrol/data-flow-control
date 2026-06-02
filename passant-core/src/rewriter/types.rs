@@ -176,15 +176,6 @@ impl Default for RewriteContext {
     }
 }
 
-impl RewriteContext {
-    pub(crate) fn from_rewriter(rewriter: &PassantRewriter) -> Self {
-        Self {
-            aggregate_registry: rewriter.aggregate_registry.clone(),
-            ..Default::default()
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PolicyApplicability {
     Normal,

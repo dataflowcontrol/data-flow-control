@@ -429,13 +429,12 @@ impl PassantRewriter {
             if subquery_only_policy {
                 handled.insert(policy_index);
             }
-            if let Some(PolicyIr::Pgn { sources, .. }) = self.store.policy(policy_index) {
-                if let Some(source) = sources
+            if let Some(PolicyIr::Pgn { sources, .. }) = self.store.policy(policy_index)
+                && let Some(source) = sources
                     .iter()
                     .find(|source| main_tables.contains(&TableKey::new(source)))
-                {
-                    join_key_qualifications.push((join_key_name.clone(), source.clone()));
-                }
+            {
+                join_key_qualifications.push((join_key_name.clone(), source.clone()));
             }
         }
 

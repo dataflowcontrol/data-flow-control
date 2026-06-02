@@ -39,7 +39,7 @@ def _introspect_information_schema(conn: Any, *, dialect: str) -> dict:
         ORDER BY table_schema, table_name, ordinal_position
         """
     )
-    return _snapshot_from_rows(cursor.fetchall(), dialect=dialect)
+    return _snapshot_from_rows(cursor.fetchall(), conn=conn, dialect=dialect)
 
 
 def _introspect_umbra_catalog(conn: Any) -> dict:
@@ -56,10 +56,10 @@ def _introspect_umbra_catalog(conn: Any) -> dict:
         ORDER BY n.nspname, c.relname, a.attnum
         """
     )
-    return _snapshot_from_rows(cursor.fetchall(), dialect="umbra")
+    return _snapshot_from_rows(cursor.fetchall(), conn=conn, dialect="umbra")
 
 
-def _snapshot_from_rows(rows: list[tuple], *, dialect: str) -> dict:
+def _snapshot_from_rows(rows: list[tuple], *, conn: Any, dialect: str) -> dict:
     tables: dict[str, dict] = {}
     for schema, table, column, data_type in rows:
         key = f"{schema}.{table}" if schema and schema != "public" else table

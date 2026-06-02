@@ -108,6 +108,7 @@ impl StatementAnalysis {
         analysis
     }
 
+    #[cfg(test)]
     pub(crate) fn from_statement_with_stats(
         statement: &Statement,
         stats: Option<&RewriteStatsCell>,

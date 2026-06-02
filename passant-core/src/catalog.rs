@@ -239,7 +239,7 @@ impl TableCatalog {
             sink_alias.as_deref(),
             source_aliases,
             on_fail.clone(),
-            &parsed,
+            parsed,
         )
     }
 }

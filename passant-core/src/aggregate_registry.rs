@@ -132,12 +132,11 @@ impl AggregateRegistry {
             return true;
         }
         let key = normalize_name(name);
-        if self.clickhouse_combinators {
-            if let Some(base) = clickhouse_combinator_base(&key) {
-                if self.lookup(&base).is_some() {
-                    return true;
-                }
-            }
+        if self.clickhouse_combinators
+            && let Some(base) = clickhouse_combinator_base(&key)
+            && self.lookup(&base).is_some()
+        {
+            return true;
         }
         false
     }
@@ -287,12 +286,11 @@ fn parse_source(value: Option<&str>) -> AggregateFunctionSource {
 impl AggregateRegistry {
     fn insert_snapshot(&mut self, snapshot: &AggregateFunctionSnapshot) {
         let name = normalize_name(&snapshot.name);
-        if snapshot.classification.is_none() {
-            if let Some(existing) = self.entries.get(&name) {
-                if existing.source == AggregateFunctionSource::Builtin {
-                    return;
-                }
-            }
+        if snapshot.classification.is_none()
+            && let Some(existing) = self.entries.get(&name)
+            && existing.source == AggregateFunctionSource::Builtin
+        {
+            return;
         }
         let classification = match snapshot.classification.as_deref() {
             Some(_) => parse_classification(snapshot.classification.as_deref()),

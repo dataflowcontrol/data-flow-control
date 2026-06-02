@@ -392,11 +392,7 @@ fn build_parent_having_predicate(
     };
     let agg_name = function.name.to_string();
     let metric = qualified_column(derived_alias, hidden_alias);
-    let parent_metric = if agg_name.eq_ignore_ascii_case("count") {
-        function_call(&agg_name, vec![metric])
-    } else {
-        function_call(&agg_name, vec![metric])
-    };
+    let parent_metric = function_call(&agg_name, vec![metric]);
     let rhs = parse_expr(&threshold)?;
     Ok(binary_comparison(parent_metric, op_from_str(op), rhs))
 }
