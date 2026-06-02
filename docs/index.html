@@ -3,413 +3,50 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Data Flow Control with Passant</title>
+    <title>Install Data Flow Control</title>
     <meta
       name="description"
-      content="A one-page introduction to Data Flow Control and Passant, the Python API for enforcing PGN policies through SQL rewriting."
+      content="Install the data-flow-control Python package and learn why it helps keep data use safe."
     />
-    <style>
-      :root {
-        color-scheme: light;
-        --bg: #fbfbf8;
-        --surface: #ffffff;
-        --ink: #18201d;
-        --muted: #59635f;
-        --line: #dfe5df;
-        --accent: #007a5a;
-        --accent-strong: #005f47;
-        --accent-soft: #e4f4ee;
-        --code: #111816;
-        --code-line: #2b3531;
-        --warn: #b94f1a;
-        --shadow: 0 18px 60px rgba(25, 35, 31, 0.09);
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      html {
-        scroll-behavior: smooth;
-      }
-
-      body {
-        margin: 0;
-        background: var(--bg);
-        color: var(--ink);
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-          sans-serif;
-        line-height: 1.6;
-      }
-
-      a {
-        color: var(--accent-strong);
-        text-decoration-thickness: 0.08em;
-        text-underline-offset: 0.18em;
-      }
-
-      header {
-        border-bottom: 1px solid var(--line);
-        background:
-          linear-gradient(90deg, rgba(0, 122, 90, 0.08), transparent 65%),
-          var(--surface);
-      }
-
-      nav,
-      main,
-      .hero-inner,
-      footer {
-        width: min(1120px, calc(100% - 40px));
-        margin: 0 auto;
-      }
-
-      nav {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 24px;
-        padding: 18px 0;
-        font-size: 0.94rem;
-      }
-
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        color: var(--ink);
-        font-weight: 740;
-        text-decoration: none;
-      }
-
-      .mark {
-        width: 28px;
-        height: 28px;
-        border: 2px solid var(--accent);
-        display: grid;
-        place-items: center;
-        color: var(--accent);
-        font-size: 0.82rem;
-        font-weight: 800;
-      }
-
-      .nav-links {
-        display: flex;
-        gap: 18px;
-        flex-wrap: wrap;
-      }
-
-      .nav-links a {
-        color: var(--muted);
-        text-decoration: none;
-      }
-
-      .hero {
-        padding: 76px 0 50px;
-      }
-
-      .eyebrow {
-        margin: 0 0 12px;
-        color: var(--accent-strong);
-        font-size: 0.82rem;
-        font-weight: 800;
-        letter-spacing: 0;
-        text-transform: uppercase;
-      }
-
-      h1,
-      h2,
-      h3 {
-        line-height: 1.12;
-        letter-spacing: 0;
-      }
-
-      h1 {
-        max-width: 780px;
-        margin: 0;
-        font-size: clamp(2.6rem, 6vw, 5.5rem);
-      }
-
-      h2 {
-        margin: 0 0 16px;
-        font-size: clamp(1.75rem, 3vw, 2.65rem);
-      }
-
-      h3 {
-        margin: 0 0 10px;
-        font-size: 1.22rem;
-      }
-
-      p {
-        margin: 0 0 18px;
-      }
-
-      .lede {
-        max-width: 720px;
-        margin-top: 22px;
-        color: var(--muted);
-        font-size: 1.13rem;
-      }
-
-      .actions {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        margin-top: 30px;
-        flex-wrap: wrap;
-      }
-
-      .button {
-        display: inline-flex;
-        min-height: 44px;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        border: 1px solid var(--accent);
-        background: var(--accent);
-        color: #ffffff;
-        padding: 10px 16px;
-        font-weight: 760;
-        text-decoration: none;
-      }
-
-      .button.secondary {
-        background: transparent;
-        color: var(--accent-strong);
-      }
-
-      section {
-        padding: 56px 0;
-        border-top: 1px solid var(--line);
-      }
-
-      .intro {
-        display: grid;
-        grid-template-columns: minmax(0, 0.75fr) minmax(280px, 0.25fr);
-        gap: 34px;
-        align-items: start;
-      }
-
-      .fact-list {
-        display: grid;
-        gap: 10px;
-        margin: 0;
-        padding: 0;
-        list-style: none;
-      }
-
-      .fact-list li {
-        border-left: 3px solid var(--accent);
-        background: var(--surface);
-        padding: 12px 14px;
-      }
-
-      .install-block,
-      .example {
-        background: var(--surface);
-        border: 1px solid var(--line);
-        box-shadow: var(--shadow);
-      }
-
-      .install-block {
-        margin-top: 20px;
-      }
-
-      .code-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 16px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-        background: var(--code);
-        color: #d8e2dc;
-        padding: 11px 14px;
-        font-size: 0.86rem;
-      }
-
-      .copy {
-        min-width: 76px;
-        border: 1px solid #607069;
-        background: transparent;
-        color: #ffffff;
-        padding: 6px 10px;
-        font: inherit;
-        cursor: pointer;
-      }
-
-      .copy:focus-visible,
-      .button:focus-visible,
-      a:focus-visible {
-        outline: 3px solid rgba(0, 122, 90, 0.35);
-        outline-offset: 3px;
-      }
-
-      pre {
-        margin: 0;
-        overflow-x: auto;
-        background: var(--code);
-        color: #f2faf5;
-        padding: 18px;
-        line-height: 1.5;
-      }
-
-      code {
-        font-family:
-          "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
-        font-size: 0.92rem;
-      }
-
-      p code,
-      li code {
-        background: #edf3ef;
-        color: #0d4f3d;
-        padding: 0.15em 0.32em;
-      }
-
-      .examples {
-        display: grid;
-        gap: 28px;
-      }
-
-      .example {
-        display: grid;
-        grid-template-columns: minmax(260px, 0.34fr) minmax(0, 0.66fr);
-        align-items: stretch;
-      }
-
-      .example-copy {
-        padding: 24px;
-        border-right: 1px solid var(--line);
-      }
-
-      .example-copy p {
-        color: var(--muted);
-      }
-
-      .tag {
-        display: inline-flex;
-        align-items: center;
-        min-height: 26px;
-        background: var(--accent-soft);
-        color: var(--accent-strong);
-        padding: 3px 8px;
-        font-size: 0.76rem;
-        font-weight: 800;
-        text-transform: uppercase;
-        margin-bottom: 14px;
-      }
-
-      .note {
-        color: var(--muted);
-        font-size: 0.94rem;
-      }
-
-      .note strong {
-        color: var(--warn);
-      }
-
-      footer {
-        padding: 34px 0 54px;
-        color: var(--muted);
-        font-size: 0.94rem;
-      }
-
-      @media (max-width: 860px) {
-        nav,
-        main,
-        .hero-inner,
-        footer {
-          width: min(100% - 28px, 1120px);
-        }
-
-        nav {
-          align-items: flex-start;
-          flex-direction: column;
-        }
-
-        .hero {
-          padding-top: 44px;
-        }
-
-        .intro,
-        .example {
-          grid-template-columns: 1fr;
-        }
-
-        .example-copy {
-          border-right: 0;
-          border-bottom: 1px solid var(--line);
-        }
-
-      }
-    </style>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header>
       <nav aria-label="Primary">
-        <a class="brand" href="#">
-          <span class="mark">DFC</span>
-          <span>Passant</span>
+        <a class="brand" href="index.html">
+          <img class="brand-logo" src="assets/dfc-logo.png" alt="DFC logo" />
+          <span>Data Flow Control</span>
         </a>
         <div class="nav-links">
-          <a href="#install">Install</a>
-          <a href="#examples">Examples</a>
+          <a href="index.html" aria-current="page">Install</a>
+          <a href="examples.html">Examples</a>
+          <a href="documentation.html">Documentation</a>
           <a href="https://github.com/reallocf/data-flow-control">GitHub</a>
-          <a href="https://pypi.org/project/data-flow-control/">PyPI</a>
         </div>
       </nav>
       <div class="hero">
         <div class="hero-inner">
-          <div>
-            <p class="eyebrow">Deterministic policy enforcement for agent data flows</p>
-            <h1>Data Flow Control with Passant</h1>
-            <p class="lede">
-              Data Flow Control (DFC) lets applications express policies over how database
-              records may be derived, transformed, aggregated, and written. Passant enforces
-              those policies by rewriting SQL before it runs, so agents can keep using useful
-              data while the database layer rejects unsafe flows.
-            </p>
-            <div class="actions">
-              <a class="button" href="#install">Install</a>
-              <a class="button secondary" href="#examples">See the API</a>
-            </div>
+          <p class="eyebrow">Install</p>
+          <h1>Control how agents use data.</h1>
+          <p class="lede">
+            Data Flow Control lets applications enforce rules over how records are combined,
+            aggregated, released, and written. Use it to keep agent outputs private, grounded, and
+            compliant while still allowing useful database work.
+          </p>
+          <div class="actions">
+            <a class="button" href="#install">Install package</a>
+            <a class="button secondary" href="examples.html">See examples</a>
+            <a class="button secondary" href="documentation.html">Read docs</a>
           </div>
         </div>
       </div>
     </header>
 
     <main>
-      <section id="overview">
-        <div class="intro">
-          <div>
-            <h2>Why DFC</h2>
-            <p>
-              Access control can decide whether an agent may read a table, but many safety
-              requirements depend on what the agent does after reading it. A tax agent may need
-              receipt data to prepare deductions, but every inserted expense should be grounded in
-              an actual receipt and comply with deduction rules. A reporting agent may read
-              sensitive rows, but public outputs should aggregate across enough users before
-              release.
-            </p>
-            <p>
-              DFC policies describe these derivation rules in PGN. Passant registers the policies
-              on a wrapped database connection and transforms SQL so policy checks run with the
-              query itself. Violating rows can be removed with <code>ON FAIL REMOVE</code>, while
-              severe violations can abort with <code>ON FAIL KILL</code>.
-            </p>
-          </div>
-          <ul class="fact-list" aria-label="Passant capabilities">
-            <li><strong>Policy language:</strong> PGN source, sink, dimension, constraint, and resolution clauses.</li>
-            <li><strong>Engine:</strong> Rust-backed SQL rewriting exposed through a Python API.</li>
-            <li><strong>Backends:</strong> DuckDB first, with adapters for SQLite, PostgreSQL, ClickHouse, DataFusion, and Umbra.</li>
-          </ul>
-        </div>
-      </section>
-
-      <section id="install">
+      <section id="install" class="tight-section">
         <h2>Install</h2>
         <p class="note">
-          Install the published Python package, then import <code>passant</code> in your code.
+          Install the Python package from PyPI.
         </p>
         <div class="install-block">
           <div class="code-head">
@@ -420,249 +57,40 @@
         </div>
       </section>
 
-      <section id="examples">
-        <h2>Examples</h2>
-        <div class="examples">
-          <article class="example">
-            <div class="example-copy">
-              <span class="tag">Law-abiding</span>
-              <h3>Remove deductions that violate tax rules</h3>
-              <p>
-                This policy applies when a query derives <code>Expenses</code> from
-                <code>Receipts</code>. Meal expenses with business use above 50 percent fail the
-                constraint and are removed from the insert.
-              </p>
-            </div>
-            <div>
-              <div class="code-head">
-                <span>Python</span>
-                <button class="copy" type="button" data-copy-target="law-code">Copy</button>
-              </div>
-              <pre><code id="law-code">import duckdb
-from passant import Policy, dfc
-
-raw = duckdb.connect()
-conn = dfc(raw)
-
-conn.execute("CREATE TABLE Receipts (id INTEGER, biz_use INTEGER, cat VARCHAR)")
-conn.execute("CREATE TABLE Expenses (id INTEGER, biz_use INTEGER, cat VARCHAR)")
-conn.execute("""
-    INSERT INTO Receipts VALUES
-    (1, 80, 'Meal'),
-    (2, 30, 'Meal'),
-    (3, 80, 'Travel')
-""")
-
-conn.register_policy(
-    Policy.from_pgn("""
-        SOURCE Receipts SINK Expenses
-        CONSTRAINT Expenses.biz_use <= 50 OR Receipts.cat != 'Meal'
-        ON FAIL REMOVE
-    """)
-)
-
-conn.execute("""
-    INSERT INTO Expenses (id, biz_use, cat)
-    SELECT Receipts.id, Receipts.biz_use, Receipts.cat
-    FROM Receipts
-""")
-
-rows = conn.fetchall("SELECT id, biz_use, cat FROM Expenses ORDER BY id")
-assert rows == [(2, 30, "Meal"), (3, 80, "Travel")]</code></pre>
-            </div>
-          </article>
-
-          <article class="example">
-            <div class="example-copy">
-              <span class="tag">Private</span>
-              <h3>Only release aggregates over multiple users</h3>
-              <p>
-                Public reports should not expose a statistic derived from one user. This policy
-                keeps output groups only when more than one distinct receipt owner contributed, or
-                when a one-row current-user dimension says the session is admin.
-              </p>
-            </div>
-            <div>
-              <div class="code-head">
-                <span>Python</span>
-                <button class="copy" type="button" data-copy-target="privacy-code">Copy</button>
-              </div>
-              <pre><code id="privacy-code">import duckdb
-from passant import Policy, dfc
-
-raw = duckdb.connect()
-conn = dfc(raw)
-
-conn.execute("CREATE TABLE Receipts (uid INTEGER, cat VARCHAR, amount INTEGER)")
-conn.execute("CREATE TABLE CurrentUser (is_admin BOOLEAN)")
-conn.execute("""
-    INSERT INTO Receipts VALUES
-    (1, 'Meal', 25),
-    (2, 'Meal', 40),
-    (3, 'Travel', 180)
-""")
-conn.execute("INSERT INTO CurrentUser VALUES (FALSE)")
-
-conn.register_policy(
-    Policy.from_pgn("""
-        SOURCE Receipts
-        DIMENSION CurrentUser
-        CONSTRAINT count(distinct Receipts.uid) > 1
-            OR max(CurrentUser.is_admin)
-        ON FAIL REMOVE
-    """)
-)
-
-rows = conn.fetchall("""
-    SELECT cat, SUM(amount) AS total
-    FROM Receipts
-    GROUP BY cat
-    ORDER BY cat
-""")
-
-assert rows == [("Meal", 65)]</code></pre>
-            </div>
-          </article>
-
-          <article class="example">
-            <div class="example-copy">
-              <span class="tag">Grounded</span>
-              <h3>Abort fabricated writes</h3>
-              <p>
-                <code>SOURCE REQUIRED</code> means writes into the sink must actually query the
-                source. Here, every inserted expense must be derived from a receipt with the same
-                id. A fabricated expense aborts the query.
-              </p>
-            </div>
-            <div>
-              <div class="code-head">
-                <span>Python</span>
-                <button class="copy" type="button" data-copy-target="grounded-code">Copy</button>
-              </div>
-              <pre><code id="grounded-code">import duckdb
-from passant import Policy, dfc
-
-raw = duckdb.connect()
-conn = dfc(raw)
-
-conn.execute("CREATE TABLE Receipts (id INTEGER, item VARCHAR)")
-conn.execute("CREATE TABLE Expenses (id INTEGER, item VARCHAR)")
-conn.execute("INSERT INTO Receipts VALUES (1, 'coffee')")
-
-conn.register_policy(
-    Policy.from_pgn("""
-        SOURCE REQUIRED Receipts SINK Expenses
-        CONSTRAINT Receipts.id = Expenses.id
-        ON FAIL KILL
-    """)
-)
-
-conn.execute("""
-    INSERT INTO Expenses (id, item)
-    SELECT Receipts.id, Receipts.item
-    FROM Receipts
-""")
-
-try:
-    conn.execute("""
-        INSERT INTO Expenses (id, item)
-        SELECT 99, 'phantom'
-        FROM Receipts
-    """)
-except Exception as exc:
-    print(f"Blocked fabricated expense: {exc}")</code></pre>
-            </div>
-          </article>
-
-          <article class="example">
-            <div class="example-copy">
-              <span class="tag">Flock extension</span>
-              <h3>Use models only for targeted classification</h3>
-              <p>
-                DFC does not ask a model to decide whether the whole data flow is safe. Instead,
-                the policy can call a narrowly scoped SQL function in <code>CONSTRAINT</code>, such
-                as Flock <code>llm_filter</code>, and keep the rest of the policy deterministic.
-              </p>
-              <p class="note">
-                <strong>Note:</strong> Passant does not ship a built-in <code>LLM(...)</code>
-                function. Install the
-                <a href="https://duckdb.org/community_extensions/extensions/flock">Flock</a>
-                DuckDB extension and use its scalar functions in policy constraints. Optional
-                execution tests require <code>OPENAI_API_KEY</code> or
-                <code>FLOCK_OPENAI_API_KEY</code>.
-              </p>
-            </div>
-            <div>
-              <div class="code-head">
-                <span>Python</span>
-                <button class="copy" type="button" data-copy-target="llm-code">Copy</button>
-              </div>
-              <pre><code id="llm-code">import duckdb
-from passant import Policy, Resolution, dfc
-
-raw = duckdb.connect()
-raw.execute("INSTALL flock FROM community")
-raw.execute("LOAD flock")
-
-conn = dfc(raw)
-conn.execute("CREATE TABLE Receipts (id INTEGER, biz_use INTEGER, cat VARCHAR)")
-conn.execute("CREATE TABLE Expenses (id INTEGER, biz_use INTEGER, cat VARCHAR)")
-conn.execute("""
-    INSERT INTO Receipts VALUES
-    (1, 80, 'client dinner'),
-    (2, 30, 'client dinner'),
-    (3, 80, 'taxi')
-""")
-
-conn.register_policy(
-    Policy.from_pgn("""
-        SOURCE Receipts SINK Expenses
-        CONSTRAINT llm_filter(
-            {'model_name': 'default'},
-            {'prompt': 'Is this a meal?', 'context_columns': [{'data': Receipts.cat}]}
-        ) OR Expenses.biz_use <= 50
-        ON FAIL REMOVE
-    """)
-)
-
-conn.execute("""
-    INSERT INTO Expenses (id, biz_use, cat)
-    SELECT Receipts.id, Receipts.biz_use, Receipts.cat
-    FROM Receipts
-""")
-
-rows = conn.fetchall("SELECT id, biz_use, cat FROM Expenses ORDER BY id")
-assert rows == [(2, 30, "client dinner"), (3, 80, "taxi")]</code></pre>
-            </div>
-          </article>
-        </div>
+      <section>
+        <h2>Why DFC</h2>
+        <p>
+          Many important safety policies are about data flows. A released statistic needs
+          to aggregate across at least K users. Education reports need to keep protected
+          groups separate while suppressing groups that are too small. Financial systems need
+          to stop sensitive information from crossing internal barriers. Accounting
+          systems need every inserted expense to come from an actual receipt rather than a
+          value that merely looks plausible.
+        </p>
+        <p>
+          Existing guardrails are poorly matched to those requirements. Prompt rules ask the
+          same unreliable agent to police itself. Access control can block data entirely, but
+          cannot allow useful computation while restricting particular combinations or outputs.
+          Input and output filters see only the edges of a request; they cannot prove
+          which records contributed to a result or whether a new row was derived correctly.
+        </p>
+        <p>
+          DFC fills the gap with deterministic checks over derivations: the path from input
+          records through transformations, joins, aggregations, releases, and writes. Unsafe
+          rows are filtered, blocked, or fixed before they become part of an answer or a database
+          update.
+        </p>
+        <h2>Papers</h2>
+        <p>
+          <a href="https://www.vldb.org/cidrdb/2026/please-dont-kill-my-vibe-empowering-agents-with-data-flow-control.html">
+            Please Don't Kill My Vibe: Empowering Agents with Data Flow Control
+          </a>
+          <br />
+          CIDR 2026
+        </p>
       </section>
     </main>
 
-    <footer>
-      <p>
-        Passant is part of the
-        <a href="https://github.com/reallocf/data-flow-control">data-flow-control</a>
-        project. For research context, see
-        <a href="https://arxiv.org/abs/2512.05374">Please Don't Kill My Vibe: Empowering Agents with Data Flow Control</a>.
-      </p>
-    </footer>
-
-    <script>
-      for (const button of document.querySelectorAll(".copy")) {
-        button.addEventListener("click", async () => {
-          const targetId = button.getAttribute("data-copy-target");
-          const text = targetId
-            ? document.getElementById(targetId).innerText
-            : button.getAttribute("data-copy");
-          await navigator.clipboard.writeText(text);
-          const original = button.innerText;
-          button.innerText = "Copied";
-          window.setTimeout(() => {
-            button.innerText = original;
-          }, 1300);
-        });
-      }
-    </script>
+    <script src="site.js"></script>
   </body>
 </html>
