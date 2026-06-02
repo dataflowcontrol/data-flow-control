@@ -16,18 +16,26 @@ jobs:
     strategy:
       matrix:
         platform:
+          # Native x86_64: build on the runner (no quay.io Docker pull).
+          # --compatibility pypi tags wheels for PyPI from host glibc (2.35 on 22.04).
           - runner: ubuntu-22.04
             target: x86_64
+            container: off
           - runner: ubuntu-22.04
             target: x86
+            manylinux: 2_28
           - runner: ubuntu-22.04
             target: aarch64
+            manylinux: 2_28
           - runner: ubuntu-22.04
             target: armv7
+            manylinux: 2_28
           - runner: ubuntu-22.04
             target: s390x
+            manylinux: 2_28
           - runner: ubuntu-22.04
             target: ppc64le
+            manylinux: 2_28
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +49,8 @@ jobs:
           working-directory: passant
           target: ${{ matrix.platform.target }}
           args: --release --locked --out dist --compatibility pypi
-          manylinux: auto
+          manylinux: ${{ matrix.platform.manylinux || '2_28' }}
+          container: ${{ matrix.platform.container == 'off' && 'off' || '' }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
