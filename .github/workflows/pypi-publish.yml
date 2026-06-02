@@ -16,11 +16,10 @@ jobs:
     strategy:
       matrix:
         platform:
-          # Native x86_64: build on the runner (no quay.io Docker pull).
-          # --compatibility pypi tags wheels for PyPI from host glibc (2.35 on 22.04).
           - runner: ubuntu-22.04
             target: x86_64
-            container: off
+            manylinux: 2_28
+            manylinux_image: quay.io/pypa/manylinux_2_28_x86_64:latest
           - runner: ubuntu-22.04
             target: x86
             manylinux: 2_28
@@ -43,6 +42,22 @@ jobs:
         with:
           python-version: "3.9"
 
+      # Host glibc on ubuntu-22.04 is too new for manylinux_2_28; build inside the image.
+      # Pre-pull with retries to survive transient quay.io timeouts.
+      - name: Pull manylinux image
+        if: matrix.platform.manylinux_image != ''
+        env:
+          DOCKER_CLIENT_TIMEOUT: 300
+          COMPOSE_HTTP_TIMEOUT: 300
+        run: |
+          image="${{ matrix.platform.manylinux_image }}"
+          for attempt in 1 2 3 4 5; do
+            echo "Pull attempt $attempt: $image"
+            docker pull "$image" && exit 0
+            sleep $((attempt * 20))
+          done
+          exit 1
+
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -50,7 +65,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --locked --out dist --compatibility pypi
           manylinux: ${{ matrix.platform.manylinux || '2_28' }}
-          container: ${{ matrix.platform.container == 'off' && 'off' || '' }}
+          container: ${{ matrix.platform.manylinux_image }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
