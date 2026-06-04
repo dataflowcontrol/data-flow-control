@@ -1,0 +1,63 @@
+name: Passant
+
+on:
+  push:
+    paths:
+      - "passant/**"
+      - ".github/workflows/passant.yml"
+  pull_request:
+    paths:
+      - "passant/**"
+      - ".github/workflows/passant.yml"
+
+defaults:
+  run:
+    working-directory: passant
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: passant
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: passant
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Build Python extension
+        run: uv run maturin develop --release
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Pytest
+        run: uv run pytest

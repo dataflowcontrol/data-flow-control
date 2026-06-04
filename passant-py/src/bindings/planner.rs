@@ -1,0 +1,230 @@
+use std::collections::HashMap;
+
+use passant_core::{PassantPlanner, PassantRewriter, PolicyIr, parse_query, parse_query_to_ir};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use serde::Deserialize;
+
+use super::errors::map_rewrite_error;
+use super::policy::parse_resolution;
+use super::stats::{PyRewriteStats, PyStatementRewriteSummary};
+
+#[pyclass(module = "data_flow_control._passant")]
+pub struct PyPlanner {
+    pub rewriter: PassantRewriter,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PolicySpec {
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub required_sources: Vec<String>,
+    #[serde(default, alias = "dimensions")]
+    pub dimensions: Vec<String>,
+    #[serde(default)]
+    pub dimension_aliases: HashMap<String, String>,
+    #[serde(default)]
+    pub dimension_queries: HashMap<String, String>,
+    pub sink: Option<String>,
+    pub sink_alias: Option<String>,
+    #[serde(default)]
+    pub source_aliases: HashMap<String, String>,
+    pub constraint: String,
+    pub on_fail: String,
+    pub description: Option<String>,
+}
+
+#[pymethods]
+impl PyPlanner {
+    #[new]
+    fn new() -> Self {
+        Self {
+            rewriter: PassantRewriter::new(),
+        }
+    }
+
+    fn transform_query(&self, query: String) -> PyResult<String> {
+        if !self.rewriter.has_registered_policies() {
+            return Ok(query);
+        }
+        self.rewriter.rewrite(&query).map_err(map_rewrite_error)
+    }
+
+    fn register_policy_specs(&mut self, policies_json: String) -> PyResult<()> {
+        for policy in parse_policy_specs(&policies_json)? {
+            self.rewriter
+                .register_validated_policy(policy)
+                .map_err(map_rewrite_error)?;
+        }
+        Ok(())
+    }
+
+    fn sync_catalog(&mut self, catalog_json: String) -> PyResult<()> {
+        let snapshot = super::catalog::deserialize_catalog_snapshot(&catalog_json)?;
+        self.rewriter.apply_catalog_snapshot(snapshot);
+        Ok(())
+    }
+
+    #[pyo3(signature = (name, schema=None, classification=None))]
+    fn register_aggregate_function_name(
+        &mut self,
+        name: String,
+        schema: Option<String>,
+        classification: Option<String>,
+    ) -> PyResult<()> {
+        let classification = classification
+            .as_deref()
+            .and_then(|value| value.parse::<passant_core::AggregateClassification>().ok())
+            .unwrap_or(passant_core::AggregateClassification::UnknownCustomAggregate);
+        self.rewriter
+            .register_aggregate_function_name(name, schema, classification);
+        Ok(())
+    }
+
+    #[pyo3(signature = (sources=None, sink=None, constraint=None, on_fail=None, description=None))]
+    fn delete_policy(
+        &mut self,
+        sources: Option<Vec<String>>,
+        sink: Option<String>,
+        constraint: Option<String>,
+        on_fail: Option<String>,
+        description: Option<String>,
+    ) -> PyResult<bool> {
+        let on_fail = on_fail.as_deref().map(parse_resolution).transpose()?;
+        Ok(self.rewriter.delete_policy(
+            sources.as_deref(),
+            sink.as_deref(),
+            constraint.as_deref(),
+            on_fail,
+            description.as_deref(),
+        ))
+    }
+
+    #[pyo3(signature = (query, use_partial_push=false, collect_stats=false, dialect=None, ui_stream_endpoint=None, ui_update_mode=None))]
+    fn transform_registered(
+        &self,
+        query: String,
+        use_partial_push: bool,
+        collect_stats: bool,
+        dialect: Option<String>,
+        ui_stream_endpoint: Option<String>,
+        ui_update_mode: Option<String>,
+    ) -> PyResult<String> {
+        let parse_dialect = dialect
+            .as_deref()
+            .and_then(|value| value.parse::<passant_core::SqlDialect>().ok());
+        let options = passant_core::RewriteOptions {
+            use_partial_push,
+            collect_stats,
+            parse_dialect,
+            ui_stream_endpoint,
+            ui_update_mode: parse_ui_update_mode(ui_update_mode.as_deref())?,
+        };
+        self.rewriter
+            .rewrite_with_options(&query, options)
+            .map_err(map_rewrite_error)
+    }
+
+    fn last_rewrite_stats(&self) -> PyRewriteStats {
+        self.rewriter.last_rewrite_stats().into()
+    }
+
+    fn last_ui_followup_sql(&self) -> Option<String> {
+        self.rewriter.last_ui_followup_sql()
+    }
+
+    fn last_statement_rewrite_summary(&self) -> PyStatementRewriteSummary {
+        self.rewriter.last_statement_rewrite_summary().into()
+    }
+
+    fn explain_rewrite_registered(&self, query: String) -> PyResult<String> {
+        self.explain_rewrite_registered_with_options(query, false)
+    }
+
+    fn policies_json(&self) -> PyResult<String> {
+        serde_json::to_string_pretty(&self.rewriter.policies())
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    fn has_registered_policies(&self) -> bool {
+        self.rewriter.has_registered_policies()
+    }
+
+    fn explain_rewrite(&self, query: String) -> PyResult<String> {
+        let ir = parse_query_to_ir(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let explanation = PassantPlanner::new().explain_rewrite(&ir, &[]);
+        serde_json::to_string_pretty(&explanation)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+}
+
+impl PyPlanner {
+    fn explain_rewrite_registered_with_options(
+        &self,
+        query: String,
+        include_stats: bool,
+    ) -> PyResult<String> {
+        let ir = parse_query_to_ir(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let policies = self.rewriter.policies();
+        let registry = self.rewriter.aggregate_registry().clone();
+        let mut explanation =
+            PassantPlanner::new().explain_rewrite_with_registry(&ir, &policies, &registry);
+        let statement =
+            parse_query(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let statement_plan = self.rewriter.plan_statement_summary(&statement);
+        explanation.policy_plan = Some(statement_plan.aggregate());
+        explanation.statement_plan = Some(statement_plan);
+        if include_stats {
+            let options = passant_core::RewriteOptions {
+                collect_stats: true,
+                ..passant_core::RewriteOptions::default()
+            };
+            self.rewriter
+                .rewrite_with_options(&query, options)
+                .map_err(map_rewrite_error)?;
+            explanation.rewrite_stats = Some(self.rewriter.last_rewrite_stats().into());
+        }
+        serde_json::to_string_pretty(&explanation)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+}
+
+pub fn parse_policy_specs(policies_json: &str) -> PyResult<Vec<PolicyIr>> {
+    let specs = serde_json::from_str::<Vec<PolicySpec>>(policies_json)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    let mut policies = Vec::new();
+    for spec in specs {
+        policies.push(policy_ir_from_spec(&spec)?);
+    }
+    Ok(policies)
+}
+
+fn parse_ui_update_mode(value: Option<&str>) -> PyResult<passant_core::UiUpdateMode> {
+    match value
+        .unwrap_or("approval_only")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "approval_only" | "approval" => Ok(passant_core::UiUpdateMode::ApprovalOnly),
+        "edited_rows" | "edited" => Ok(passant_core::UiUpdateMode::EditedRows),
+        other => Err(PyValueError::new_err(format!(
+            "invalid ui_update_mode {other:?}: expected 'approval_only' or 'edited_rows'"
+        ))),
+    }
+}
+
+fn policy_ir_from_spec(spec: &PolicySpec) -> PyResult<PolicyIr> {
+    Ok(PolicyIr::Pgn {
+        sources: spec.sources.clone(),
+        required_sources: spec.required_sources.clone(),
+        dimension_tables: spec.dimensions.clone(),
+        dimension_aliases: spec.dimension_aliases.clone(),
+        dimension_queries: spec.dimension_queries.clone(),
+        sink: spec.sink.clone(),
+        sink_alias: spec.sink_alias.clone(),
+        source_aliases: spec.source_aliases.clone(),
+        constraint: spec.constraint.clone(),
+        on_fail: parse_resolution(&spec.on_fail)?,
+        description: spec.description.clone(),
+    })
+}

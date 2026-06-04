@@ -1,0 +1,52 @@
+gap = _{ (" " | "\t" | "\r" | "\n")+ }
+
+policy = {
+    SOI
+    ~ source_clause?
+    ~ sink_clause?
+    ~ dimension_clause?
+    ~ constraint_clause
+    ~ on_fail_clause
+    ~ description_clause?
+    ~ EOI
+}
+
+source_clause = { source_kw ~ gap ~ source_body }
+sink_clause = { (gap | &sink_kw) ~ sink_kw ~ gap ~ sink_body }
+dimension_clause = { (gap | &dimension_kw) ~ dimension_kw ~ gap ~ dimension_body }
+constraint_clause = { (gap | &constraint_kw) ~ constraint_kw ~ gap ~ constraint_sql }
+on_fail_clause = { on_fail_boundary ~ gap ~ on_fail_body }
+description_clause = { description_boundary ~ gap ~ description_body }
+
+source_kw = { ^"SOURCES" | ^"SOURCE" }
+sink_kw = { ^"SINK" }
+dimension_kw = { ^"DIMENSIONS" | ^"DIMENSION" }
+constraint_kw = { ^"CONSTRAINT" }
+on_fail_kw = { ^"ON" ~ (" " | "\t" | "\r" | "\n")+ ~ ^"FAIL" }
+description_kw = { ^"DESCRIPTION" }
+
+source_body = { raw_until_source_end* }
+source_end = { gap ~ (sink_kw | dimension_kw | constraint_kw) ~ &(gap | EOI) }
+raw_until_source_end = { single_quoted | double_quoted | paren_group | !(source_end) ~ ANY }
+
+sink_body = { raw_until_sink_end* }
+sink_end = { gap ~ (dimension_kw | constraint_kw) ~ &(gap | EOI) }
+raw_until_sink_end = { single_quoted | double_quoted | paren_group | !(sink_end) ~ ANY }
+
+dimension_body = { raw_until_dimension_end* }
+dimension_end = { gap ~ constraint_kw ~ &(gap | EOI) }
+raw_until_dimension_end = { single_quoted | double_quoted | paren_group | !(dimension_end) ~ ANY }
+
+constraint_sql = { raw_until_on_fail* }
+on_fail_boundary = { gap ~ on_fail_kw ~ &(gap | EOI) }
+raw_until_on_fail = { single_quoted | double_quoted | paren_group | !(on_fail_boundary) ~ ANY }
+
+on_fail_body = { raw_until_description* }
+description_boundary = { gap ~ description_kw ~ &(gap | EOI) }
+raw_until_description = { single_quoted | double_quoted | paren_group | !(description_boundary) ~ ANY }
+
+description_body = { (single_quoted | double_quoted | paren_group | ANY)* }
+
+single_quoted = { "'" ~ ( "''" | !"'" ~ ANY )* ~ "'" }
+double_quoted = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+paren_group = { "(" ~ (single_quoted | double_quoted | paren_group | ANY)* ~ ")" }

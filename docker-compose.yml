@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: passant-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: passant
+      POSTGRES_DB: passant
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d passant"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: passant-clickhouse
+    environment:
+      CLICKHOUSE_USER: passant
+      CLICKHOUSE_PASSWORD: passant
+      CLICKHOUSE_DB: default
+    ports:
+      - "18123:8123"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8123/ping || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  umbra:
+    image: umbradb/umbra:latest
+    container_name: passant-umbra
+    ports:
+      - "15433:5432"
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      memlock:
+        soft: -1
+        hard: -1

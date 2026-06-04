@@ -1,0 +1,9 @@
+[project]
+name = "passant-install-testing"
+version = "0.0.0"
+description = "Smoke test: install data-flow-control from PyPI and verify policy enforcement"
+requires-python = ">=3.10"
+dependencies = [
+    "data-flow-control",
+    "duckdb>=1.3.0",
+]
