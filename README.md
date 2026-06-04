@@ -193,7 +193,7 @@ conn.register_policies([policy_a, policy_b])
 conn.refresh_catalog(force=True)  # after DDL changes
 ```
 
-Performance benchmarks and budgets: [docs/performance.md](docs/performance.md).
+Performance benchmarks and budgets: [developer-docs/performance.md](developer-docs/performance.md).
 
 Available public imports:
 
@@ -210,7 +210,7 @@ from data_flow_control import (
 
 ## Testing
 
-From `passant/`:
+From the repo root:
 
 ```bash
 cargo fmt --all -- --check

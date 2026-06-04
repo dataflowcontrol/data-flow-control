@@ -4,13 +4,13 @@ Implementation status for the full speed plan: [passant-speed-status.md](passant
 
 ## Rust Criterion
 
-From `passant/`:
+From the repo root:
 
 ```bash
 cargo bench -p passant-core --bench rewrite_perf
 ```
 
-Results are written under `passant/target/criterion/`. Compare baselines across branches with:
+Results are written under `target/criterion/`. Compare baselines across branches with:
 
 ```bash
 cargo bench -p passant-core --bench rewrite_perf -- --save-baseline main
@@ -32,10 +32,9 @@ cargo bench -p passant-core --bench rewrite_perf -- --baseline main
 
 ## Python timing scripts
 
-Report-only helpers under `passant/scripts/` (do not fail CI by default):
+Report-only helpers under `scripts/` (do not fail CI by default):
 
 ```bash
-cd passant
 uv run python scripts/bench_register_policy.py
 uv run python scripts/bench_bulk_register.py
 uv run python scripts/bench_execute.py
@@ -43,7 +42,7 @@ uv run python scripts/bench_execute.py
 
 ## Execution benchmarks
 
-Rewriter latency alone does not predict DuckDB runtime. Scenario fixtures live under `passant/benchmarks/execution/`:
+Rewriter latency alone does not predict DuckDB runtime. Scenario fixtures live under `benchmarks/execution/`:
 
 - `scan_remove.sql` — single-table REMOVE
 - `join_remove.sql` — join with unrelated registry
@@ -53,7 +52,7 @@ Record for each scenario:
 
 - Rewritten SQL byte length
 - Wall-clock `execute()` time (warm connection)
-- Optional `EXPLAIN ANALYZE` snapshot in `passant/benchmarks/execution/explain/`
+- Optional `EXPLAIN ANALYZE` snapshot in `benchmarks/execution/explain/`
 
 ## Rewrite stats
 
@@ -70,7 +69,7 @@ constraint ASTs instead of re-registering the full policy registry.
 ## CI perf budgets (optional)
 
 ```bash
-passant/scripts/check_perf_budgets.sh
+scripts/check_perf_budgets.sh
 ```
 
 Runs fast-path regression tests plus a Criterion smoke subset (`rewrite_no_policies`,

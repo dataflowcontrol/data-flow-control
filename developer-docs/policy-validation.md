@@ -77,7 +77,7 @@ llm_filter(
 )
 ```
 
-Install Flock locally with `passant/scripts/setup_flock.sh`. Optional execution tests require
+Install Flock locally with `scripts/setup_flock.sh`. Optional execution tests require
 `OPENAI_API_KEY` or `FLOCK_OPENAI_API_KEY`.
 
 ## Unsupported resolutions and policy shapes

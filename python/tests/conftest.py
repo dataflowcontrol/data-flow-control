@@ -31,7 +31,7 @@ def rewriter():
 def flock_extension():
     """Install and load Flock once per test session when available."""
     if not flock_available():
-        pytest.skip("Flock DuckDB extension not available (run passant/scripts/setup_flock.sh)")
+        pytest.skip("Flock DuckDB extension not available (run scripts/setup_flock.sh)")
     conn = duckdb.connect()
     load_flock(conn)
     yield conn

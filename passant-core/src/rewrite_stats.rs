@@ -36,7 +36,7 @@ impl From<RewriteStats> for RewriteStatsExport {
     }
 }
 
-/// Optional rewrite instrumentation counters (see `passant/docs/performance.md`).
+/// Optional rewrite instrumentation counters (see `developer-docs/performance.md`).
 #[derive(Debug, Default, Clone)]
 pub struct RewriteStats {
     pub total_policies: usize,

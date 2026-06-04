@@ -1,18 +1,8 @@
-name: Passant
+name: CI
 
 on:
   push:
-    paths:
-      - "passant/**"
-      - ".github/workflows/passant.yml"
   pull_request:
-    paths:
-      - "passant/**"
-      - ".github/workflows/passant.yml"
-
-defaults:
-  run:
-    working-directory: passant
 
 jobs:
   rust:
@@ -26,7 +16,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: passant
+          workspaces: .
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -46,7 +36,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: passant
+          workspaces: .
 
       - uses: astral-sh/setup-uv@v5
 

@@ -1,7 +1,7 @@
 # Execution benchmark scenarios
 
 SQL fixtures for comparing rewriter output size and DuckDB execution time.
-See [docs/performance.md](../../docs/performance.md) for the full workflow.
+See [developer-docs/performance.md](../../developer-docs/performance.md) for the full workflow.
 
 | File | Policy shape |
 |------|----------------|

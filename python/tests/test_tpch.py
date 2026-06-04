@@ -53,7 +53,8 @@ def test_tpch_rewritten_query_executes_on_sf001(tpch_sf001_rewriter, query_num: 
 
 
 def load_tpch_query(query_num: int) -> str:
-    benchmarks_dir = pathlib.Path(__file__).resolve().parents[3] / "benchmarks" / "tpch" / "queries"
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    benchmarks_dir = repo_root / "benchmarks" / "tpch" / "queries"
     query_file = benchmarks_dir / f"q{query_num:02d}.sql"
     if not query_file.exists():
         raise FileNotFoundError(f"TPC-H query {query_num} not found at {query_file}")

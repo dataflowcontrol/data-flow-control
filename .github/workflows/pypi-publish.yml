@@ -1,4 +1,4 @@
-# Publish the Passant bindings (passant/) to PyPI as data-flow-control.
+# Publish data-flow-control to PyPI.
 #
 # Manual only: run from Actions → Publish to PyPI → Run workflow.
 # Uses PyPI trusted publishing (OIDC); no PYPI_API_TOKEN secret required.
@@ -61,7 +61,6 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: passant
           target: ${{ matrix.platform.target }}
           args: --release --locked --out dist --compatibility pypi
           manylinux: ${{ matrix.platform.manylinux || '2_28' }}
@@ -71,7 +70,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.platform.target }}
-          path: passant/dist
+          path: dist
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -96,7 +95,6 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: passant
           target: ${{ matrix.platform.target }}
           args: --release --locked --out dist --compatibility pypi
           manylinux: musllinux_1_2
@@ -105,7 +103,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
-          path: passant/dist
+          path: dist
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -132,7 +130,6 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: passant
           target: ${{ matrix.platform.target }}
           args: --release --locked --out dist --compatibility pypi
 
@@ -140,7 +137,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-${{ matrix.platform.target }}
-          path: passant/dist
+          path: dist
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
@@ -161,7 +158,6 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: passant
           target: ${{ matrix.platform.target }}
           args: --release --locked --out dist --compatibility pypi
 
@@ -169,7 +165,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.platform.target }}
-          path: passant/dist
+          path: dist
 
   sdist:
     runs-on: ubuntu-latest
@@ -179,7 +175,6 @@ jobs:
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: passant
           command: sdist
           args: --out dist
 
@@ -187,7 +182,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
-          path: passant/dist
+          path: dist
 
   release:
     name: Release

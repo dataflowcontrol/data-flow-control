@@ -15,5 +15,4 @@ done
 
 echo ""
 echo "Perf budget smoke complete."
-echo "Documented budgets and full matrix: passant/docs/performance.md"
-echo "Plan checklist: passant/docs/passant-speed-status.md"
+echo "Documented budgets and full matrix: developer-docs/performance.md"

@@ -42,7 +42,7 @@ continue. This is not a general “replace the output table” hook.
 ## Flock / LLM-backed predicates
 
 Passant does not provide `LLM(...)`. Use DuckDB extension functions in `CONSTRAINT`, for
-example Flock `llm_filter(...)`. See `passant/scripts/setup_flock.sh` and
+example Flock `llm_filter(...)`. See `scripts/setup_flock.sh` and
 `python/tests/test_extension_constraints.py`.
 
 ## UI resolution (`ON FAIL UI`)

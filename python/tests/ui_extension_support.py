@@ -7,7 +7,7 @@ from pathlib import Path
 
 import duckdb
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_EXTENSION = (
     _REPO_ROOT
     / "extended_duckdb"
