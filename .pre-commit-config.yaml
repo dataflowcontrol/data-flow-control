@@ -1,0 +1,18 @@
+# Install: ./scripts/install-pre-commit-hook.sh
+# Manual run: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.12
+    hooks:
+      - id: ruff-format
+        name: ruff format (Python)
+
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: cargo fmt
+        entry: bash scripts/pre-commit/rustfmt.sh
+        language: system
+        files: ^(passant-core|passant-cli|passant-py)/.*\.rs$
+        pass_filenames: false

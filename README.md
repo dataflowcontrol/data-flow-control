@@ -213,6 +213,7 @@ from data_flow_control import (
 From the repo root:
 
 ```bash
+./scripts/install-pre-commit-hook.sh  # optional: ruff format + cargo fmt on commit
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
