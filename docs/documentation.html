@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Data Flow Control Python Documentation</title>
+    <meta
+      name="description"
+      content="Detailed documentation for the data_flow_control Python API."
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Primary">
+        <a class="brand" href="index.html">
+          <img class="brand-logo" src="assets/dfc-logo.png" alt="DFC logo" />
+          <span>Data Flow Control</span>
+        </a>
+        <div class="nav-links">
+          <a href="index.html">Install</a>
+          <a href="examples.html">Examples</a>
+          <a href="documentation.html" aria-current="page">Documentation</a>
+          <a href="https://github.com/reallocf/data-flow-control">GitHub</a>
+        </div>
+      </nav>
+      <div class="hero">
+        <div class="hero-inner">
+          <p class="eyebrow">Documentation</p>
+          <h1>Python API reference</h1>
+          <p class="lede">
+            Use this reference when wiring DFC into an application. The package is imported as
+            <code>data_flow_control</code>, and the public top-level exports are <code>dfc</code>,
+            <code>Dialect</code>, <code>Policy</code>, <code>Resolution</code>,
+            <code>RewriteOptions</code>, <code>UiUpdateMode</code>,
+            <code>PassantRewriteError</code>, and <code>UiViolationEvent</code>.
+          </p>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="tight-section">
+        <div class="doc-grid">
+          <aside class="doc-card toc">
+            <strong>Contents</strong>
+            <ul>
+              <li><a href="#imports">Imports</a></li>
+              <li><a href="#dfc">dfc</a></li>
+              <li><a href="#connection">Connection object</a></li>
+              <li><a href="#policy">Policy</a></li>
+              <li><a href="#resolution">Resolution</a></li>
+              <li><a href="#options">RewriteOptions</a></li>
+              <li><a href="#dialect">Dialect</a></li>
+              <li><a href="#ui">UI resolution</a></li>
+              <li><a href="#errors">Errors</a></li>
+            </ul>
+          </aside>
+
+          <div class="doc-stack">
+            <article id="imports" class="doc-section">
+              <h2>Imports</h2>
+              <p>
+                After <code>pip install data-flow-control</code>, the following imports are
+                exposed:
+              </p>
+              <pre><code>from data_flow_control import (
+    Dialect,
+    PassantRewriteError,
+    Policy,
+    Resolution,
+    RewriteOptions,
+    UiUpdateMode,
+    UiViolationEvent,
+    dfc,
+)</code></pre>
+            </article>
+
+            <article id="dfc" class="doc-section">
+              <h2><code>dfc(conn, dialect=None)</code></h2>
+              <p>
+                Wraps an existing database connection and returns a policy-aware connection object.
+                If <code>dialect</code> is omitted, the package tries to infer it from the
+                connection type.
+              </p>
+              <table class="field-table">
+                <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                <tr><td><code>conn</code></td><td><code>Any</code></td><td>Existing DuckDB, SQLite, psycopg, ClickHouse, DataFusion, Umbra, or adapter-backed connection.</td></tr>
+                <tr><td><code>dialect</code></td><td><code>str | None</code></td><td>Optional explicit dialect. Use this when inference is ambiguous, such as Umbra over psycopg.</td></tr>
+              </table>
+              <pre><code>import duckdb
+from data_flow_control import dfc
+
+conn = dfc(duckdb.connect())</code></pre>
+            </article>
+
+            <article id="connection" class="doc-section">
+              <h2>Connection Object</h2>
+              <p>
+                This class wraps your standard database connection to automatically rewrite any
+                queries based on registered policies.
+              </p>
+              <table class="field-table">
+                <tr><th>Member</th><th>Description</th></tr>
+                <tr><td><code>raw_connection</code></td><td>Property exposing the underlying database connection when the adapter supports it.</td></tr>
+                <tr><td><code>register_policy(policy)</code></td><td>Validates adapter capabilities, syncs catalog metadata, and registers one <code>Policy</code>.</td></tr>
+                <tr><td><code>register_policies(policies)</code></td><td>Registers a list of policies with one catalog sync.</td></tr>
+                <tr><td><code>delete_policy(...)</code></td><td>Deletes a matching policy by sources, sink, constraint, resolution, and description. Returns <code>bool</code>.</td></tr>
+                <tr><td><code>policies()</code></td><td>Returns the currently registered <code>Policy</code> objects.</td></tr>
+                <tr><td><code>transform_query(sql, options=None)</code></td><td>Returns rewritten SQL without executing it.</td></tr>
+                <tr><td><code>execute(query, params=None, options=None)</code></td><td>Rewrites and executes a statement. DDL statements are executed directly and invalidate the catalog cache.</td></tr>
+                <tr><td><code>fetchall(query, params=None, options=None)</code></td><td>Executes a query and returns all rows.</td></tr>
+                <tr><td><code>fetchone(query, params=None, options=None)</code></td><td>Executes a query and returns one row.</td></tr>
+                <tr><td><code>explain(query)</code></td><td>Returns a dictionary explanation of the rewrite plan.</td></tr>
+                <tr><td><code>last_rewrite_stats()</code></td><td>Returns stats from the most recent rewrite when stats collection is enabled.</td></tr>
+                <tr><td><code>last_statement_rewrite_summary()</code></td><td>Returns the last statement-level rewrite summary.</td></tr>
+                <tr><td><code>refresh_catalog(force=False, include_row_counts=False)</code></td><td>Manually refreshes catalog metadata used for policy validation.</td></tr>
+                <tr><td><code>close()</code></td><td>Closes the underlying adapter.</td></tr>
+                <tr><td><code>with dfc(...) as conn</code></td><td>The wrapper supports context manager cleanup.</td></tr>
+              </table>
+            </article>
+
+            <article id="policy" class="doc-section">
+              <h2><code>Policy</code></h2>
+              <p>
+                Dataclass describing one data flow policy. Policies can be constructed directly or
+                parsed from policy text with <code>Policy.from_pgn(...)</code>.
+              </p>
+              <table class="field-table">
+                <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                <tr><td><code>constraint</code></td><td><code>str</code></td><td>SQL boolean expression that must hold for the protected flow. Columns must be qualified.</td></tr>
+                <tr><td><code>on_fail</code></td><td><code>Resolution</code></td><td>Action taken when the constraint fails.</td></tr>
+                <tr><td><code>sources</code></td><td><code>list[str]</code></td><td>Required list of source tables. Use <code>[]</code> for sink-only policies.</td></tr>
+                <tr><td><code>sink</code></td><td><code>str | None</code></td><td>Optional table written by protected <code>INSERT</code>, <code>UPDATE</code>, or <code>MERGE</code> statements.</td></tr>
+                <tr><td><code>sink_alias</code></td><td><code>str | None</code></td><td>Optional alias for the sink table inside the constraint.</td></tr>
+                <tr><td><code>source_aliases</code></td><td><code>dict[str, str] | None</code></td><td>Optional alias-to-source mapping. Inferred when parsing policy text.</td></tr>
+                <tr><td><code>description</code></td><td><code>str | None</code></td><td>Human-readable policy description. Also used in UI violation events.</td></tr>
+                <tr><td><code>required_sources</code></td><td><code>list[str] | None</code></td><td>Sources that must appear in a write query for the policy to pass. Every required source must also be listed in <code>sources</code>.</td></tr>
+                <tr><td><code>dimensions</code></td><td><code>list[str] | None</code></td><td>Additional policy tables or subqueries used in the constraint.</td></tr>
+                <tr><td><code>dimension_aliases</code></td><td><code>dict[str, str] | None</code></td><td>Alias-to-dimension mapping.</td></tr>
+                <tr><td><code>dimension_queries</code></td><td><code>dict[str, str] | None</code></td><td>Alias-to-subquery mapping for dimension subqueries.</td></tr>
+                <tr><td><code>udf_name</code></td><td><code>str | None</code></td><td>Required for <code>Resolution.UDF</code> and <code>Resolution.RELATION_UDF</code>.</td></tr>
+              </table>
+              <pre><code>from data_flow_control import Policy, Resolution
+
+policy = Policy(
+    sources=["orders"],
+    constraint="orders.amount &lt; 1000",
+    on_fail=Resolution.REMOVE,
+)</code></pre>
+              <p>
+                <code>Policy.from_pgn(policy_str)</code> parses policy text, normalizes aliases and
+                dimensions, and returns a <code>Policy</code>.
+              </p>
+            </article>
+
+            <article id="resolution" class="doc-section">
+              <h2><code>Resolution</code></h2>
+              <table class="field-table">
+                <tr><th>Value</th><th>Description</th></tr>
+                <tr><td><code>Resolution.REMOVE</code></td><td>Filters violating rows out of the result or write.</td></tr>
+                <tr><td><code>Resolution.KILL</code></td><td>Aborts when a violating row is evaluated. Requires adapter exception-UDF support.</td></tr>
+                <tr><td><code>Resolution.UDF</code></td><td>Routes violating tuples through a registered tuple resolution function.</td></tr>
+                <tr><td><code>Resolution.RELATION_UDF</code></td><td>Routes a relation of violations through a registered relation function.</td></tr>
+                <tr><td><code>Resolution.UI</code></td><td>Routes violations to a configured UI handler. Currently DuckDB-focused.</td></tr>
+              </table>
+              <p>
+                <code>Resolution.from_label(label)</code> parses labels such as
+                <code>"REMOVE"</code>, <code>"KILL"</code>, <code>"UDF fix_row"</code>, and
+                <code>"RELATION UDF fix_batch"</code>.
+              </p>
+            </article>
+
+            <article id="options" class="doc-section">
+              <h2>RewriteOptions and UiUpdateMode</h2>
+              <table class="field-table">
+                <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                <tr><td><code>use_partial_push</code></td><td><code>bool</code></td><td>Enables the partial-push rewrite strategy.</td></tr>
+                <tr><td><code>collect_stats</code></td><td><code>bool</code></td><td>Collects rewrite timing and planner stats for later inspection.</td></tr>
+                <tr><td><code>dialect</code></td><td><code>str | None</code></td><td>Overrides the SQL dialect used for rewrite options.</td></tr>
+                <tr><td><code>ui_stream_endpoint</code></td><td><code>str | None</code></td><td>Path used by UI resolution streaming.</td></tr>
+                <tr><td><code>ui_update_mode</code></td><td><code>UiUpdateMode</code></td><td>Controls whether UI resolution only approves rows or also returns edited rows.</td></tr>
+              </table>
+              <p>
+                <code>UiUpdateMode.APPROVAL_ONLY</code> approves or rejects violating rows.
+                <code>UiUpdateMode.EDITED_ROWS</code> allows corrected row values to be returned.
+              </p>
+              <pre><code>from data_flow_control import RewriteOptions
+
+rewritten = conn.transform_query(
+    "SELECT region, COUNT(*) FROM orders GROUP BY region",
+    options=RewriteOptions(use_partial_push=True, collect_stats=True),
+)
+stats = conn.last_rewrite_stats()</code></pre>
+            </article>
+
+            <article id="dialect" class="doc-section">
+              <h2><code>Dialect</code></h2>
+              <p>Supported dialect enum values:</p>
+              <ul>
+                <li><code>Dialect.DUCKDB</code> / <code>"duckdb"</code></li>
+                <li><code>Dialect.SQLITE</code> / <code>"sqlite"</code></li>
+                <li><code>Dialect.POSTGRES</code> / <code>"postgres"</code></li>
+                <li><code>Dialect.CLICKHOUSE</code> / <code>"clickhouse"</code></li>
+                <li><code>Dialect.DATAFUSION</code> / <code>"datafusion"</code></li>
+                <li><code>Dialect.UMBRA</code> / <code>"umbra"</code></li>
+              </ul>
+              <table class="field-table">
+                <tr><th>Class method</th><th>Description</th></tr>
+                <tr><td><code>normalize(dialect)</code></td><td>Lowercases dialect names and maps <code>postgresql</code> to <code>postgres</code>.</td></tr>
+                <tr><td><code>contains(value)</code></td><td>Returns whether a dialect string is supported.</td></tr>
+                <tr><td><code>parse(dialect)</code></td><td>Returns a <code>Dialect</code> enum member or raises <code>ValueError</code>.</td></tr>
+                <tr><td><code>supported_names()</code></td><td>Returns a sorted tuple of supported dialect names.</td></tr>
+              </table>
+            </article>
+
+            <article id="ui" class="doc-section">
+              <h2>UI Resolution</h2>
+              <p>
+                UI resolution sends violating rows to an application callback. Configure it before
+                registering policies with <code>ON FAIL UI</code>.
+              </p>
+              <table class="field-table">
+                <tr><th>API</th><th>Description</th></tr>
+                <tr><td><code>configure_ui_resolution(handler, ...)</code></td><td>Configures a violation handler, optional stream endpoint, extension path, polling interval, update mode, and maximum wait time.</td></tr>
+                <tr><td><code>reset_ui_stream()</code></td><td>Clears the current UI stream file.</td></tr>
+                <tr><td><code>UiViolationEvent</code></td><td>Frozen dataclass passed to the handler.</td></tr>
+              </table>
+              <table class="field-table">
+                <tr><th><code>UiViolationEvent</code> field</th><th>Description</th></tr>
+                <tr><td><code>constraint</code></td><td>Policy constraint that failed.</td></tr>
+                <tr><td><code>description</code></td><td>Optional policy description.</td></tr>
+                <tr><td><code>column_names</code></td><td>Ordered names for values sent to the handler.</td></tr>
+                <tr><td><code>values</code></td><td>Ordered row values.</td></tr>
+                <tr><td><code>row</code></td><td>Dictionary mapping column names to values.</td></tr>
+                <tr><td><code>source_columns</code></td><td>Names interpreted as source columns.</td></tr>
+                <tr><td><code>output_columns</code></td><td>Names interpreted as output columns.</td></tr>
+                <tr><td><code>stream_endpoint</code></td><td>Path used for corrected row streaming.</td></tr>
+              </table>
+            </article>
+
+            <article id="errors" class="doc-section">
+              <h2><code>PassantRewriteError</code></h2>
+              <p>
+                Raised by the Rust-backed rewrite layer when a query or policy cannot be rewritten
+                safely. Catch it around <code>transform_query</code>, <code>execute</code>,
+                <code>fetchall</code>, or <code>fetchone</code> when you need to distinguish
+                rewrite failures from database execution errors.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Source code is available in the
+        <a href="https://github.com/reallocf/data-flow-control">data-flow-control repository</a>.
+      </p>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>

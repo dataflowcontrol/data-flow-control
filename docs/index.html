@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install Data Flow Control</title>
+    <meta
+      name="description"
+      content="Install the data-flow-control Python package and learn why it helps keep data use safe."
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Primary">
+        <a class="brand" href="index.html">
+          <img class="brand-logo" src="assets/dfc-logo.png" alt="DFC logo" />
+          <span>Data Flow Control</span>
+        </a>
+        <div class="nav-links">
+          <a href="index.html" aria-current="page">Install</a>
+          <a href="examples.html">Examples</a>
+          <a href="documentation.html">Documentation</a>
+          <a href="https://github.com/reallocf/data-flow-control">GitHub</a>
+        </div>
+      </nav>
+      <div class="hero">
+        <div class="hero-inner">
+          <p class="eyebrow">Install</p>
+          <h1>Control how agents use data.</h1>
+          <p class="lede">
+            Data Flow Control lets applications enforce rules over how records are combined,
+            aggregated, released, and written. Use it to keep agent outputs private, grounded, and
+            compliant while still allowing useful database work.
+          </p>
+          <div class="actions">
+            <a class="button" href="#install">Install package</a>
+            <a class="button secondary" href="examples.html">See examples</a>
+            <a class="button secondary" href="documentation.html">Read docs</a>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section id="install" class="tight-section">
+        <h2>Install</h2>
+        <p class="note">
+          Install the Python package from PyPI.
+        </p>
+        <div class="install-block">
+          <div class="code-head">
+            <span>Terminal</span>
+            <button class="copy" type="button" data-copy="pip install data-flow-control">Copy</button>
+          </div>
+          <pre><code>pip install data-flow-control</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Why DFC</h2>
+        <p>
+          Many important safety policies are about data flows. A released statistic needs
+          to aggregate across at least K users. Education reports need to keep protected
+          groups separate while suppressing groups that are too small. Financial systems need
+          to stop sensitive information from crossing internal barriers. Accounting
+          systems need every inserted expense to come from an actual receipt rather than a
+          value that merely looks plausible.
+        </p>
+        <p>
+          Existing guardrails are poorly matched to those requirements. Prompt rules ask the
+          same unreliable agent to police itself. Access control can block data entirely, but
+          cannot allow useful computation while restricting particular combinations or outputs.
+          Input and output filters see only the edges of a request; they cannot prove
+          which records contributed to a result or whether a new row was derived correctly.
+        </p>
+        <p>
+          DFC fills the gap with deterministic checks over derivations: the path from input
+          records through transformations, joins, aggregations, releases, and writes. Unsafe
+          rows are filtered, blocked, or fixed before they become part of an answer or a database
+          update.
+        </p>
+        <h2>Papers</h2>
+        <p>
+          <a href="https://www.vldb.org/cidrdb/2026/please-dont-kill-my-vibe-empowering-agents-with-data-flow-control.html">
+            Please Don't Kill My Vibe: Empowering Agents with Data Flow Control
+          </a>
+          <br />
+          CIDR 2026
+        </p>
+      </section>
+    </main>
+
+    <script src="site.js"></script>
+  </body>
+</html>
