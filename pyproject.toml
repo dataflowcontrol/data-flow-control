@@ -2,6 +2,8 @@
 name = "data-flow-control"
 version = "0.1.1"
 description = "Rust-backed Data Flow Control rewrite engine"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.26.0",
