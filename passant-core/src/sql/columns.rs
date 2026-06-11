@@ -1,15 +1,78 @@
 //! Qualified-column extraction from constraint ASTs.
 
 use sqlparser::ast::{
-    Array, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Map, Subscript,
+    Array, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Map, SelectItem,
+    SetExpr, Statement, Subscript,
 };
 
-use crate::identifiers::QualifiedColumn;
+use crate::diagnostics::RewriteError;
+use crate::identifiers::{ColumnName, QualifiedColumn};
+use crate::parser::parse_query;
 
 pub fn collect_qualified_columns_from_expr(expr: &Expr) -> Vec<QualifiedColumn> {
     let mut found = Vec::new();
     visit_expr(expr, &mut found);
     found
+}
+
+/// Output column names from a dimension subquery SELECT list.
+pub fn collect_query_projection_column_names(query_sql: &str) -> Result<Vec<String>, RewriteError> {
+    let select = dimension_subquery_select(query_sql)?;
+    let mut names = Vec::new();
+    for item in &select.projection {
+        match item {
+            SelectItem::UnnamedExpr(expr) => {
+                let Some(name) = projection_column_name(expr) else {
+                    return Err(RewriteError::unsupported_statement(format!(
+                        "dimension subquery projection must name columns explicitly: {item}"
+                    )));
+                };
+                names.push(ColumnName::new(name).key());
+            }
+            SelectItem::ExprWithAlias { alias, .. } => {
+                names.push(ColumnName::new(alias.value.as_str()).key());
+            }
+            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
+                return Err(RewriteError::unsupported_statement(
+                    "dimension subquery projections with * are not supported for catalog validation",
+                ));
+            }
+        }
+    }
+    if names.is_empty() {
+        return Err(RewriteError::unsupported_statement(
+            "dimension subquery must project at least one column",
+        ));
+    }
+    Ok(names)
+}
+
+fn dimension_subquery_select(query_sql: &str) -> Result<sqlparser::ast::Select, RewriteError> {
+    let statement = parse_query(query_sql)?;
+    let Statement::Query(query) = statement else {
+        return Err(RewriteError::unsupported_statement(
+            "dimension subquery must be a query",
+        ));
+    };
+    select_from_set_expr(*query.body)
+}
+
+fn select_from_set_expr(body: SetExpr) -> Result<sqlparser::ast::Select, RewriteError> {
+    match body {
+        SetExpr::Select(select) => Ok(*select),
+        SetExpr::Query(query) => select_from_set_expr(*query.body),
+        other => Err(RewriteError::unsupported_statement(format!(
+            "dimension subquery must be a SELECT, got {other}"
+        ))),
+    }
+}
+
+fn projection_column_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Identifier(ident) => Some(ident.value.clone()),
+        Expr::CompoundIdentifier(parts) => parts.last().map(|ident| ident.value.clone()),
+        _ => None,
+    }
 }
 
 fn visit_expr(expr: &Expr, found: &mut Vec<QualifiedColumn>) {

@@ -133,6 +133,43 @@ fn dimension_alias_qualifiers_rewrite_after_injection() {
 }
 
 #[test]
+fn dimension_subquery_alias_in_constraint_rewrites() {
+    let mut catalog = TableCatalog::new();
+    catalog.register_table("foo", vec!["id".to_string()]);
+    catalog.register_table("session_user", vec!["user_id".to_string()]);
+    catalog.register_table_row_count("session_user", 1);
+    let mut dimension_aliases = HashMap::new();
+    dimension_aliases.insert("u".to_string(), "u".to_string());
+    let mut dimension_queries = HashMap::new();
+    dimension_queries.insert(
+        "u".to_string(),
+        "(SELECT user_id FROM session_user)".to_string(),
+    );
+    let policy = PolicyIr::Pgn {
+        sources: vec!["foo".to_string()],
+        required_sources: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases,
+        dimension_queries,
+        sink: None,
+        sink_alias: None,
+        source_aliases: HashMap::new(),
+        constraint: "max(foo.id) > 0 AND u.user_id = 1".to_string(),
+        on_fail: Resolution::Remove,
+        description: None,
+    };
+    let sql = rewrite_with_catalog("SELECT foo.id FROM foo", &[policy], catalog);
+    assert!(
+        sql.contains("u.user_id = 1"),
+        "expected dimension subquery alias in rewritten SQL: {sql}"
+    );
+    assert!(
+        sql.contains("SELECT user_id FROM session_user") || sql.contains("session_user"),
+        "expected dimension subquery injected: {sql}"
+    );
+}
+
+#[test]
 fn catalog_rejects_unknown_dimension_table() {
     let mut catalog = TableCatalog::new();
     catalog.register_table("foo", vec!["id".to_string()]);

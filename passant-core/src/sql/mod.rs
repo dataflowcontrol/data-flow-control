@@ -25,5 +25,5 @@ pub use builders::{
     query_from_select, sanitize_projection_alias, scalar_subquery, statement_from_query,
     string_concat, string_literal, table_alias, table_factor, with_ctes, wrap_table_with_filter,
 };
-pub use columns::collect_qualified_columns_from_expr;
+pub use columns::{collect_qualified_columns_from_expr, collect_query_projection_column_names};
 pub use expr::{rename_table_refs, replace_expr_subtrees, unqualify_table_refs};

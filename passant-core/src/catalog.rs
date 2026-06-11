@@ -16,6 +16,7 @@ use crate::policy::{PolicyIr, Resolution};
 use crate::policy_compile::{
     ParsedPolicyConstraint, parse_policy_constraint, parse_policy_constraint_with_registry,
 };
+use crate::sql::collect_query_projection_column_names;
 
 /// Catalog facts supplied at policy registration time (from any adapter snapshot).
 #[derive(Debug, Default, Clone)]
@@ -389,6 +390,24 @@ fn validate_pgn_policy_parsed(
         dimension_columns.insert(TableKey::new(alias), columns.clone());
         dimension_columns.insert(TableKey::new(base), columns);
     }
+    for (alias, query_sql) in dimension_queries {
+        let columns = collect_query_projection_column_names(query_sql)
+            .map_err(|err| {
+                RewriteError::catalog_with_context(
+                    ErrorKind::UnknownColumn,
+                    format!(
+                        "Dimension subquery '{alias}' has invalid projection for catalog validation: {err}"
+                    ),
+                    Some(alias.clone()),
+                    None,
+                    Some(constraint.to_string()),
+                    Some("catalog_validation"),
+                )
+            })?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        dimension_columns.insert(TableKey::new(alias), columns);
+    }
 
     let source_names = sources
         .iter()
@@ -495,6 +514,7 @@ fn validate_pgn_policy_parsed(
             &table_key,
             dimension_tables,
             dimension_aliases,
+            dimension_queries,
             &dimension_columns,
         ) {
             if !columns.contains(&column_key) {
@@ -544,6 +564,7 @@ fn resolve_dimension_columns<'a>(
     table_key: &TableKey,
     dimension_tables: &[String],
     dimension_aliases: &HashMap<String, String>,
+    dimension_queries: &HashMap<String, String>,
     dimension_columns: &'a HashMap<TableKey, HashSet<String>>,
 ) -> Option<&'a HashSet<String>> {
     if dimension_tables
@@ -552,7 +573,13 @@ fn resolve_dimension_columns<'a>(
     {
         return dimension_columns.get(table_key);
     }
+    if dimension_queries.contains_key(table_key.as_str()) {
+        return dimension_columns.get(table_key);
+    }
     if let Some(base) = dimension_aliases.get(table_key.as_str()) {
+        if dimension_queries.contains_key(base) {
+            return dimension_columns.get(table_key);
+        }
         return dimension_columns.get(&TableKey::new(base));
     }
     dimension_columns.get(table_key)
@@ -1052,6 +1079,63 @@ mod tests {
         catalog
             .validate_policy(&policy, &sample_registry())
             .expect("dimension alias column should validate");
+    }
+
+    #[test]
+    fn validates_constraint_columns_through_dimension_subquery_alias() {
+        let catalog = sample_catalog();
+        let mut dimension_aliases = HashMap::new();
+        dimension_aliases.insert("u".to_string(), "u".to_string());
+        let mut dimension_queries = HashMap::new();
+        dimension_queries.insert(
+            "u".to_string(),
+            "(SELECT user_id FROM session_user)".to_string(),
+        );
+        let policy = PolicyIr::Pgn {
+            sources: vec!["foo".into()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases,
+            dimension_queries,
+            sink: None,
+            sink_alias: None,
+            source_aliases: HashMap::new(),
+            constraint: "max(foo.id) > 1 AND u.user_id = 1".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        catalog
+            .validate_policy(&policy, &sample_registry())
+            .expect("dimension subquery alias column should validate");
+    }
+
+    #[test]
+    fn rejects_unknown_dimension_subquery_column() {
+        let catalog = sample_catalog();
+        let mut dimension_aliases = HashMap::new();
+        dimension_aliases.insert("u".to_string(), "u".to_string());
+        let mut dimension_queries = HashMap::new();
+        dimension_queries.insert(
+            "u".to_string(),
+            "(SELECT user_id FROM session_user)".to_string(),
+        );
+        let policy = PolicyIr::Pgn {
+            sources: vec!["foo".into()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases,
+            dimension_queries,
+            sink: None,
+            sink_alias: None,
+            source_aliases: HashMap::new(),
+            constraint: "max(foo.id) > 1 AND u.missing = 1".into(),
+            on_fail: Resolution::Remove,
+            description: None,
+        };
+        let err = catalog
+            .validate_policy(&policy, &sample_registry())
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnknownColumn);
     }
 
     #[test]

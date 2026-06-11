@@ -56,6 +56,7 @@ pub(crate) fn inject_policy_dimensions(
             constraint,
             dimension_tables,
             dimension_aliases,
+            dimension_queries,
             &source_keys,
         )?
     };
@@ -175,11 +176,9 @@ pub(crate) fn inject_policy_dimensions(
             append_dimension_join(select, factor, join.on)?;
             joined_keys.insert(table_key);
         } else {
-            skipped.push(alias.clone());
-            warnings.push(format!(
-                "Dimension subquery '{alias}' was not joined: no equality link to the query or \
-                 another dimension in the policy constraint and catalog row count is not 1"
-            ));
+            warnings.push(expansion_warning(alias));
+            append_dimension_join(select, factor, None)?;
+            joined_keys.insert(table_key);
         }
     }
 
@@ -405,9 +404,10 @@ pub(crate) fn compile_dimension_join_plan(
     constraint_ast: &Expr,
     dimension_tables: &[String],
     dimension_aliases: &HashMap<String, String>,
+    dimension_queries: &HashMap<String, String>,
     source_keys: &HashSet<TableKey>,
 ) -> Option<DimensionJoinPlan> {
-    if dimension_tables.is_empty() {
+    if dimension_tables.is_empty() && dimension_queries.is_empty() {
         return None;
     }
     let mut dimension_keys = HashSet::new();
@@ -418,6 +418,9 @@ pub(crate) fn compile_dimension_join_plan(
                 dimension_keys.insert(TableKey::new(alias));
             }
         }
+    }
+    for alias in dimension_queries.keys() {
+        dimension_keys.insert(TableKey::new(alias));
     }
     let mut source_conditions = HashMap::new();
     let mut dimension_edges = Vec::new();
@@ -454,17 +457,24 @@ fn dimension_join_graph(
     constraint: &str,
     dimension_tables: &[String],
     dimension_aliases: &HashMap<String, String>,
+    dimension_queries: &HashMap<String, String>,
     source_keys: &HashSet<TableKey>,
 ) -> Result<(HashMap<TableKey, Expr>, Vec<DimensionJoinEdge>), RewriteError> {
     let constraint = preprocess_policy_constraint(constraint);
     let expr = parse_projection_expr(&constraint).map_err(|err| {
         RewriteError::unsupported_statement(format!("dimension join analysis: {err}"))
     })?;
-    let plan = compile_dimension_join_plan(&expr, dimension_tables, dimension_aliases, source_keys)
-        .unwrap_or(DimensionJoinPlan {
-            source_conditions: HashMap::new(),
-            dimension_edges: Vec::new(),
-        });
+    let plan = compile_dimension_join_plan(
+        &expr,
+        dimension_tables,
+        dimension_aliases,
+        dimension_queries,
+        source_keys,
+    )
+    .unwrap_or(DimensionJoinPlan {
+        source_conditions: HashMap::new(),
+        dimension_edges: Vec::new(),
+    });
     Ok((plan.source_conditions, plan.dimension_edges))
 }
 

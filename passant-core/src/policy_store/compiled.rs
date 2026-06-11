@@ -140,6 +140,7 @@ impl PolicyStore {
                 &compiled.ast,
                 policy.dimension_tables(),
                 policy.dimension_aliases(),
+                policy.dimension_queries(),
                 &source_key_set,
             )
         });
@@ -226,6 +227,7 @@ pub(crate) fn compile_branch_policy(
                 &constraint_ast,
                 policy.dimension_tables(),
                 policy.dimension_aliases(),
+                policy.dimension_queries(),
                 &source_key_set,
             )
         };
