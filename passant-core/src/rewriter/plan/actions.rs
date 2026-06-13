@@ -235,10 +235,17 @@ pub(crate) fn apply_policy_resolution_actions(
         ));
     }
 
+    let mut kill_filters = Vec::new();
+
     for action in actions {
         match action {
             PolicyResolutionAction::Filter { filter, .. } => {
                 add_filter(select, filter.clone(), is_aggregation)?;
+            }
+            PolicyResolutionAction::TupleUdf {
+                filter, udf_name, ..
+            } if udf_name.eq_ignore_ascii_case(PASSANT_KILL_UDF) => {
+                kill_filters.push(filter.clone());
             }
             PolicyResolutionAction::TupleUdf {
                 filter, udf_name, ..
@@ -267,6 +274,10 @@ pub(crate) fn apply_policy_resolution_actions(
                 add_filter(select, ui_filter, is_aggregation)?;
             }
         }
+    }
+    if let Some(combined) = kill_filters.into_iter().reduce(and_expr) {
+        let inner = std::mem::replace(select, crate::sql::empty_select());
+        *select = wrap_select_with_tuple_resolution(inner, combined, PASSANT_KILL_UDF)?;
     }
     Ok(())
 }

@@ -249,6 +249,34 @@ fn rewriter_order_by_without_limit_keeps_inline_remove() {
 }
 
 #[test]
+fn select_kill_order_by_remapped() {
+    let mut rewriter = PassantRewriter::new();
+    rewriter.register_policy(PolicyIr::Pgn {
+        sources: vec!["foo".to_string()],
+        required_sources: Vec::new(),
+        dimension_tables: Vec::new(),
+        dimension_aliases: std::collections::HashMap::new(),
+        dimension_queries: std::collections::HashMap::new(),
+        sink: None,
+        sink_alias: None,
+        source_aliases: std::collections::HashMap::new(),
+        constraint: "max(foo.id) > 1".to_string(),
+        on_fail: Resolution::Kill,
+        description: None,
+    });
+
+    let sql = rewriter
+        .rewrite("SELECT id FROM foo ORDER BY foo.id")
+        .expect("query should rewrite");
+    assert!(sql.contains("passant_kill"), "expected kill wrap: {sql}");
+    assert!(sql.contains("ORDER BY id"), "expected unqualified ORDER BY: {sql}");
+    assert!(
+        !sql.contains("ORDER BY foo."),
+        "qualified ORDER BY should be remapped: {sql}"
+    );
+}
+
+#[test]
 fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
     let mut rewriter = PassantRewriter::new();
     rewriter.register_policy(PolicyIr::Pgn {

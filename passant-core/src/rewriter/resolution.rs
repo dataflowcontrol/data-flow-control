@@ -33,8 +33,52 @@ pub(crate) const RELATION_INPUT_CTE: &str = "__passant_relation_input";
 pub(crate) const RELATION_AGG_CTE: &str = "__passant_relation_agg";
 pub(crate) const RELATION_BATCH_VIOLATION_COLUMN: &str = "__passant_batch_violation";
 pub(crate) const PASSANT_KILL_UDF: &str = "passant_kill";
+pub(crate) const PASSANT_KILL_WRAPPER: &str = "__passant_kill";
 pub(crate) const UI_ADDRESS_VIOLATING_ROWS_UDF: &str = "address_violating_rows";
 pub(crate) const PASSANT_UI_APPROVE_UDF: &str = "passant_ui_approve";
+
+/// After KILL wrapping, the outer query is `SELECT * FROM __passant_kill` while
+/// `ORDER BY` may still reference the original table aliases. Unqualify them.
+pub(crate) fn remap_query_order_by_after_kill_wrap(query: &mut Query) {
+    if query.order_by.is_none() {
+        return;
+    }
+    let SetExpr::Select(select) = query.body.as_mut() else {
+        return;
+    };
+    if !is_kill_wrapped_select(select) {
+        return;
+    }
+    if let Some(order_by) = query.order_by.as_mut() {
+        for item in &mut order_by.exprs {
+            crate::rewriter::columns::unqualify_columns(&mut item.expr);
+        }
+    }
+}
+
+fn is_kill_wrapped_select(select: &Select) -> bool {
+    if select.projection.len() != 1 {
+        return false;
+    }
+    if !matches!(
+        select.projection.first(),
+        Some(SelectItem::Wildcard(_))
+    ) {
+        return false;
+    }
+    let Some(TableWithJoins {
+        relation:
+            TableFactor::Derived {
+                alias: Some(alias), ..
+            },
+        joins,
+        ..
+    }) = select.from.first()
+    else {
+        return false;
+    };
+    alias.name.value == PASSANT_KILL_WRAPPER && joins.is_empty()
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct UiResolutionSpec {
@@ -98,7 +142,7 @@ pub(crate) fn wrap_select_with_tuple_resolution(
             relation: TableFactor::Derived {
                 lateral: false,
                 subquery: Box::new(final_query),
-                alias: Some(crate::sql::table_alias("__passant_kill")),
+                alias: Some(crate::sql::table_alias(PASSANT_KILL_WRAPPER)),
             },
             joins: Vec::new(),
         }];
@@ -671,6 +715,49 @@ mod tests {
         assert!(!sql.contains("UNION ALL"));
         assert!(!sql.contains("__passant_tuple_resolution"));
         assert!(sql.contains("__passant_kill"));
+    }
+
+    #[test]
+    fn kill_wrap_remaps_qualified_order_by() {
+        let mut inner = empty_select();
+        inner.projection = vec![alias_expr(qualified_column("receipts", "id"), "id")];
+        inner.from = vec![TableWithJoins {
+            relation: table_factor("receipts"),
+            joins: Vec::new(),
+        }];
+        let mut query = query_from_select(inner);
+        query.order_by = Some(sqlparser::ast::OrderBy {
+            exprs: vec![sqlparser::ast::OrderByExpr {
+                expr: qualified_column("receipts", "id"),
+                asc: None,
+                nulls_first: None,
+                with_fill: None,
+            }],
+            interpolate: None,
+        });
+
+        let wrapped = wrap_select_with_tuple_resolution(
+            match query.body.as_ref() {
+                SetExpr::Select(select) => select.as_ref().clone(),
+                _ => unreachable!(),
+            },
+            binary_comparison(
+                qualified_column("receipts", "id"),
+                sqlparser::ast::BinaryOperator::Gt,
+                crate::sql::int_literal(0),
+            ),
+            PASSANT_KILL_UDF,
+        )
+        .expect("wrap");
+        query.body = Box::new(SetExpr::Select(Box::new(wrapped)));
+        remap_query_order_by_after_kill_wrap(&mut query);
+
+        let sql = render_statement(&crate::sql::statement_from_query(query), None);
+        assert!(sql.contains("ORDER BY id"), "expected unqualified ORDER BY: {sql}");
+        assert!(
+            !sql.contains("ORDER BY receipts."),
+            "qualified ORDER BY should be remapped: {sql}"
+        );
     }
 
     #[test]

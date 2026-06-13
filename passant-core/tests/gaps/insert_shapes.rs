@@ -69,6 +69,80 @@ fn sink_only_kill_policy_on_insert_select() {
 }
 
 #[test]
+fn insert_select_kill_order_by_remapped() {
+    let sql = rewrite_with_catalog(
+        "INSERT INTO reports SELECT id FROM receipts ORDER BY Receipts.id",
+        &[PolicyIr::Pgn {
+            sources: vec![],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: Some("reports".to_string()),
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "reports.id > 0".to_string(),
+            on_fail: Resolution::Kill,
+            description: None,
+        }],
+        reports_catalog(),
+    );
+    assert!(sql.contains("passant_kill"), "expected kill wrap: {sql}");
+    assert!(sql.contains("ORDER BY id"), "expected unqualified ORDER BY: {sql}");
+    assert!(
+        !sql.contains("ORDER BY Receipts."),
+        "qualified ORDER BY should be remapped: {sql}"
+    );
+}
+
+#[test]
+fn multiple_kill_policies_on_insert_select() {
+    let sql = rewrite_with_catalog(
+        "INSERT INTO reports SELECT id, status FROM foo",
+        &[
+            PolicyIr::Pgn {
+                sources: vec![],
+                required_sources: Vec::new(),
+                dimension_tables: Vec::new(),
+                dimension_aliases: std::collections::HashMap::new(),
+                dimension_queries: std::collections::HashMap::new(),
+                sink: Some("reports".to_string()),
+                sink_alias: None,
+                source_aliases: std::collections::HashMap::new(),
+                constraint: "reports.status = 'approved'".to_string(),
+                on_fail: Resolution::Kill,
+                description: None,
+            },
+            PolicyIr::Pgn {
+                sources: vec![],
+                required_sources: Vec::new(),
+                dimension_tables: Vec::new(),
+                dimension_aliases: std::collections::HashMap::new(),
+                dimension_queries: std::collections::HashMap::new(),
+                sink: Some("reports".to_string()),
+                sink_alias: None,
+                source_aliases: std::collections::HashMap::new(),
+                constraint: "reports.id > 0".to_string(),
+                on_fail: Resolution::Kill,
+                description: None,
+            },
+        ],
+        reports_catalog(),
+    );
+    assert!(sql.contains("passant_kill"), "expected kill wrap: {sql}");
+    assert_eq!(
+        sql.matches("t1 AS").count(),
+        1,
+        "expected single t1 CTE for fused kill policies: {sql}"
+    );
+    assert_eq!(
+        sql.matches("passant_kill()").count(),
+        1,
+        "expected single passant_kill call: {sql}"
+    );
+}
+
+#[test]
 fn insert_with_cte_and_subquery_recurses_into_source() {
     assert_rewrite(
         "WITH src AS (SELECT id FROM foo) INSERT INTO bar SELECT id FROM src",
