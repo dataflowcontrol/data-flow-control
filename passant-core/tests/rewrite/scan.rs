@@ -269,7 +269,10 @@ fn select_kill_order_by_remapped() {
         .rewrite("SELECT id FROM foo ORDER BY foo.id")
         .expect("query should rewrite");
     assert!(sql.contains("passant_kill"), "expected kill wrap: {sql}");
-    assert!(sql.contains("ORDER BY id"), "expected unqualified ORDER BY: {sql}");
+    assert!(
+        sql.contains("ORDER BY id"),
+        "expected unqualified ORDER BY: {sql}"
+    );
     assert!(
         !sql.contains("ORDER BY foo."),
         "qualified ORDER BY should be remapped: {sql}"

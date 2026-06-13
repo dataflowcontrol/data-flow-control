@@ -60,17 +60,13 @@ fn is_kill_wrapped_select(select: &Select) -> bool {
     if select.projection.len() != 1 {
         return false;
     }
-    if !matches!(
-        select.projection.first(),
-        Some(SelectItem::Wildcard(_))
-    ) {
+    if !matches!(select.projection.first(), Some(SelectItem::Wildcard(_))) {
         return false;
     }
     let Some(TableWithJoins {
-        relation:
-            TableFactor::Derived {
-                alias: Some(alias), ..
-            },
+        relation: TableFactor::Derived {
+            alias: Some(alias), ..
+        },
         joins,
         ..
     }) = select.from.first()
@@ -753,7 +749,10 @@ mod tests {
         remap_query_order_by_after_kill_wrap(&mut query);
 
         let sql = render_statement(&crate::sql::statement_from_query(query), None);
-        assert!(sql.contains("ORDER BY id"), "expected unqualified ORDER BY: {sql}");
+        assert!(
+            sql.contains("ORDER BY id"),
+            "expected unqualified ORDER BY: {sql}"
+        );
         assert!(
             !sql.contains("ORDER BY receipts."),
             "qualified ORDER BY should be remapped: {sql}"

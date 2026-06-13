@@ -20,8 +20,8 @@ use super::derived_policy::{
 use super::exists::apply_in_semijoin_policy_filters;
 use super::helpers::select_output_column_mapping;
 use super::limit::wrap_limited_policy_query;
-use super::resolution::remap_query_order_by_after_kill_wrap;
 use super::plan::{apply_select_rewrite_plan, plan_select_rewrite};
+use super::resolution::remap_query_order_by_after_kill_wrap;
 use super::types::{PassantRewriter, RewriteContext};
 
 impl PassantRewriter {

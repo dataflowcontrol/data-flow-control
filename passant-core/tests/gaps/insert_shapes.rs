@@ -88,7 +88,10 @@ fn insert_select_kill_order_by_remapped() {
         reports_catalog(),
     );
     assert!(sql.contains("passant_kill"), "expected kill wrap: {sql}");
-    assert!(sql.contains("ORDER BY id"), "expected unqualified ORDER BY: {sql}");
+    assert!(
+        sql.contains("ORDER BY id"),
+        "expected unqualified ORDER BY: {sql}"
+    );
     assert!(
         !sql.contains("ORDER BY Receipts."),
         "qualified ORDER BY should be remapped: {sql}"

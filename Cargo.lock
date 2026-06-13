@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "passant-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "passant-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "criterion",
@@ -1623,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "passant-py"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "passant-core",
  "pyo3",

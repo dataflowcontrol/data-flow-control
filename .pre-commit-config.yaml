@@ -10,7 +10,7 @@ repos:
 
   - repo: local
     hooks:
-      - id: rustfmt
+      - id: passant-rustfmt
         name: cargo fmt
         entry: bash scripts/pre-commit/rustfmt.sh
         language: system
