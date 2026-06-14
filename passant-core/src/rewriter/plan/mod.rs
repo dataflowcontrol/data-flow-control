@@ -120,4 +120,85 @@ mod tests {
         assert_eq!(summary.scope_diagnostics.len(), 2);
         assert_eq!(summary.aggregate().candidate_policies, 2);
     }
+
+    #[test]
+    fn kill_policy_with_introspected_arbitrary_emits_tuple_action() {
+        use crate::aggregate_registry::AggregateFunctionSnapshot;
+        use crate::catalog::{CatalogSnapshot, CatalogTableInfo};
+        use std::collections::HashMap;
+
+        let mut tables = HashMap::new();
+        tables.insert(
+            "Receipts".to_string(),
+            CatalogTableInfo {
+                columns: vec!["cat".into()],
+                ..CatalogTableInfo::default()
+            },
+        );
+        tables.insert(
+            "Expenses".to_string(),
+            CatalogTableInfo {
+                columns: vec!["biz_use".into()],
+                ..CatalogTableInfo::default()
+            },
+        );
+        let mut rewriter = PassantRewriter::new();
+        rewriter.apply_catalog_snapshot(CatalogSnapshot {
+            dialect: Some("duckdb".to_string()),
+            tables,
+            aggregate_functions: vec![AggregateFunctionSnapshot {
+                name: "arbitrary".to_string(),
+                schema: None,
+                aliases: vec![],
+                classification: None,
+                source: Some("introspected".to_string()),
+            }],
+            ..CatalogSnapshot::default()
+        });
+        rewriter
+            .register_validated_policy(
+                crate::parse_policy_text(
+                    "SOURCE Receipts SINK Expenses CONSTRAINT ARBITRARY(Receipts.cat) != 'Meal' OR Expenses.biz_use <= 50.0 ON FAIL KILL",
+                )
+                .expect("parse"),
+            )
+            .expect("register");
+        let statement =
+            crate::parser::parse_query("INSERT INTO Expenses SELECT 1, 100.0 FROM Receipts")
+                .expect("parse");
+        let sqlparser::ast::Statement::Insert(insert) = statement else {
+            panic!("expected insert");
+        };
+        let Some(mut query) = insert.source else {
+            panic!("expected insert source");
+        };
+        let sqlparser::ast::SetExpr::Select(select) = query.body.as_mut() else {
+            panic!("expected select");
+        };
+        let analysis = SelectAnalysis::from_select(select);
+        let context = RewriteContext {
+            sink: Some("Expenses".to_string()),
+            sink_expr_by_column: HashMap::from([(
+                "biz_use".to_string(),
+                sqlparser::ast::Expr::Value(sqlparser::ast::Value::Number("100.0".into(), false)),
+            )]),
+            ..RewriteContext::default()
+        };
+        let plan = plan_select_rewrite(
+            rewriter.policy_store(),
+            rewriter.catalog(),
+            None,
+            select.as_mut(),
+            &analysis,
+            &context,
+            &HashSet::new(),
+        )
+        .expect("plan should succeed");
+        assert_eq!(
+            plan.policy_actions.len(),
+            1,
+            "expected one kill action, diagnostics={:?}",
+            plan.diagnostics
+        );
+    }
 }

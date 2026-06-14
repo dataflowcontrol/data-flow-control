@@ -167,6 +167,8 @@ impl AggregateRegistry {
             || lower.contains("countif")
             || lower.contains("approx_count_distinct")
             || lower.contains("approx_distinct")
+            || lower == "arbitrary"
+            || lower == "any_value"
             || is_count_like_name(&lower)
     }
 

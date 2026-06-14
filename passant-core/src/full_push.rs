@@ -18,6 +18,10 @@ fn semiring_allows_full_push(rewriter: &PassantRewriter, semiring: &SemiringAnal
         .all(|aggregate| count_if_style_scan_aggregate(rewriter, aggregate))
 }
 
+fn aggregate_function_name(aggregate: &str) -> &str {
+    aggregate.split('(').next().unwrap_or(aggregate).trim()
+}
+
 fn count_if_style_scan_aggregate(rewriter: &PassantRewriter, aggregate: &str) -> bool {
     let lower = aggregate.to_ascii_lowercase();
     if lower.contains("array_agg")
@@ -27,7 +31,9 @@ fn count_if_style_scan_aggregate(rewriter: &PassantRewriter, aggregate: &str) ->
     {
         return false;
     }
-    rewriter.aggregate_registry.is_scan_transformable(aggregate)
+    rewriter
+        .aggregate_registry
+        .is_scan_transformable(aggregate_function_name(&lower))
 }
 
 /// Full-push engine — mutates the query in place, preserving its overall shape.

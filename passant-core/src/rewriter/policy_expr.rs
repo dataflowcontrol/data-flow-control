@@ -433,7 +433,41 @@ pub(crate) fn scan_policy_expr(
             )?,
         ));
     }
+    if let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Or,
+        right,
+    } = &expr
+    {
+        return Ok(Expr::BinaryOp {
+            left: Box::new(scan_policy_expr(
+                *left.clone(),
+                sources,
+                context,
+                alias_by_base,
+                scan_ready,
+                is_aggregation,
+            )?),
+            op: BinaryOperator::Or,
+            right: Box::new(scan_policy_expr(
+                *right.clone(),
+                sources,
+                context,
+                alias_by_base,
+                scan_ready,
+                is_aggregation,
+            )?),
+        });
+    }
     let registry = &context.aggregate_registry;
+    if !scan_ready {
+        let transformed = transform_scan_aggregates(expr.clone(), registry)?;
+        if !registry.expr_contains_aggregate(&transformed) {
+            let mut transformed = transformed;
+            rewrite_column_qualifiers(&mut transformed, alias_by_base);
+            return Ok(transformed);
+        }
+    }
     let non_distributive = non_distributive_aggregates(&expr, registry)?;
     if non_distributive.is_empty() {
         if scan_ready {

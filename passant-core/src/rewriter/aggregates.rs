@@ -130,6 +130,9 @@ fn count_distinct_inner_column(expr: &Expr) -> Option<Expr> {
 }
 
 fn transform_scan_aggregates_recursive(expr: Expr, registry: &AggregateRegistry) -> Expr {
+    if let Ok(Some(rewritten)) = rewrite_count_distinct_equality(&expr) {
+        return rewritten;
+    }
     if let Expr::BinaryOp {
         left,
         op: BinaryOperator::Divide,

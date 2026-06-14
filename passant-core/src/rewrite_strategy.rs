@@ -377,24 +377,71 @@ mod tests {
     }
 
     #[test]
-    fn non_distributive_policy_uses_partial_push() {
+    fn introspected_arbitrary_in_catalog_still_rewrites_kill_insert() {
+        use crate::aggregate_registry::AggregateFunctionSnapshot;
+        use crate::catalog::{CatalogSnapshot, CatalogTableInfo};
+        use std::collections::HashMap;
+
+        let policy_text = "SOURCE Receipts SINK Expenses CONSTRAINT ARBITRARY(Receipts.cat) != 'Meal' OR Expenses.biz_use <= 50.0 ON FAIL KILL";
+        let sql = "INSERT INTO Expenses SELECT 1, 100.0 FROM Receipts";
+
         let mut rewriter = PassantRewriter::new();
-        rewriter.register_policy(non_distributive_policy());
-        let statement = sqlparser::parser::Parser::parse_sql(
-            &sqlparser::dialect::GenericDialect {},
-            "SELECT id FROM foo",
-        )
-        .expect("parse")
-        .pop()
-        .expect("statement");
-        let request = RewriteRequest::analyze(
-            "SELECT id FROM foo",
-            &statement,
-            RewriteOptions::default(),
-            rewriter.policy_store(),
+        rewriter
+            .register_validated_policy(crate::parse_policy_text(policy_text).expect("parse"))
+            .expect("register without catalog");
+        let without_catalog = rewriter.rewrite(sql).expect("rewrite without catalog");
+        assert!(
+            without_catalog.contains("passant_kill"),
+            "baseline rewrite without catalog introspection: {without_catalog}"
         );
-        assert!(!request.semiring.all_distributive);
-        assert!(!FullPushEngine.matches(&rewriter, &request));
-        assert!(PartialPushEngine.matches(&rewriter, &request));
+
+        let mut tables = HashMap::new();
+        tables.insert(
+            "Receipts".to_string(),
+            CatalogTableInfo {
+                columns: vec!["cat".into(), "biz_use".into()],
+                ..CatalogTableInfo::default()
+            },
+        );
+        tables.insert(
+            "Expenses".to_string(),
+            CatalogTableInfo {
+                columns: vec!["biz_use".into()],
+                ..CatalogTableInfo::default()
+            },
+        );
+        let mut rewriter = PassantRewriter::new();
+        rewriter.apply_catalog_snapshot(CatalogSnapshot {
+            dialect: Some("duckdb".to_string()),
+            tables,
+            aggregate_functions: vec![AggregateFunctionSnapshot {
+                name: "arbitrary".to_string(),
+                schema: None,
+                aliases: vec![],
+                classification: None,
+                source: Some("introspected".to_string()),
+            }],
+            ..CatalogSnapshot::default()
+        });
+        rewriter
+            .register_validated_policy(crate::parse_policy_text(policy_text).expect("parse"))
+            .expect("register validated policy");
+        assert!(
+            rewriter
+                .policy_store()
+                .has_enforcement_resolution_policies(),
+            "KILL policy should register as enforcement resolution"
+        );
+        assert_eq!(rewriter.policy_store().active_count(), 1);
+        let with_catalog = rewriter.rewrite(sql);
+        if let Err(err) = &with_catalog {
+            panic!("rewrite with catalog failed: {err}");
+        }
+        let with_catalog = with_catalog.expect("rewrite ok");
+        let summary = rewriter.last_statement_rewrite_summary();
+        assert!(
+            with_catalog.contains("passant_kill"),
+            "expected kill rewrite with introspected arbitrary aggregate, got: {with_catalog}; summary={summary:?}"
+        );
     }
 }
