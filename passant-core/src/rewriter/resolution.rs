@@ -39,7 +39,10 @@ pub(crate) const PASSANT_UI_APPROVE_UDF: &str = "passant_ui_approve";
 
 /// After KILL wrapping, the outer query is `SELECT * FROM __passant_kill` while
 /// `ORDER BY` may still reference the original table aliases. Unqualify them.
-pub(crate) fn remap_query_order_by_after_kill_wrap(query: &mut Query) {
+pub(crate) fn remap_query_order_by_after_kill_wrap(
+    query: &mut Query,
+    context: Option<&RewriteContext>,
+) {
     if query.order_by.is_none() {
         return;
     }
@@ -52,8 +55,82 @@ pub(crate) fn remap_query_order_by_after_kill_wrap(query: &mut Query) {
     if let Some(order_by) = query.order_by.as_mut() {
         for item in &mut order_by.exprs {
             crate::rewriter::columns::unqualify_columns(&mut item.expr);
+            if let Some(context) = context {
+                remap_insert_order_by_expr(&mut item.expr, context);
+            }
         }
     }
+}
+
+fn remap_insert_order_by_expr(expr: &mut Expr, context: &RewriteContext) {
+    if context.sink_expr_by_column.is_empty() {
+        return;
+    }
+    let Expr::Identifier(ident) = expr else {
+        return;
+    };
+    let referenced = ident.value.to_ascii_lowercase();
+    let mut matches = Vec::new();
+    for (column, output_expr) in &context.sink_expr_by_column {
+        if output_expr_references_name(output_expr, &referenced) {
+            matches.push(column.clone());
+        }
+    }
+    if matches.len() == 1 {
+        ident.value = matches[0].clone();
+    }
+}
+
+fn output_expr_references_name(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Identifier(ident) => ident.value.eq_ignore_ascii_case(name),
+        Expr::CompoundIdentifier(parts) if !parts.is_empty() => parts
+            .last()
+            .is_some_and(|part| part.value.eq_ignore_ascii_case(name)),
+        Expr::BinaryOp { left, right, .. } => {
+            output_expr_references_name(left, name) || output_expr_references_name(right, name)
+        }
+        Expr::Nested(inner) => output_expr_references_name(inner, name),
+        Expr::Function(function) => function_args_references_name(function, name),
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            operand
+                .as_ref()
+                .is_some_and(|expr| output_expr_references_name(expr, name))
+                || conditions
+                    .iter()
+                    .any(|expr| output_expr_references_name(expr, name))
+                || results
+                    .iter()
+                    .any(|expr| output_expr_references_name(expr, name))
+                || else_result
+                    .as_ref()
+                    .is_some_and(|expr| output_expr_references_name(expr, name))
+        }
+        _ => false,
+    }
+}
+
+fn function_args_references_name(function: &sqlparser::ast::Function, name: &str) -> bool {
+    let sqlparser::ast::FunctionArguments::List(args) = &function.args else {
+        return false;
+    };
+    args.args.iter().any(|arg| match arg {
+        sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Expr(expr))
+        | sqlparser::ast::FunctionArg::Named {
+            arg: sqlparser::ast::FunctionArgExpr::Expr(expr),
+            ..
+        }
+        | sqlparser::ast::FunctionArg::ExprNamed {
+            arg: sqlparser::ast::FunctionArgExpr::Expr(expr),
+            ..
+        } => output_expr_references_name(expr, name),
+        _ => false,
+    })
 }
 
 fn is_kill_wrapped_select(select: &Select) -> bool {
@@ -746,7 +823,7 @@ mod tests {
         )
         .expect("wrap");
         query.body = Box::new(SetExpr::Select(Box::new(wrapped)));
-        remap_query_order_by_after_kill_wrap(&mut query);
+        remap_query_order_by_after_kill_wrap(&mut query, None);
 
         let sql = render_statement(&crate::sql::statement_from_query(query), None);
         assert!(

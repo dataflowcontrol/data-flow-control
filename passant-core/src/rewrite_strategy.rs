@@ -330,22 +330,6 @@ mod tests {
         }
     }
 
-    fn non_distributive_policy() -> PolicyIr {
-        PolicyIr::Pgn {
-            sources: vec!["foo".to_string()],
-            required_sources: Vec::new(),
-            dimension_tables: Vec::new(),
-            dimension_aliases: std::collections::HashMap::new(),
-            dimension_queries: std::collections::HashMap::new(),
-            sink: None,
-            sink_alias: None,
-            source_aliases: std::collections::HashMap::new(),
-            constraint: "string_agg(foo.name, ',') = 'x'".to_string(),
-            on_fail: Resolution::Remove,
-            description: None,
-        }
-    }
-
     #[test]
     fn full_push_runs_before_partial_push() {
         let full = FullPushEngine;

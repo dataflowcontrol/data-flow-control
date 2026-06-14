@@ -460,7 +460,7 @@ pub(crate) fn scan_policy_expr(
         });
     }
     let registry = &context.aggregate_registry;
-    if !scan_ready {
+    if !scan_ready && !is_count_distinct_cardinality_one_check(&expr) {
         let transformed = transform_scan_aggregates(expr.clone(), registry)?;
         if !registry.expr_contains_aggregate(&transformed) {
             let mut transformed = transformed;

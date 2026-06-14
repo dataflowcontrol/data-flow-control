@@ -81,9 +81,10 @@ pub(crate) fn plan_select_rewrite(
     plan_join_input_source_filters(store, catalog, stats, select, analysis, context, &mut plan)?;
     plan_join_policy_pushdown(store, catalog, stats, select, analysis, context, &mut plan)?;
 
+    let policy_tables = policy_lookup_tables(analysis, context);
     let (applicable, policy_diag) = resolve_scope_policies(
         store,
-        &analysis.scope.direct_base_tables,
+        &policy_tables,
         context.sink.as_deref(),
         context.allow_partial_source_visibility,
         &plan.fully_pushed_indices,
@@ -401,6 +402,20 @@ fn record_fully_pushed(
             fully_pushed.insert(index);
         }
     }
+}
+
+fn policy_lookup_tables(analysis: &SelectAnalysis, context: &RewriteContext) -> HashSet<TableKey> {
+    if let Some(plan) = context.insert_output_policy.as_ref()
+        && matches!(
+            context.insert_rewrite_site,
+            Some(crate::rewriter::types::InsertRewriteSite::Body)
+        )
+    {
+        let mut tables = analysis.scope.base_tables.clone();
+        tables.extend(plan.policy_source_tables.iter().cloned());
+        return tables;
+    }
+    analysis.scope.direct_base_tables.clone()
 }
 
 pub(crate) fn apply_select_rewrite_plan(

@@ -9,6 +9,7 @@ use crate::source_sets::table_factor_source_tables;
 use super::RewriteError;
 use super::expr::{filter_table_factor, join_conjuncts};
 use super::helpers::{insert_select_mapping, update_output_column_mapping, update_target_name};
+use super::insert_output_policy::plan_insert_output_policy;
 use super::plan::{
     apply_update_scope_plan, plan_merge_source_filters, plan_policy_filter_actions,
     plan_update_scope, relation_udf_names, relation_violation_filters,
@@ -89,9 +90,20 @@ impl PassantRewriter {
                 }
                 self.expand_insert_columns_from_catalog(insert, &sink);
                 let output_mapping = insert_select_mapping(insert)?;
+                let insert_output_plan = if let Some(source) = insert.source.as_ref() {
+                    plan_insert_output_policy(
+                        &self.store,
+                        source,
+                        &output_mapping,
+                        &self.aggregate_registry,
+                        Some(&sink),
+                    )?
+                } else {
+                    None
+                };
                 let mut context = RewriteContext {
                     aggregate_registry: self.aggregate_registry.clone(),
-                    sink: Some(sink),
+                    sink: Some(sink.clone()),
                     sink_expr_by_column: output_mapping.expr_by_column,
                     ambiguous_output_columns: output_mapping.ambiguous_columns,
                     allow_partial_source_visibility: false,
@@ -99,11 +111,19 @@ impl PassantRewriter {
                     collect_stats,
                     ui_mode: UiResolutionMode::InsertSelect,
                     ui_stream_endpoint: options.ui_stream_endpoint.clone(),
+                    insert_output_policy: insert_output_plan,
                     ..RewriteContext::default()
                 };
                 if let Some(source) = insert.source.as_mut() {
                     self.rewrite_query_with_context(source, &mut context)?;
                     self.apply_insert_relation_resolution(source, &context)?;
+                    if context
+                        .insert_output_policy
+                        .as_ref()
+                        .is_some_and(|plan| plan.render_select_body_only)
+                    {
+                        *statement = Statement::Query(source.clone());
+                    }
                 }
                 Ok(())
             }

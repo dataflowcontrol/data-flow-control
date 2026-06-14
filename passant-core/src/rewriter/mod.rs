@@ -31,6 +31,7 @@ pub(crate) mod dimensions;
 mod exists;
 mod expr;
 mod helpers;
+mod insert_output_policy;
 pub(crate) mod limit;
 mod plan;
 mod policy_expr;

@@ -1,6 +1,6 @@
 [project]
 name = "data-flow-control"
-version = "0.1.6"
+version = "0.1.7"
 description = "Rust-backed Data Flow Control rewrite engine"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -45,6 +45,7 @@ features = ["extension-module"]
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
 pythonpath = ["python", "python/tests"]
+addopts = "-m 'not postgres and not clickhouse and not umbra'"
 markers = [
     "completion: tests that must pass before Passant is feature-complete",
     "postgres: requires psycopg and Passant docker postgres service",

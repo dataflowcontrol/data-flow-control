@@ -19,10 +19,11 @@ use super::derived_policy::{
 };
 use super::exists::apply_in_semijoin_policy_filters;
 use super::helpers::select_output_column_mapping;
+use super::insert_output_policy::inject_insert_output_aggregate_columns;
 use super::limit::wrap_limited_policy_query;
 use super::plan::{apply_select_rewrite_plan, plan_select_rewrite};
 use super::resolution::remap_query_order_by_after_kill_wrap;
-use super::types::{PassantRewriter, RewriteContext};
+use super::types::{InsertRewriteSite, PassantRewriter, RewriteContext};
 
 impl PassantRewriter {
     pub(crate) fn rewrite_expr_subqueries(
@@ -162,6 +163,18 @@ impl PassantRewriter {
             context
                 .deferred_policy_indices
                 .extend(prep.deferred_indices.iter().copied());
+        }
+
+        if let Some(plan) = context.insert_output_policy.clone()
+            && let Some(InsertRewriteSite::Cte(name)) = &context.insert_rewrite_site
+            && name == &plan.aggregation_cte
+        {
+            inject_insert_output_aggregate_columns(
+                select,
+                &plan,
+                self.policy_store(),
+                &self.aggregate_registry,
+            )?;
         }
 
         self.rewrite_expression_subqueries(select, context)?;
@@ -361,9 +374,23 @@ impl PassantRewriter {
         context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
         if let Some(with) = query.with.as_mut() {
+            let saved_site = context.insert_rewrite_site.clone();
             for cte in &mut with.cte_tables {
+                if context.insert_output_policy.is_some() {
+                    context.insert_rewrite_site =
+                        Some(InsertRewriteSite::Cte(cte.alias.name.value.clone()));
+                }
                 self.rewrite_query_with_context(&mut cte.query, context)?;
             }
+            if context.insert_output_policy.is_some() {
+                context.insert_rewrite_site = if saved_site.is_some() {
+                    saved_site
+                } else {
+                    Some(InsertRewriteSite::Body)
+                };
+            }
+        } else if context.insert_output_policy.is_some() && context.insert_rewrite_site.is_none() {
+            context.insert_rewrite_site = Some(InsertRewriteSite::Body);
         }
         if let Some(wrapped) = wrap_limited_policy_query(self, query, context)? {
             *query = wrapped;
@@ -373,7 +400,7 @@ impl PassantRewriter {
             return Ok(());
         }
         self.rewrite_set_expr(query.body.as_mut(), context)?;
-        remap_query_order_by_after_kill_wrap(query);
+        remap_query_order_by_after_kill_wrap(query, Some(context));
         if context.sink.is_none() {
             self.apply_query_relation_resolution(query, context)?;
         }

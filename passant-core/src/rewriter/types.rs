@@ -4,6 +4,7 @@ use sqlparser::ast::Expr;
 
 use crate::aggregate_registry::AggregateRegistry;
 use crate::catalog::TableCatalog;
+use crate::identifiers::TableKey;
 use crate::policy_store::PolicyStore;
 use crate::rewrite_stats::RewriteStatsCell;
 use crate::sql::SqlDialect;
@@ -140,6 +141,21 @@ impl PassantRewriter {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct InsertOutputPolicyPlan {
+    pub policy_indices: HashSet<usize>,
+    pub aggregation_cte: String,
+    pub policy_source_tables: HashSet<TableKey>,
+    pub aggregate_aliases: HashMap<String, String>,
+    pub render_select_body_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InsertRewriteSite {
+    Cte(String),
+    Body,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RewriteContext {
     pub(crate) aggregate_registry: AggregateRegistry,
     pub(crate) sink: Option<String>,
@@ -151,6 +167,10 @@ pub(crate) struct RewriteContext {
     pub(crate) defer_policy_for_outer_limit: bool,
     /// Policy indices deferred to a parent aggregate scope (derived propagation).
     pub(crate) deferred_policy_indices: HashSet<usize>,
+    /// INSERT policies deferred from inner scans to aggregation CTE + body SELECT.
+    pub(crate) insert_output_policy: Option<InsertOutputPolicyPlan>,
+    /// Current INSERT rewrite site when `insert_output_policy` is active.
+    pub(crate) insert_rewrite_site: Option<InsertRewriteSite>,
     /// IN semijoin policy metrics collected during rewrite for limit-first wrappers.
     pub(crate) pending_in_semijoin_filters: Vec<crate::partial_push::ExtraDfcFilter>,
     pub(crate) collect_stats: bool,
@@ -168,6 +188,8 @@ impl Default for RewriteContext {
             allow_partial_source_visibility: false,
             defer_policy_for_outer_limit: false,
             deferred_policy_indices: HashSet::new(),
+            insert_output_policy: None,
+            insert_rewrite_site: None,
             pending_in_semijoin_filters: Vec::new(),
             collect_stats: false,
             ui_mode: UiResolutionMode::default(),

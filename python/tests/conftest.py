@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import duckdb
 import pytest
 
@@ -41,6 +43,11 @@ def flock_extension():
 @pytest.fixture(scope="session")
 def passant_docker():
     """Start local Docker services used by postgres/clickhouse/umbra tests."""
+    if os.environ.get("PASSANT_INTEGRATION_TESTS") != "1":
+        pytest.skip(
+            "Docker integration tests are opt-in: run ./scripts/run-integration-tests.sh "
+            "or set PASSANT_INTEGRATION_TESTS=1"
+        )
     from tests.docker_services import PassantDockerStack
 
     try:

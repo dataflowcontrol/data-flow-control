@@ -9,6 +9,8 @@ mod in_semijoin;
 mod insert;
 #[path = "joins.rs"]
 mod joins;
+#[path = "meal_deduction.rs"]
+mod meal_deduction;
 #[path = "output.rs"]
 mod output;
 #[path = "recursive.rs"]

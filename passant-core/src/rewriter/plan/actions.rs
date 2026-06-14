@@ -12,6 +12,9 @@ use crate::rewriter::dimensions::{
 };
 use crate::rewriter::expr::bool_literal;
 use crate::rewriter::expr::{add_filter, and_expr};
+use crate::rewriter::insert_output_policy::{
+    build_insert_body_policy_filter, should_defer_insert_output_policy,
+};
 use crate::rewriter::policy_expr::{
     ConstraintExprCtx, build_pgn_filter_expr, unique_column_guard_from_constraint,
 };
@@ -117,6 +120,13 @@ pub(crate) fn build_policy_resolution_actions(
         {
             continue;
         }
+        if let (Some(plan), Some(site)) = (
+            context.insert_output_policy.as_ref(),
+            context.insert_rewrite_site.as_ref(),
+        ) && should_defer_insert_output_policy(plan, site, index)
+        {
+            continue;
+        }
         let cached_dimension_plan = store
             .compiled(index)
             .and_then(|entry| entry.dimension_join_plan.as_ref());
@@ -149,6 +159,21 @@ pub(crate) fn build_policy_resolution_actions(
             dimension_aliases,
         ) {
             bool_literal(false)
+        } else if let (Some(plan), Some(crate::rewriter::types::InsertRewriteSite::Body)) = (
+            context.insert_output_policy.as_ref(),
+            context.insert_rewrite_site.as_ref(),
+        ) && plan.policy_indices.contains(&index)
+        {
+            build_insert_body_policy_filter(
+                store,
+                catalog,
+                index,
+                policy,
+                applicability,
+                context,
+                &table_scope,
+                plan,
+            )?
         } else {
             build_pgn_filter_expr(
                 sources,
