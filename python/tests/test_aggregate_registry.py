@@ -1,17 +1,33 @@
 """Aggregate registry introspection and custom UDAF registration."""
 
 import sqlite3
+from types import SimpleNamespace
 
 import duckdb
 import pytest
 
 from data_flow_control import Policy, Resolution, dfc
 from data_flow_control.aggregate_introspection import (
+    introspect_clickhouse_aggregates,
     introspect_duckdb_aggregates,
     introspect_sqlite_aggregates,
     normalize_aggregate_entry,
 )
 from data_flow_control.catalog import build_catalog_snapshot
+
+
+def test_clickhouse_introspection_uses_http_client_query_api():
+    class Client:
+        # Deliberately expose only the HTTP client's query API, not execute().
+        def query(self, sql):
+            assert sql == "SELECT name, alias_to FROM system.functions WHERE is_aggregate = 1"
+            return SimpleNamespace(result_rows=[("sum", ""), ("median", "quantile"), ("sum", "")])
+
+    assert introspect_clickhouse_aggregates(Client()) == [
+        normalize_aggregate_entry("sum"),
+        normalize_aggregate_entry("median"),
+        normalize_aggregate_entry("quantile", aliases=["median"]),
+    ]
 
 
 def test_build_catalog_snapshot_includes_aggregate_functions():

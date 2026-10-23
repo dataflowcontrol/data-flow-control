@@ -76,9 +76,9 @@ def introspect_sqlite_aggregates(conn: Any) -> list[dict[str, Any]]:
 
 
 def introspect_clickhouse_aggregates(conn: Any) -> list[dict[str, Any]]:
-    rows = conn.execute(
+    rows = conn.query(
         "SELECT name, alias_to FROM system.functions WHERE is_aggregate = 1"
-    ).fetchall()
+    ).result_rows
     aggregates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
