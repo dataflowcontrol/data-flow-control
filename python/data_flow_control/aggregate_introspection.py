@@ -103,12 +103,12 @@ def introspect_datafusion_aggregates(ctx: Any) -> list[dict[str, Any]]:
     except Exception:
         return []
     aggregates: list[dict[str, Any]] = []
-    for row in rows:
-        values = list(row)
-        if not values:
-            continue
-        name = str(values[0])
-        func_type = str(values[1]).upper() if len(values) > 1 else ""
-        if func_type in ("AGGREGATE", "UDAF") or "aggregate" in func_type.lower():
-            aggregates.append(normalize_aggregate_entry(name))
+    seen: set[str] = set()
+    for batch in rows:
+        for row in batch.to_pylist():
+            name = row.get("function_name")
+            func_type = str(row.get("function_type", "")).upper()
+            if name and func_type in {"AGGREGATE", "UDAF"} and name.lower() not in seen:
+                seen.add(name.lower())
+                aggregates.append(normalize_aggregate_entry(name))
     return aggregates

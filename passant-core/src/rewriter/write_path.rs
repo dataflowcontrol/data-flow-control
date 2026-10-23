@@ -93,6 +93,7 @@ impl PassantRewriter {
                 let insert_output_plan = if let Some(source) = insert.source.as_ref() {
                     plan_insert_output_policy(
                         &self.store,
+                        &self.catalog,
                         source,
                         &output_mapping,
                         &self.aggregate_registry,

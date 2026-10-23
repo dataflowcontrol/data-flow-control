@@ -1,8 +1,28 @@
-# Passant
+# Data Flow Control
 
-Passant is a Rust-backed Data Flow Control (DFC) SQL rewrite engine with a
+Data Flow Control (`data-flow-control` on PyPI) enforces policies on SQL queries.
+Its Rust rewrite engine is named **Passant**, with a
 portable Python API (`dfc`, `Connection`, `Policy`) for DuckDB,
 SQLite, PostgreSQL, ClickHouse, Apache DataFusion, and Umbra support.
+
+## Install
+
+Python 3.10 or newer:
+
+```bash
+pip install data-flow-control
+```
+
+For LangChain agents, install the optional integration:
+
+```bash
+pip install "data-flow-control[langchain]"
+```
+
+Other backend extras are `postgres`, `clickhouse`, and `datafusion`.
+DuckDB and SQLite work with the base installation. NumPy is included because
+DuckDB requires it to register Python UDFs. Install an AWS SDK separately if your
+application uses one.
 
 The **Rust core** owns policy semantics, rewrite planning, and SQL generation.
 **Python** wraps database connections, syncs catalog snapshots from adapters,
@@ -44,10 +64,10 @@ Aggregate policies and invalidation (`valid` columns) are **not** supported.
 
 ## Python API
 
-Install the extension into the local Python environment before using the package:
+For development from a checkout (the PyPI installation needs no Rust toolchain):
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra langchain
 uv run maturin develop --manifest-path passant-py/Cargo.toml -q
 ```
 
@@ -120,9 +140,9 @@ ON FAIL REMOVE
 ```
 
 `KILL` routes through the `passant_kill()` UDF (alias of `kill()`). Rewritten SQL annotates rows in a
-`t1` CTE and filters with `__passant_policy_pass OR CASE WHEN NOT __passant_policy_pass THEN passant_kill() ELSE true END`.
+`t1` CTE and filters with a relation-level `MAX(CASE WHEN NOT __passant_policy_pass THEN 1 ELSE 0 END) = 1` guard that calls `passant_kill()` when any row fails, then `AND __passant_policy_pass`.
 Tuple- and relation-level custom UDF resolutions use the `t1`–`t4` CTE pattern (see
-[`docs/rewrite-pipeline.md`](docs/rewrite-pipeline.md)).
+[`developer-docs/rewrite-pipeline.md`](developer-docs/rewrite-pipeline.md)).
 
 | Adapter | `exception_udf` | `tuple_udf` | `relation_udf` | Registration |
 | --- | --- | --- | --- | --- |

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import data_flow_control
 
 
@@ -22,6 +24,7 @@ def test_public_exports():
 
 
 def test_langchain_exports_are_available():
+    pytest.importorskip("langchain")
     assert callable(data_flow_control.create_agent)
     assert callable(data_flow_control.langchain_dfc)
 

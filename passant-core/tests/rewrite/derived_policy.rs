@@ -64,3 +64,21 @@ fn derived_scan_preserves_aggregate_inputs_for_passing_groups() {
         "must not filter inner rows: {sql}"
     );
 }
+
+#[test]
+fn derived_scan_projects_shared_metric_for_each_policy_alias() {
+    let policies = vec![
+        pgn_policy(&["lineitem"], "sum(lineitem.l_quantity - 30) <= 0"),
+        pgn_policy(&["lineitem", "part"], "sum(lineitem.l_quantity - 30) <= 0"),
+    ];
+
+    let sql = rewrite(
+        "SELECT g, SUM(v) FROM (SELECT l_quantity AS v, l_orderkey AS g FROM lineitem, part) AS d GROUP BY g",
+        &policies,
+    );
+
+    assert_eq!(
+        sql,
+        "SELECT g, SUM(v) FROM (SELECT l_quantity AS v, l_orderkey AS g, lineitem.l_quantity - 30 AS __passant_filter_policy_0_lineitem_l_quantity___30, lineitem.l_quantity - 30 AS __passant_filter_policy_1_lineitem_l_quantity___30 FROM lineitem, part) AS d GROUP BY g HAVING sum(d.__passant_filter_policy_0_lineitem_l_quantity___30) <= 0 AND sum(d.__passant_filter_policy_1_lineitem_l_quantity___30) <= 0"
+    );
+}

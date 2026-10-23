@@ -19,7 +19,7 @@ use crate::rewriter::scope::TableScope;
 use crate::rewriter::types::RewriteContext;
 use crate::sql::{
     alias_expr, bool_literal, case_when, cte, empty_select, function_call, grouped_select,
-    is_not_null, passant_kill_pass_filter, qualified_column, query_from_select, string_literal,
+    is_not_null, passant_kill_tuple_filter, qualified_column, query_from_select, string_literal,
     table_factor, with_ctes,
 };
 
@@ -195,7 +195,7 @@ pub(crate) fn wrap_select_with_tuple_resolution(
     let udf_call = function_call(udf_name, udf_args);
 
     if is_kill {
-        let kill_filter = passant_kill_pass_filter(qualified_column(T1_CTE, PASS_COLUMN));
+        let kill_filter = passant_kill_tuple_filter(T1_CTE, PASS_COLUMN);
         let final_select = grouped_select(
             t2_projection.clone(),
             vec![TableWithJoins {
@@ -782,6 +782,8 @@ mod tests {
         );
         assert!(sql.contains("t1 AS"));
         assert!(sql.contains("passant_kill"));
+        assert!(sql.contains("max(CASE"));
+        assert!(!sql.contains("OR CASE WHEN NOT"));
         assert!(!sql.contains("t2 AS"));
         assert!(!sql.contains("t3 AS"));
         assert!(!sql.contains("t4 AS"));

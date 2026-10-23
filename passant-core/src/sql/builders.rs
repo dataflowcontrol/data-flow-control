@@ -354,6 +354,8 @@ pub fn case_when(condition: Expr, then_expr: Expr, else_expr: Expr) -> Expr {
 }
 
 /// Filter that keeps rows when `pass_expr` holds, or aborts via `passant_kill()` when it does not.
+///
+/// Used for UPDATE KILL where there is no annotated `t1` CTE.
 pub fn passant_kill_pass_filter(pass_expr: Expr) -> Expr {
     Expr::BinaryOp {
         left: Box::new(pass_expr.clone()),
@@ -367,6 +369,37 @@ pub fn passant_kill_pass_filter(pass_expr: Expr) -> Expr {
             bool_literal(true),
         )),
     }
+}
+
+/// Tuple-resolution KILL filter: relation-level abort guard plus per-row pass filter.
+///
+/// DuckDB may invoke `passant_kill()` from the legacy per-row `pass OR CASE …` pattern even
+/// when every row passes; aggregating violations first avoids that.
+pub fn passant_kill_tuple_filter(relation: &str, pass_column: &str) -> Expr {
+    let pass_col = qualified_column(relation, pass_column);
+    let violation_guard = scalar_subquery(
+        case_when(
+            binary_comparison(
+                function_call(
+                    "max",
+                    vec![case_when(
+                        Expr::UnaryOp {
+                            op: UnaryOperator::Not,
+                            expr: Box::new(qualified_column(relation, pass_column)),
+                        },
+                        int_literal(1),
+                        int_literal(0),
+                    )],
+                ),
+                BinaryOperator::Eq,
+                int_literal(1),
+            ),
+            function_call("passant_kill", Vec::new()),
+            bool_literal(true),
+        ),
+        relation,
+    );
+    and_exprs(vec![violation_guard, pass_col]).expect("kill tuple filter is non-empty")
 }
 
 pub fn string_concat(left: Expr, right: Expr) -> Expr {
@@ -420,8 +453,15 @@ pub fn sanitize_projection_alias(raw: &str) -> String {
     };
     let mut alias = stripped
         .to_ascii_lowercase()
-        .replace(['(', ')'], "_")
-        .replace([',', ' '], "_");
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
     alias = alias
         .replace('.', "_")
         .split('_')

@@ -184,10 +184,55 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  smoke-test:
+    name: Installed wheel smoke test
+    needs: [linux, windows, macos]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            artifact: wheels-linux-x86_64
+            python: '3.10'
+          - runner: ubuntu-22.04
+            artifact: wheels-linux-x86_64
+            python: '3.14'
+          - runner: windows-latest
+            artifact: wheels-windows-x64
+            python: '3.13'
+          - runner: macos-latest
+            artifact: wheels-macos-aarch64
+            python: '3.12'
+          - runner: macos-15-intel
+            artifact: wheels-macos-x86_64
+            python: '3.12'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Install the built wheel in a fresh environment
+        shell: bash
+        run: |
+          python -m venv wheel-test
+          if [ -f wheel-test/Scripts/python.exe ]; then
+            wheel_python=wheel-test/Scripts/python.exe
+          else
+            wheel_python=wheel-test/bin/python
+          fi
+          "$wheel_python" -m pip install --only-binary=:all: dist/*.whl
+          "$wheel_python" -m pip check
+          "$wheel_python" -I install_testing/smoke_test.py
+
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [linux, musllinux, windows, macos, sdist]
+    needs: [linux, musllinux, windows, macos, sdist, smoke-test]
     permissions:
       id-token: write
       contents: write

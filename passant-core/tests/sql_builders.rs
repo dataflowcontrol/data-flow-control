@@ -56,7 +56,7 @@ fn sanitize_projection_alias_handles_non_identifiers() {
     use passant_core::sql::sanitize_projection_alias;
     assert_eq!(
         sanitize_projection_alias("1 + foo.amount"),
-        "expr_1_+_foo_amount"
+        "expr_1_foo_amount"
     );
     assert_eq!(sanitize_projection_alias(""), "expr");
     assert_eq!(sanitize_projection_alias("valid_name"), "valid_name");

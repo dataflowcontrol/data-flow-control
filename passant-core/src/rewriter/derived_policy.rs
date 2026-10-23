@@ -257,7 +257,9 @@ fn inject_hidden_projections_in_factor(
 
     let inner_scope = TableScope::from_select(inner_select);
 
-    for index in prep.deferred_indices.iter().copied() {
+    let mut deferred_indices = prep.deferred_indices.iter().copied().collect::<Vec<_>>();
+    deferred_indices.sort_unstable();
+    for index in deferred_indices {
         let Some(policy) = store.policy(index) else {
             continue;
         };
@@ -422,10 +424,8 @@ fn projection_has_equivalent(select: &Select, expr: &Expr, alias: &str) -> bool 
     let key = crate::sql::ExprKey::from_expr(expr);
     select.projection.iter().any(|item| {
         if let Some((proj_expr, proj_alias)) = projection_expr_and_name(item) {
-            if proj_alias.is_some_and(|name| name == alias) {
-                return true;
-            }
-            return crate::sql::ExprKey::from_expr(proj_expr) == key;
+            return proj_alias.is_some_and(|name| name == alias)
+                && crate::sql::ExprKey::from_expr(proj_expr) == key;
         }
         false
     })
@@ -441,6 +441,9 @@ fn find_equivalent_projection_alias(select: &Select, metric_expr: &Expr) -> Opti
             continue;
         }
         if let Some(name) = alias {
+            if name.starts_with("__passant_filter_") {
+                continue;
+            }
             return Some(name.to_string());
         }
         if let Some(name) = super::expr::projected_column_name(expr) {

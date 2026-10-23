@@ -112,8 +112,8 @@ rollups AS (
         merchant,
         MIN(selection_position) AS output_position,
         SUM(cost) AS cost,
-        COUNT(DISTINCT Receipts.cat) = 1 AS __passant_count_distinct_one,
-        ARBITRARY(Receipts.cat) AS __passant_arbitrary_cat
+        COUNT(DISTINCT cat) AS __passant_count_cat,
+        ARBITRARY(cat) AS __passant_arbitrary_cat
     FROM candidate_receipts
     GROUP BY
         report_id,
@@ -132,7 +132,7 @@ FROM (
                 ELSE 50.0
             END AS biz_use,
             '10_row_queries:q01' AS source_note,
-            __passant_count_distinct_one
+            __passant_count_cat = 1
                 AND (
                     __passant_arbitrary_cat <> 'Meal'
                     OR CASE
@@ -150,11 +150,12 @@ FROM (
         t1.source_note
     FROM t1
     WHERE
-        t1.__passant_policy_pass
-        OR CASE
-            WHEN NOT t1.__passant_policy_pass THEN passant_kill()
-            ELSE TRUE
-        END
+        (
+            SELECT
+                CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
+            FROM t1
+        )
+        AND t1.__passant_policy_pass
 ) AS __passant_kill
 ORDER BY
     id

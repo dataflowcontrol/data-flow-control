@@ -1,27 +1,36 @@
-# install testing
+# Installed-package smoke tests
 
-Minimal project that installs `data-flow-control` and `duckdb` into an isolated uv environment and runs a one-file smoke test.
+The smoke test exercises REMOVE filtering, passing and failing KILL queries,
+and INSERT enforcement including verifying that a failed INSERT writes no rows.
+Run with `python -I` to prevent the checkout or `PYTHONPATH` from supplying imports.
 
-## After PyPI release
+## Test a built wheel before release
+
+From the repository root:
+
+```bash
+uv run --extra dev maturin build --locked --out dist
+uv venv /tmp/dfc-wheel-test
+uv pip install --python /tmp/dfc-wheel-test/bin/python dist/*.whl
+uv pip check --python /tmp/dfc-wheel-test/bin/python
+/tmp/dfc-wheel-test/bin/python -I install_testing/smoke_test.py
+```
+
+Use an output directory containing only the wheel for the current platform.
+On Windows, the virtual environment's Python is under `Scripts/python.exe`.
+
+The release workflow runs this against the produced Linux x86_64, Windows x64,
+and macOS ARM64/x86_64 wheels before publishing. Linux covers Python 3.10 and
+3.14. Other cross-compiled architectures and musllinux are built but are not yet
+execution-tested by that workflow.
+
+## Test the published package
 
 ```bash
 cd install_testing
 uv sync
-uv run python smoke_test.py
+uv run python -I smoke_test.py
 ```
 
-## Before PyPI release (local repo)
-
-`uv sync` will fail until `data-flow-control` is on PyPI. Install the local package from the repo root instead:
-
-```bash
-cd install_testing
-uv venv
-uv pip install "duckdb>=1.3.0"
-uv pip install -e ..
-.venv/bin/python smoke_test.py
-```
-
-(`uv run` re-resolves `pyproject.toml` against PyPI and will fail until the package is published.)
-
-The smoke test inserts `(1, 2)` into `foo`, registers `max(foo.id) > 1` with `ON FAIL REMOVE`, and checks that `SELECT id FROM foo` returns only `[(2,)]`.
+The base installation needs neither LangChain nor AWS packages. To exercise the
+optional integration, install `data-flow-control[langchain]` separately.

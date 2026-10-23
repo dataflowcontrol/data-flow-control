@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from weakref import WeakKeyDictionary
 
 import duckdb
 
@@ -24,6 +25,9 @@ def quote_sql_identifier(name: str) -> str:
         return f'"{escaped}"'
 
     return ".".join(quote_part(part) for part in name.split("."))
+
+
+_kill_registrations: WeakKeyDictionary = WeakKeyDictionary()
 
 
 class DuckDBAdapter:
@@ -51,11 +55,28 @@ class DuckDBAdapter:
         return quote_sql_identifier(name)
 
     def register_kill_function(self) -> None:
-        for name in ("kill", "passant_kill"):
-            try:
-                self._conn.create_function(name, python_kill, [], "BOOLEAN")
-            except duckdb.Error:
-                pass
+        if self._conn in _kill_registrations:
+            return
+        created = []
+        try:
+            for name in ("passant_kill", "kill"):
+                self._conn.create_function(
+                    name,
+                    python_kill,
+                    [],
+                    "BOOLEAN",
+                    side_effects=True,
+                )
+                created.append(name)
+        except duckdb.Error as exc:
+            for registered in reversed(created):
+                self._conn.remove_function(registered)
+            raise RuntimeError(
+                f"Cannot register DFC KILL function {name!r}. "
+                "The connection must allow UDF registration and must not already "
+                "define the reserved names 'kill' or 'passant_kill'."
+            ) from exc
+        _kill_registrations[self._conn] = True
 
     def register_resolution_function(
         self,

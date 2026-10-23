@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+pytest.importorskip("langchain")
 pytestmark = pytest.mark.langchain
 
 from langchain.tools import tool

@@ -170,3 +170,27 @@ def test_umbra_remove_scan_conformance(passant_docker):
 @pytest.mark.umbra
 def test_umbra_kill_conformance(passant_docker):
     pytest.skip("Umbra does not support CREATE OR REPLACE FUNCTION (PL/pgSQL) for kill()")
+
+
+@pytest.mark.parametrize("values,violates", [([], False), ([2], False), ([1, 2], True)])
+def test_datafusion_kill_checks_the_relation(values, violates):
+    datafusion = pytest.importorskip("datafusion")
+    import pyarrow as pa
+
+    ctx = datafusion.SessionContext()
+    ctx.register_record_batches(
+        "foo", [[pa.record_batch([pa.array(values, type=pa.int64())], names=["id"])]]
+    )
+    db = dfc(ctx)
+    db.register_policy(
+        Policy(
+            sources=["foo"],
+            constraint="MAX(foo.id) > 1",
+            on_fail=Resolution.KILL,
+        )
+    )
+    if violates:
+        with pytest.raises(Exception, match="KILLing due to dfc policy violation"):
+            db.fetchall("SELECT id FROM foo")
+    else:
+        assert db.fetchall("SELECT id FROM foo") == [(value,) for value in values]

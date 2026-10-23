@@ -1,0 +1,53 @@
+name: Backend integration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['passant-core/**', 'passant-py/**', 'python/**', 'Cargo.*', 'pyproject.toml', 'uv.lock', 'docker-compose.yml', '.github/workflows/backend-integration.yml']
+  push:
+    branches: [main]
+    paths: ['passant-core/**', 'passant-py/**', 'python/**', 'Cargo.*', 'pyproject.toml', 'uv.lock', 'docker-compose.yml', '.github/workflows/backend-integration.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  docker-backend:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [postgres, clickhouse, umbra]
+    env:
+      PASSANT_INTEGRATION_TESTS: '1'
+      PASSANT_INTEGRATION_STRICT: '1'
+      PASSANT_INTEGRATION_BACKEND: ${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+      - run: uv sync --locked --extra dev --extra postgres --extra clickhouse
+      - run: uv run maturin develop
+      - run: uv run pytest -q -m '${{ matrix.backend }}'
+      - name: Service logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop services
+        if: always()
+        run: docker compose down --volumes
+
+  datafusion:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+      - run: uv sync --locked --extra dev --extra datafusion
+      - run: uv run maturin develop
+      - run: uv run pytest -q python/tests/test_backend_basic_conformance.py python/tests/test_aggregate_registry.py -k datafusion

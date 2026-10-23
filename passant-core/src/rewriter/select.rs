@@ -169,12 +169,7 @@ impl PassantRewriter {
             && let Some(InsertRewriteSite::Cte(name)) = &context.insert_rewrite_site
             && name == &plan.aggregation_cte
         {
-            inject_insert_output_aggregate_columns(
-                select,
-                &plan,
-                self.policy_store(),
-                &self.aggregate_registry,
-            )?;
+            inject_insert_output_aggregate_columns(select, &plan);
         }
 
         self.rewrite_expression_subqueries(select, context)?;

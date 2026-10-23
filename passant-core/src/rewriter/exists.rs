@@ -5,6 +5,7 @@ use sqlparser::ast::{
     SelectItem, SetExpr, Statement, TableAlias, TableFactor, TableWithJoins,
 };
 
+use crate::catalog::TableCatalog;
 use crate::identifiers::{TableKey, column_name_from_expr, table_name_from_column_expr};
 use crate::parser::parse_query;
 use crate::partial_push::ExtraDfcFilter;
@@ -43,7 +44,11 @@ fn table_with_joins_contains_base(table: &TableWithJoins, base: &str) -> bool {
     })
 }
 
-fn from_index_for_in_outer_expr(select: &Select, outer_expr: &Expr) -> usize {
+fn from_index_for_in_outer_expr(
+    select: &Select,
+    outer_expr: &Expr,
+    catalog: &TableCatalog,
+) -> usize {
     if let Some(table_name) = table_name_from_column_expr(outer_expr) {
         let target = table_name.as_str();
         for (index, table_with_joins) in select.from.iter().enumerate() {
@@ -52,7 +57,38 @@ fn from_index_for_in_outer_expr(select: &Select, outer_expr: &Expr) -> usize {
             }
         }
     }
+    if let Some(column) = column_name_from_expr(outer_expr) {
+        let matching = select
+            .from
+            .iter()
+            .enumerate()
+            .filter_map(|(index, table_with_joins)| {
+                table_with_joins_contains_column(table_with_joins, column.as_str(), catalog)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if let [index] = matching.as_slice() {
+            return *index;
+        }
+    }
     select.from.len().saturating_sub(1)
+}
+
+fn table_with_joins_contains_column(
+    table: &TableWithJoins,
+    column: &str,
+    catalog: &TableCatalog,
+) -> bool {
+    std::iter::once(&table.relation)
+        .chain(table.joins.iter().map(|join| &join.relation))
+        .filter_map(table_factor_base_and_alias)
+        .any(|(base, _)| {
+            catalog.columns(&base).is_some_and(|columns| {
+                columns
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(column))
+            })
+        })
 }
 
 fn qualify_unqualified_column_in_expr(expr: &mut Expr, column: &str, table: &str) {
@@ -413,7 +449,7 @@ impl PassantRewriter {
                     "IN rewrite requires a FROM clause",
                 ));
             }
-            let from_index = from_index_for_in_outer_expr(select, expr.as_ref());
+            let from_index = from_index_for_in_outer_expr(select, expr.as_ref(), &self.catalog);
             select.from[from_index].joins.push(Join {
                 relation: TableFactor::Derived {
                     lateral: false,

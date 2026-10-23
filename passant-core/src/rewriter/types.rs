@@ -146,6 +146,7 @@ pub(crate) struct InsertOutputPolicyPlan {
     pub aggregation_cte: String,
     pub policy_source_tables: HashSet<TableKey>,
     pub aggregate_aliases: HashMap<String, String>,
+    pub aggregate_projections: Vec<(Expr, String)>,
     pub render_select_body_only: bool,
 }
 

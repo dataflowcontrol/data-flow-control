@@ -44,11 +44,25 @@ fn auto_alias_for_expression(expr: &Expr) -> String {
 }
 
 pub(crate) fn ensure_projection_aliases(select: &mut Select) {
+    let mut used = select
+        .projection
+        .iter()
+        .filter_map(|item| {
+            projection_expr_and_name(item)
+                .and_then(|(_, name)| name.map(|name| name.to_ascii_lowercase()))
+        })
+        .collect::<HashSet<_>>();
     let mut projection = Vec::with_capacity(select.projection.len());
     for item in std::mem::take(&mut select.projection) {
         match item {
             SelectItem::UnnamedExpr(expr) if projected_column_name(&expr).is_none() => {
-                let alias = auto_alias_for_expression(&expr);
+                let base = auto_alias_for_expression(&expr);
+                let mut alias = base.clone();
+                let mut suffix = 2;
+                while !used.insert(alias.to_ascii_lowercase()) {
+                    alias = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
                 projection.push(SelectItem::ExprWithAlias {
                     expr,
                     alias: Ident::new(&alias),

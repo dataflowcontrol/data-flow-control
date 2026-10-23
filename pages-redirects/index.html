@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Data Flow Control has moved</title>
+  <link rel="canonical" href="https://dataflowcontrol.github.io/" />
+  <script>
+    const prefix = '/data-flow-control';
+    let path = window.location.pathname;
+    if (path === prefix || path.startsWith(prefix + '/')) {
+      path = path.slice(prefix.length);
+    }
+    if (!path || path === '/index.html') path = '/';
+    const destination = new URL('https://dataflowcontrol.github.io/');
+    destination.pathname = path;
+    destination.search = window.location.search;
+    destination.hash = window.location.hash;
+    window.location.replace(destination.href);
+  </script>
+  <meta http-equiv="refresh" content="0; url=https://dataflowcontrol.github.io/" />
+</head>
+<body>
+  <p>This page has moved to <a href="https://dataflowcontrol.github.io/">Data Flow Control</a>.</p>
+</body>
+</html>

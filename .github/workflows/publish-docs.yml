@@ -1,0 +1,75 @@
+name: Publish documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'pages-redirects/**'
+      - '.github/workflows/publish-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-documentation
+  cancel-in-progress: false
+
+jobs:
+  sync-site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Check out website repository
+        uses: actions/checkout@v4
+        with:
+          repository: dataflowcontrol/dataflowcontrol.github.io
+          ref: main
+          token: ${{ secrets.WEBSITE_PUBLISH_TOKEN }}
+          path: website
+
+      - name: Copy documentation
+        run: |
+          mkdir -p website/docs
+          rsync -a --delete source/docs/ website/docs/
+          touch website/docs/.nojekyll
+
+      - name: Publish updated files
+        working-directory: website
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs
+          if git diff --cached --quiet; then
+            echo "Website is already up to date."
+            exit 0
+          fi
+          git commit -m "Publish docs from data-flow-control@${SOURCE_SHA}"
+          git push origin HEAD:main
+
+  deploy-redirects:
+    needs: sync-site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-redirects
+      - name: Deploy redirects for old project URLs
+        id: deployment
+        uses: actions/deploy-pages@v4

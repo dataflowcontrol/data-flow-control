@@ -29,6 +29,10 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
@@ -39,9 +43,11 @@ jobs:
           workspaces: .
 
       - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev --extra langchain
 
       - name: Build Python extension
         run: uv run maturin develop --release

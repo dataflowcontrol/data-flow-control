@@ -21,9 +21,10 @@ pub use builders::{
     distinct_aggregate, duckdb_array, empty_select, function_call, grouped_select, identifier,
     int_literal, is_not_null, max_column, min_column, null_literal, object_name,
     partial_push_join_from, partial_push_split_query, passant_filter_temp_column,
-    passant_internal_name, passant_kill_pass_filter, qualified_column, qualified_wildcard,
-    query_from_select, sanitize_projection_alias, scalar_subquery, statement_from_query,
-    string_concat, string_literal, table_alias, table_factor, with_ctes, wrap_table_with_filter,
+    passant_internal_name, passant_kill_pass_filter, passant_kill_tuple_filter, qualified_column,
+    qualified_wildcard, query_from_select, sanitize_projection_alias, scalar_subquery,
+    statement_from_query, string_concat, string_literal, table_alias, table_factor, with_ctes,
+    wrap_table_with_filter,
 };
 pub use columns::{collect_qualified_columns_from_expr, collect_query_projection_column_names};
 pub use expr::{rename_table_refs, replace_expr_subtrees, unqualify_table_refs};

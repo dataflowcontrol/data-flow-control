@@ -48,10 +48,12 @@ def passant_docker():
             "Docker integration tests are opt-in: run ./scripts/run-integration-tests.sh "
             "or set PASSANT_INTEGRATION_TESTS=1"
         )
-    from tests.docker_services import PassantDockerStack
+    from docker_services import PassantDockerStack
 
     try:
         stack = PassantDockerStack.start()
     except Exception as exc:
+        if os.environ.get("PASSANT_INTEGRATION_STRICT") == "1":
+            pytest.fail(f"Passant docker services unavailable: {exc}")
         pytest.skip(f"Passant docker services unavailable: {exc}")
     return stack

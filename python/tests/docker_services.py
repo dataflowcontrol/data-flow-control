@@ -37,8 +37,12 @@ class PassantDockerStack:
         if not COMPOSE_FILE.is_file():
             raise RuntimeError(f"missing compose file: {COMPOSE_FILE}")
 
+        backend = os.environ.get("PASSANT_INTEGRATION_BACKEND")
+        if backend is not None and backend not in {"postgres", "clickhouse", "umbra"}:
+            raise ValueError(f"Unknown integration backend: {backend}")
+        services = [backend] if backend else []
         subprocess.run(
-            ["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"],
+            ["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d", *services],
             check=True,
             capture_output=True,
             text=True,
@@ -52,9 +56,10 @@ class PassantDockerStack:
         last_error: Exception | None = None
         while time.time() < deadline:
             try:
-                self._wait_postgres()
-                self._wait_clickhouse()
-                self._wait_umbra()
+                backend = os.environ.get("PASSANT_INTEGRATION_BACKEND")
+                for name in ("postgres", "clickhouse", "umbra"):
+                    if backend is None or backend == name:
+                        getattr(self, f"_wait_{name}")()
                 return
             except Exception as exc:
                 last_error = exc

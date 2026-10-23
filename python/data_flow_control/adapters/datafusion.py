@@ -56,8 +56,8 @@ class DataFusionAdapter:
             python_kill()
             return pa.array([True], type=pa.bool_())
 
-        kill_udf = udf(_kill, [], pa.bool_(), "volatile", name="kill")
-        self._ctx.register_udf(kill_udf)
+        for name in ("kill", "passant_kill"):
+            self._ctx.register_udf(udf(_kill, [], pa.bool_(), "volatile", name=name))
 
     def register_resolution_function(
         self,

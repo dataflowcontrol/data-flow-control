@@ -1,6 +1,6 @@
-use passant_core::{PassantRewriter, Resolution};
+use passant_core::{PassantRewriter, Resolution, TableCatalog};
 
-use crate::common::{pgn_policy, rewrite};
+use crate::common::{pgn_policy, rewrite, rewrite_with_catalog};
 
 #[test]
 fn positive_in_ungrouped_subquery_adds_group_by_for_metric() {
@@ -52,6 +52,30 @@ fn positive_in_with_shared_source_enforces_subquery_occurrence() {
     assert!(
         !sql.to_uppercase().contains(" IN (SELECT"),
         "positive IN should be converted to join: {sql}"
+    );
+}
+
+#[test]
+fn positive_in_joins_the_catalog_owner_of_an_unqualified_outer_column() {
+    let policies = vec![pgn_policy(&["lineitem"], "max(lineitem.l_quantity) >= 1")];
+    let mut catalog = TableCatalog::default();
+    catalog.register_table("orders", vec!["o_orderkey".to_string()]);
+    catalog.register_table(
+        "lineitem",
+        vec!["l_orderkey".to_string(), "l_quantity".to_string()],
+    );
+
+    let sql = rewrite_with_catalog(
+        "SELECT o_orderkey FROM orders, lineitem \
+         WHERE o_orderkey IN (SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING SUM(l_quantity) > 300) \
+         AND o_orderkey = l_orderkey",
+        &policies,
+        catalog,
+    );
+
+    assert_eq!(
+        sql,
+        "SELECT o_orderkey FROM orders JOIN (SELECT l_orderkey, max(lineitem.l_quantity) AS __passant_filter_in_metric_0 FROM lineitem GROUP BY l_orderkey HAVING SUM(l_quantity) > 300 AND max(lineitem.l_quantity) >= 1) AS in_subquery ON o_orderkey = in_subquery.l_orderkey, lineitem WHERE o_orderkey = lineitem.l_orderkey AND in_subquery.__passant_filter_in_metric_0 >= 1 AND lineitem.l_quantity >= 1"
     );
 }
 

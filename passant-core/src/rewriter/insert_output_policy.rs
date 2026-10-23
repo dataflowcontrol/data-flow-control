@@ -1,11 +1,12 @@
-//! Defer INSERT policies that combine non-distributive source aggregates with
-//! projected output columns until the aggregation CTE and outer SELECT body.
+//! Defer INSERT policies that combine source aggregates or projected output columns
+//! until the aggregation CTE and outer SELECT body.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 
 use sqlparser::ast::{
-    BinaryOperator, DuplicateTreatment, Expr, Function, FunctionArguments, Ident, Query, Select,
-    SelectItem, SetExpr, TableFactor, Value,
+    Expr, Ident, Query, Select, SelectItem, SetExpr, TableFactor, visit_expressions,
+    visit_expressions_mut,
 };
 
 use crate::aggregate_registry::AggregateRegistry;
@@ -18,8 +19,8 @@ use crate::sql::{passant_internal_name, render_expr};
 use super::RewriteError;
 use super::columns::{apply_output_marker_replacements, apply_policy_sink_column_replacements};
 use super::expr::{first_function_expr, projection_expr_and_name};
-use super::helpers::{OUTPUT_MARKER, OutputColumnMapping, flatten_and};
-use super::policy_expr::{ConstraintExprCtx, non_distributive_aggregates};
+use super::helpers::{OUTPUT_MARKER, OutputColumnMapping};
+use super::policy_expr::ConstraintExprCtx;
 use super::projection::select_is_aggregation;
 use super::scope::TableScope;
 use super::types::{
@@ -34,6 +35,7 @@ struct AggregateProjection {
 
 pub(crate) fn plan_insert_output_policy(
     store: &PolicyStore,
+    catalog: &TableCatalog,
     query: &Query,
     output_mapping: &OutputColumnMapping,
     registry: &AggregateRegistry,
@@ -51,6 +53,17 @@ pub(crate) fn plan_insert_output_policy(
 
     let mut policy_indices = HashSet::new();
     let mut aggregate_aliases = HashMap::new();
+    let mut aggregate_projections = Vec::new();
+    let mut used_aliases = HashSet::new();
+    for cte in &with.cte_tables {
+        if let SetExpr::Select(select) = cte.query.body.as_ref() {
+            for item in &select.projection {
+                if let Some((_, Some(name))) = projection_expr_and_name(item) {
+                    used_aliases.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+    }
     let mut render_select_body_only = false;
     let mut aggregation_cte = None;
     let mut policy_source_tables = None;
@@ -66,6 +79,11 @@ pub(crate) fn plan_insert_output_policy(
             sink: policy_sink,
             ..
         } = policy;
+        if policy_sink.as_deref().is_some_and(|policy_sink| {
+            sink.is_none_or(|sink| TableKey::new(policy_sink) != TableKey::new(sink))
+        }) {
+            continue;
+        }
         if !matches!(
             on_fail,
             Resolution::Kill | Resolution::Udf(_) | Resolution::RelationUdf(_)
@@ -73,14 +91,7 @@ pub(crate) fn plan_insert_output_policy(
             continue;
         }
         if !sources.is_empty()
-            && !policy_needs_insert_output_scope(
-                store,
-                index,
-                policy,
-                constraint,
-                output_mapping,
-                registry,
-            )?
+            && !policy_needs_insert_output_scope(store, index, policy, constraint, output_mapping)?
         {
             continue;
         }
@@ -94,14 +105,31 @@ pub(crate) fn plan_insert_output_policy(
             continue;
         }
         let projections = collect_aggregate_projections(store, index, constraint, registry)?;
-        if projections.is_empty() {
-            continue;
+        if aggregation_cte
+            .as_ref()
+            .is_some_and(|name| name != &cte_name)
+        {
+            return Err(RewriteError::unsupported_statement(
+                "INSERT output policies spanning multiple aggregation CTEs are not supported",
+            ));
         }
-        for projection in &projections {
-            aggregate_aliases.insert(
-                render_expr(&projection.expr, None),
-                projection.alias.clone(),
-            );
+        let aggregate_select = cte_select(with, &cte_name).expect("aggregation CTE");
+        for projection in projections {
+            let key = render_expr(&projection.expr, None);
+            if aggregate_aliases.contains_key(&key) {
+                continue;
+            }
+            let base = projection.alias;
+            let mut alias = base.clone();
+            let mut suffix = 2;
+            while !used_aliases.insert(alias.to_ascii_lowercase()) {
+                alias = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            let expr =
+                map_aggregate_source_columns(projection.expr, with, aggregate_select, catalog)?;
+            aggregate_aliases.insert(key, alias.clone());
+            aggregate_projections.push((expr, alias));
         }
         policy_indices.insert(index);
         aggregation_cte = Some(cte_name.clone());
@@ -126,6 +154,7 @@ pub(crate) fn plan_insert_output_policy(
         aggregation_cte,
         policy_source_tables,
         aggregate_aliases,
+        aggregate_projections,
         render_select_body_only,
     }))
 }
@@ -136,17 +165,13 @@ fn policy_needs_insert_output_scope(
     policy: &PolicyIr,
     constraint: &str,
     output_mapping: &OutputColumnMapping,
-    registry: &AggregateRegistry,
 ) -> Result<bool, RewriteError> {
-    let constraint_ctx = ConstraintExprCtx {
+    let expr = ConstraintExprCtx {
         store,
         index,
         stats: None,
-    };
-    let expr = constraint_ctx.expr(constraint)?;
-    if non_distributive_aggregates(&expr, registry)?.is_empty() {
-        return Ok(false);
     }
+    .expr(constraint)?;
     Ok(constraint_references_output_columns(
         &expr,
         policy,
@@ -159,94 +184,27 @@ fn constraint_references_output_columns(
     policy: &PolicyIr,
     output_mapping: &OutputColumnMapping,
 ) -> bool {
-    if expr_contains_output_marker(expr) {
-        return true;
-    }
-    let PolicyIr::Pgn { sink, .. } = policy;
-    if sink.is_none() {
-        return false;
-    }
-    let Some(sink_name) = sink.as_deref() else {
-        return false;
-    };
-    output_mapping
-        .expr_by_column
-        .keys()
-        .any(|column| constraint_text_references_column(expr, sink_name, column))
-}
-
-fn expr_contains_output_marker(expr: &Expr) -> bool {
-    match expr {
-        Expr::Identifier(ident) if ident.value.eq_ignore_ascii_case(OUTPUT_MARKER) => true,
-        Expr::CompoundIdentifier(parts)
-            if { parts.len() >= 2 && parts[0].value.eq_ignore_ascii_case(OUTPUT_MARKER) } =>
+    let PolicyIr::Pgn {
+        sink, sink_alias, ..
+    } = policy;
+    visit_expressions(expr, |expr| {
+        if let Expr::CompoundIdentifier(parts) = expr
+            && parts.len() == 2
+            && (parts[0].value.eq_ignore_ascii_case(OUTPUT_MARKER)
+                || sink
+                    .iter()
+                    .chain(sink_alias.iter())
+                    .any(|name| parts[0].value.eq_ignore_ascii_case(name)))
+            && output_mapping
+                .expr_by_column
+                .keys()
+                .any(|column| column.eq_ignore_ascii_case(&parts[1].value))
         {
-            true
+            return ControlFlow::Break(());
         }
-        Expr::BinaryOp { left, right, .. } => {
-            expr_contains_output_marker(left) || expr_contains_output_marker(right)
-        }
-        Expr::Nested(inner) => expr_contains_output_marker(inner),
-        Expr::UnaryOp { expr, .. } => expr_contains_output_marker(expr),
-        Expr::Function(function) => function_references_output(function),
-        Expr::Between {
-            expr, low, high, ..
-        } => {
-            expr_contains_output_marker(expr)
-                || expr_contains_output_marker(low)
-                || expr_contains_output_marker(high)
-        }
-        Expr::InList { expr, list, .. } => {
-            expr_contains_output_marker(expr) || list.iter().any(expr_contains_output_marker)
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            results,
-            else_result,
-        } => {
-            operand
-                .as_ref()
-                .is_some_and(|expr| expr_contains_output_marker(expr))
-                || conditions.iter().any(expr_contains_output_marker)
-                || results.iter().any(expr_contains_output_marker)
-                || else_result
-                    .as_ref()
-                    .is_some_and(|expr| expr_contains_output_marker(expr))
-        }
-        _ => false,
-    }
-}
-
-fn function_references_output(function: &Function) -> bool {
-    let FunctionArguments::List(args) = &function.args else {
-        return false;
-    };
-    args.args.iter().any(|arg| match arg {
-        sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Expr(expr))
-        | sqlparser::ast::FunctionArg::Named {
-            arg: sqlparser::ast::FunctionArgExpr::Expr(expr),
-            ..
-        }
-        | sqlparser::ast::FunctionArg::ExprNamed {
-            arg: sqlparser::ast::FunctionArgExpr::Expr(expr),
-            ..
-        } => expr_contains_output_marker(expr),
-        _ => false,
+        ControlFlow::Continue(())
     })
-}
-
-fn constraint_text_references_column(expr: &Expr, sink: &str, column: &str) -> bool {
-    let rendered = render_expr(expr, None).to_ascii_lowercase();
-    rendered.contains(&format!(
-        "{}.{}",
-        sink.to_ascii_lowercase(),
-        column.to_ascii_lowercase()
-    )) || rendered.contains(&format!(
-        "\"{}\".\"{}\"",
-        sink.to_ascii_lowercase(),
-        column.to_ascii_lowercase()
-    ))
+    .is_break()
 }
 
 fn find_aggregation_cte(
@@ -426,114 +384,38 @@ fn collect_aggregate_projections(
     constraint: &str,
     registry: &AggregateRegistry,
 ) -> Result<Vec<AggregateProjection>, RewriteError> {
-    let constraint_ctx = ConstraintExprCtx {
+    let mut expr = ConstraintExprCtx {
         store,
         index,
         stats: None,
-    };
-    let expr = constraint_ctx.expr(constraint)?;
+    }
+    .expr(constraint)?;
+    if let Some(PolicyIr::Pgn { source_aliases, .. }) = store.policy(index) {
+        expr = super::columns::replace_source_alias_qualifiers(expr, source_aliases);
+    }
     let mut projections = Vec::new();
     let mut seen = HashSet::new();
-    for conjunct in flatten_and(&expr) {
-        if let Some(projection) = count_distinct_one_projection(&conjunct) {
-            let key = render_expr(&projection.expr, None);
-            if seen.insert(key) {
-                projections.push(projection);
-            }
-            continue;
-        }
-        collect_arbitrary_projections(&conjunct, registry, &mut projections, &mut seen);
-    }
-    Ok(projections)
-}
-
-fn count_distinct_one_projection(expr: &Expr) -> Option<AggregateProjection> {
-    let Expr::BinaryOp {
-        left,
-        op: BinaryOperator::Eq,
-        right,
-    } = expr
-    else {
-        return None;
-    };
-    let Expr::Function(function) = left.as_ref() else {
-        return None;
-    };
-    if !function.name.to_string().eq_ignore_ascii_case("count") {
-        return None;
-    }
-    let FunctionArguments::List(args) = &function.args else {
-        return None;
-    };
-    if args.duplicate_treatment != Some(DuplicateTreatment::Distinct) {
-        return None;
-    }
-    if !matches!(right.as_ref(), Expr::Value(Value::Number(value, _)) if value == "1") {
-        return None;
-    }
-    Some(AggregateProjection {
-        expr: expr.clone(),
-        alias: passant_internal_name("__passant", "count_distinct_one"),
-    })
-}
-
-fn collect_arbitrary_projections(
-    expr: &Expr,
-    registry: &AggregateRegistry,
-    projections: &mut Vec<AggregateProjection>,
-    seen: &mut HashSet<String>,
-) {
-    match expr {
-        Expr::Function(function)
-            if registry.is_aggregate_call(function)
-                && function.name.to_string().eq_ignore_ascii_case("arbitrary") =>
+    let _: ControlFlow<()> = visit_expressions(&expr, |expr| {
+        if let Expr::Function(function) = expr
+            && registry.is_aggregate_call(function)
+            && seen.insert(render_expr(expr, None))
         {
-            let key = render_expr(&Expr::Function(function.clone()), None);
-            if seen.insert(key) {
-                let suffix = first_function_expr(function)
-                    .and_then(|arg| match arg {
-                        Expr::CompoundIdentifier(parts) if !parts.is_empty() => {
-                            Some(parts.last()?.value.clone())
-                        }
-                        Expr::Identifier(ident) => Some(ident.value.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| "value".to_string());
-                projections.push(AggregateProjection {
-                    expr: Expr::Function(function.clone()),
-                    alias: passant_internal_name("__passant", &format!("arbitrary_{suffix}")),
-                });
-            }
+            let name = function.name.to_string().to_ascii_lowercase();
+            let suffix = first_function_expr(function)
+                .and_then(|arg| match arg {
+                    Expr::CompoundIdentifier(parts) => parts.last().map(|id| id.value.clone()),
+                    Expr::Identifier(id) => Some(id.value),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "value".to_string());
+            projections.push(AggregateProjection {
+                expr: expr.clone(),
+                alias: passant_internal_name("__passant", &format!("{name}_{suffix}")),
+            });
         }
-        Expr::BinaryOp { left, right, .. } => {
-            collect_arbitrary_projections(left, registry, projections, seen);
-            collect_arbitrary_projections(right, registry, projections, seen);
-        }
-        Expr::Nested(inner) => collect_arbitrary_projections(inner, registry, projections, seen),
-        Expr::UnaryOp { expr, .. } => {
-            collect_arbitrary_projections(expr, registry, projections, seen)
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            results,
-            else_result,
-        } => {
-            if let Some(operand) = operand {
-                collect_arbitrary_projections(operand, registry, projections, seen);
-            }
-            for condition in conditions {
-                collect_arbitrary_projections(condition, registry, projections, seen);
-            }
-            for result in results {
-                collect_arbitrary_projections(result, registry, projections, seen);
-            }
-            if let Some(else_result) = else_result {
-                collect_arbitrary_projections(else_result, registry, projections, seen);
-            }
-        }
-        _ => {}
-    }
+        ControlFlow::Continue(())
+    });
+    Ok(projections)
 }
 
 pub(crate) fn should_defer_insert_output_policy(
@@ -554,38 +436,14 @@ pub(crate) fn should_defer_insert_output_policy(
 pub(crate) fn inject_insert_output_aggregate_columns(
     select: &mut Select,
     plan: &InsertOutputPolicyPlan,
-    store: &PolicyStore,
-    registry: &AggregateRegistry,
-) -> Result<(), RewriteError> {
-    for index in &plan.policy_indices {
-        let Some(policy) = store.policy(*index) else {
-            continue;
-        };
-        let PolicyIr::Pgn { constraint, .. } = policy;
-        for projection in collect_aggregate_projections(store, *index, constraint, registry)? {
-            if projection_already_present(select, &projection.expr, &projection.alias) {
-                continue;
-            }
-            select.projection.push(SelectItem::ExprWithAlias {
-                expr: projection.expr,
-                alias: Ident::new(&projection.alias),
-            });
-        }
+) {
+    // Aliases are allocated once across every deferred policy and existing projection.
+    for (expr, alias) in &plan.aggregate_projections {
+        select.projection.push(SelectItem::ExprWithAlias {
+            expr: expr.clone(),
+            alias: Ident::new(alias),
+        });
     }
-    Ok(())
-}
-
-fn projection_already_present(select: &Select, expr: &Expr, alias: &str) -> bool {
-    let key = crate::sql::ExprKey::from_expr(expr);
-    select.projection.iter().any(|item| {
-        if let Some((proj_expr, proj_alias)) = projection_expr_and_name(item) {
-            if proj_alias.is_some_and(|name| name == alias) {
-                return true;
-            }
-            return crate::sql::ExprKey::from_expr(proj_expr) == key;
-        }
-        false
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -646,74 +504,204 @@ fn replace_aggregate_expressions_with_aliases(
     Ok(replace_aggregate_expr_recursive(expr, plan))
 }
 
-fn replace_aggregate_expr_recursive(expr: Expr, plan: &InsertOutputPolicyPlan) -> Expr {
-    if let Some(alias) = plan.aggregate_aliases.get(&render_expr(&expr, None)) {
-        return Expr::Identifier(Ident::new(alias));
-    }
-    if let Some(projection) = count_distinct_one_projection(&expr) {
-        return Expr::Identifier(Ident::new(&projection.alias));
-    }
-    match expr {
-        Expr::Function(function) => {
-            let key = render_expr(&Expr::Function(function.clone()), None);
-            if let Some(alias) = plan.aggregate_aliases.get(&key) {
-                return Expr::Identifier(Ident::new(alias));
+fn replace_aggregate_expr_recursive(mut expr: Expr, plan: &InsertOutputPolicyPlan) -> Expr {
+    let _: ControlFlow<()> = visit_expressions_mut(&mut expr, |expr| {
+        if let Some(alias) = plan.aggregate_aliases.get(&render_expr(expr, None)) {
+            *expr = Expr::Identifier(Ident::new(alias));
+        }
+        ControlFlow::Continue(())
+    });
+    expr
+}
+
+// Track only direct column lineage. Computed expressions cannot safely stand in for
+// the original source value, even if their output alias happens to match its name.
+type InputColumn = (Expr, Option<(TableKey, String)>);
+
+fn input_columns(
+    with: &sqlparser::ast::With,
+    select: &Select,
+    catalog: &TableCatalog,
+    visiting: &mut HashSet<String>,
+) -> Vec<InputColumn> {
+    let mut columns = Vec::new();
+    for factor in select.from.iter().flat_map(|table| {
+        std::iter::once(&table.relation).chain(table.joins.iter().map(|join| &join.relation))
+    }) {
+        let (name, alias, inner) = match factor {
+            TableFactor::Table { name, alias, .. } => {
+                let name = crate::identifiers::TableName::from_object_name(name).to_string();
+                let inner = cte_select(with, &name);
+                (name, alias.as_ref(), inner)
             }
-            Expr::Function(function)
+            TableFactor::Derived {
+                subquery,
+                alias: Some(alias),
+                ..
+            } => {
+                let SetExpr::Select(inner) = subquery.body.as_ref() else {
+                    continue;
+                };
+                (alias.name.value.clone(), Some(alias), Some(inner.as_ref()))
+            }
+            _ => continue,
+        };
+        let qualifier = alias
+            .map(|alias| alias.name.clone())
+            .unwrap_or_else(|| Ident::new(&name));
+        let outputs = if let Some(inner) = inner {
+            if !visiting.insert(name.to_ascii_lowercase()) {
+                continue;
+            }
+            let inputs = input_columns(with, inner, catalog, visiting);
+            let mut outputs = Vec::new();
+            for item in &inner.projection {
+                match item {
+                    SelectItem::Wildcard(_) => {
+                        outputs.extend(inputs.iter().filter_map(|(expr, origin)| {
+                            column_ident(expr).map(|id| (id.clone(), origin.clone()))
+                        }))
+                    }
+                    SelectItem::QualifiedWildcard(table, _) => {
+                        for (expr, origin) in &inputs {
+                            if let Expr::CompoundIdentifier(parts) = expr
+                                && parts[0].value.eq_ignore_ascii_case(&table.to_string())
+                            {
+                                outputs.push((parts.last().unwrap().clone(), origin.clone()));
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some((expr, output)) = projection_expr_and_name(item) {
+                            let id = match item {
+                                SelectItem::ExprWithAlias { alias, .. } => Some(alias.clone()),
+                                _ => column_ident(expr)
+                                    .cloned()
+                                    .or_else(|| output.map(Ident::new)),
+                            };
+                            if let Some(id) = id {
+                                let matches = inputs
+                                    .iter()
+                                    .filter(|(candidate, _)| column_matches(expr, candidate))
+                                    .collect::<Vec<_>>();
+                                let origin = if matches.len() == 1 {
+                                    matches[0].1.clone()
+                                } else {
+                                    None
+                                };
+                                outputs.push((id, origin));
+                            }
+                        }
+                    }
+                }
+            }
+            visiting.remove(&name.to_ascii_lowercase());
+            outputs
+        } else {
+            catalog
+                .columns(&name)
+                .into_iter()
+                .flatten()
+                .map(|column| {
+                    (
+                        Ident::new(column),
+                        Some((TableKey::new(&name), column.to_ascii_lowercase())),
+                    )
+                })
+                .collect()
+        };
+        // A CTE column list renames its output before a table alias column list does.
+        let cte_alias = with
+            .cte_tables
+            .iter()
+            .find(|cte| cte.alias.name.value.eq_ignore_ascii_case(&name))
+            .map(|cte| &cte.alias);
+        for (index, (mut id, origin)) in outputs.into_iter().enumerate() {
+            if let Some(column) = cte_alias.and_then(|alias| alias.columns.get(index)) {
+                id = column.name.clone();
+            }
+            if let Some(column) = alias.and_then(|alias| alias.columns.get(index)) {
+                id = column.name.clone();
+            }
+            columns.push((
+                Expr::CompoundIdentifier(vec![qualifier.clone(), id]),
+                origin,
+            ));
         }
-        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
-            left: Box::new(replace_aggregate_expr_recursive(*left, plan)),
-            op,
-            right: Box::new(replace_aggregate_expr_recursive(*right, plan)),
-        },
-        Expr::Nested(inner) => {
-            Expr::Nested(Box::new(replace_aggregate_expr_recursive(*inner, plan)))
+    }
+    columns
+}
+
+fn column_ident(expr: &Expr) -> Option<&Ident> {
+    match expr {
+        Expr::Identifier(id) => Some(id),
+        Expr::CompoundIdentifier(parts) => parts.last(),
+        _ => None,
+    }
+}
+
+fn column_matches(expr: &Expr, candidate: &Expr) -> bool {
+    match (expr, candidate) {
+        (Expr::Identifier(id), Expr::CompoundIdentifier(parts)) => parts
+            .last()
+            .is_some_and(|other| id.value.eq_ignore_ascii_case(&other.value)),
+        (Expr::CompoundIdentifier(parts), Expr::CompoundIdentifier(other)) => {
+            parts.len() == other.len()
+                && parts
+                    .iter()
+                    .zip(other)
+                    .all(|(a, b)| a.value.eq_ignore_ascii_case(&b.value))
         }
-        Expr::UnaryOp { op, expr } => Expr::UnaryOp {
-            op,
-            expr: Box::new(replace_aggregate_expr_recursive(*expr, plan)),
-        },
-        Expr::Between {
-            expr,
-            negated,
-            low,
-            high,
-        } => Expr::Between {
-            expr: Box::new(replace_aggregate_expr_recursive(*expr, plan)),
-            negated,
-            low: Box::new(replace_aggregate_expr_recursive(*low, plan)),
-            high: Box::new(replace_aggregate_expr_recursive(*high, plan)),
-        },
-        Expr::InList {
-            expr,
-            list,
-            negated,
-        } => Expr::InList {
-            expr: Box::new(replace_aggregate_expr_recursive(*expr, plan)),
-            list: list
-                .into_iter()
-                .map(|item| replace_aggregate_expr_recursive(item, plan))
-                .collect(),
-            negated,
-        },
-        Expr::Case {
-            operand,
-            conditions,
-            results,
-            else_result,
-        } => Expr::Case {
-            operand: operand.map(|expr| Box::new(replace_aggregate_expr_recursive(*expr, plan))),
-            conditions: conditions
-                .into_iter()
-                .map(|cond| replace_aggregate_expr_recursive(cond, plan))
-                .collect(),
-            results: results
-                .into_iter()
-                .map(|result| replace_aggregate_expr_recursive(result, plan))
-                .collect(),
-            else_result: else_result
-                .map(|expr| Box::new(replace_aggregate_expr_recursive(*expr, plan))),
-        },
-        other => other,
+        _ => false,
+    }
+}
+
+fn map_aggregate_source_columns(
+    mut expr: Expr,
+    with: &sqlparser::ast::With,
+    select: &Select,
+    catalog: &TableCatalog,
+) -> Result<Expr, RewriteError> {
+    let inputs = input_columns(with, select, catalog, &mut HashSet::new());
+    let result = visit_expressions_mut(&mut expr, |expr| {
+        if let Expr::CompoundIdentifier(parts) = expr {
+            let Some(column) = crate::identifiers::QualifiedColumn::from_compound_identifier(parts)
+            else {
+                return ControlFlow::Continue(());
+            };
+            let key = (
+                TableKey::from_table(&column.table),
+                column.column.as_str().to_ascii_lowercase(),
+            );
+            let matches = inputs
+                .iter()
+                .filter(|(_, origin)| origin.as_ref() == Some(&key))
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return ControlFlow::Break(RewriteError::unsupported_statement(format!(
+                    "cannot uniquely resolve deferred aggregate source column {expr} through upstream projections"
+                )));
+            }
+            let replacement = &matches[0].0;
+            let id = column_ident(replacement).expect("input column");
+            *expr = if inputs
+                .iter()
+                .filter(|(input, _)| {
+                    column_ident(input)
+                        .is_some_and(|other| other.value.eq_ignore_ascii_case(&id.value))
+                })
+                .count()
+                == 1
+            {
+                Expr::Identifier(id.clone())
+            } else {
+                replacement.clone()
+            };
+        }
+        ControlFlow::Continue(())
+    });
+    match result {
+        ControlFlow::Continue(()) => Ok(expr),
+        ControlFlow::Break(error) => Err(error),
     }
 }

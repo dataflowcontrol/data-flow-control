@@ -16,8 +16,14 @@ Policies compile to one of:
 **SELECT / INSERT … SELECT**
 
 1. Build `t1` as the inner projection plus `__passant_policy_pass`
-2. Split into passing rows (`t2`) and failing rows (`t3`)
-3. Apply `passant_kill()` only on failing rows via `CASE WHEN NOT pass THEN passant_kill() …`
+2. Filter with a relation-level guard: `MAX(CASE WHEN NOT pass THEN 1 ELSE 0 END) = 1` in a scalar subquery over `t1` calls `passant_kill()` when any row fails
+3. Keep only passing rows with `AND t1.__passant_policy_pass`
+
+**INSERT output deferral**
+
+Policies that reference sink output columns (e.g. `Expenses.biz_use`) on nested aggregation INSERTs are deferred from inner source scans to the outer SELECT body. Source aggregates, including COUNT, MIN/MAX, COUNT DISTINCT, and ARBITRARY, are injected at the aggregation CTE with distinct aliases. Aggregate discovery and replacement also traverse scalar expressions such as COALESCE, BETWEEN, and IN.
+
+Source columns are resolved through direct upstream projections and CTE column aliases. Ambiguous or unavailable source values (including a computed value masquerading under the original column name) are rejected explicitly. Plans requiring multiple aggregation CTEs are also rejected rather than assigning all policies to one CTE.
 
 **UPDATE**
 

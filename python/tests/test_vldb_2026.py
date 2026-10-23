@@ -109,8 +109,12 @@ FROM (
     t1.item
   FROM t1
   WHERE
-    t1.__passant_policy_pass
-    OR CASE WHEN NOT t1.__passant_policy_pass THEN PASSANT_KILL() ELSE TRUE END
+    (
+      SELECT
+        CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
+      FROM t1
+    )
+    AND t1.__passant_policy_pass
 ) AS __passant_kill
 """,
     )
@@ -138,8 +142,12 @@ FROM (
     t1.phantom
   FROM t1
   WHERE
-    t1.__passant_policy_pass
-    OR CASE WHEN NOT t1.__passant_policy_pass THEN PASSANT_KILL() ELSE TRUE END
+    (
+      SELECT
+        CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
+      FROM t1
+    )
+    AND t1.__passant_policy_pass
 ) AS __passant_kill
 """,
     )
@@ -242,8 +250,12 @@ FROM (
     t1.approve
   FROM t1
   WHERE
-    t1.__passant_policy_pass
-    OR CASE WHEN NOT t1.__passant_policy_pass THEN PASSANT_KILL() ELSE TRUE END
+    (
+      SELECT
+        CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
+      FROM t1
+    )
+    AND t1.__passant_policy_pass
 ) AS __passant_kill
 """,
     )
@@ -283,8 +295,12 @@ FROM (
     t1.deny
   FROM t1
   WHERE
-    t1.__passant_policy_pass
-    OR CASE WHEN NOT t1.__passant_policy_pass THEN PASSANT_KILL() ELSE TRUE END
+    (
+      SELECT
+        CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
+      FROM t1
+    )
+    AND t1.__passant_policy_pass
 ) AS __passant_kill
 """,
     )
