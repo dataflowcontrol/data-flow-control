@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
+from unittest.mock import Mock
 
 import duckdb
 import pytest
@@ -13,6 +15,43 @@ from data_flow_control.adapters.base import Capabilities
 from data_flow_control.catalog import build_catalog_snapshot
 from data_flow_control.connection import Connection
 from data_flow_control.planner import Planner
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "clickhouse"])
+def test_backend_registers_kill_function_used_by_rewriter(monkeypatch, dialect):
+    from data_flow_control.adapters import clickhouse, postgres
+
+    backend = Mock()
+    if dialect == "postgres":
+        monkeypatch.setattr(postgres, "psycopg", Mock())
+        backend.autocommit = False
+        adapter = postgres.PostgresAdapter(backend)
+        ddl_calls = backend.cursor.return_value.execute.call_args_list
+    else:
+        monkeypatch.setattr(clickhouse, "clickhouse_connect", Mock())
+        adapter = clickhouse.ClickHouseAdapter(backend)
+        ddl_calls = backend.command.call_args_list
+
+    db = Connection(adapter)
+    db.planner.sync_catalog(
+        build_catalog_snapshot(
+            dialect=dialect,
+            tables={"foo": {"columns": ["id"], "types": {"id": "INTEGER"}}},
+        )
+    )
+    db.planner.register_policy(
+        Policy(sources=["foo"], constraint="max(foo.id) > 1", on_fail=Resolution.KILL)
+    )
+    rewritten = db.planner.rewrite("SELECT id FROM foo")
+    registered = {
+        re.search(r"CREATE OR REPLACE FUNCTION (\w+)", call.args[0]).group(1) for call in ddl_calls
+    }
+    # Check the contract between the real rewriter and each adapter, including
+    # the legacy name available to callers executing SQL directly.
+    assert "passant_kill()" in rewritten
+    assert {"kill", "passant_kill"} <= registered
+    if dialect == "postgres":
+        backend.commit.assert_called_once()
 
 
 @dataclass

@@ -4,8 +4,9 @@ import re
 
 KILL_MESSAGE = "KILLing due to dfc policy violation"
 
-POSTGRES_KILL_DDL = f"""
-CREATE OR REPLACE FUNCTION kill() RETURNS boolean
+POSTGRES_KILL_DDL = tuple(
+    f"""
+CREATE OR REPLACE FUNCTION {name}() RETURNS boolean
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -13,8 +14,13 @@ BEGIN
 END;
 $$;
 """.strip()
+    for name in ("kill", "passant_kill")
+)
 
-CLICKHOUSE_KILL_DDL = f"CREATE OR REPLACE FUNCTION kill AS () -> throwIf(1, '{KILL_MESSAGE}')"
+CLICKHOUSE_KILL_DDL = tuple(
+    f"CREATE OR REPLACE FUNCTION {name} AS () -> throwIf(1, '{KILL_MESSAGE}')"
+    for name in ("kill", "passant_kill")
+)
 
 
 def python_kill() -> bool:

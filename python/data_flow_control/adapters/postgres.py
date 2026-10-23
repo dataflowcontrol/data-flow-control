@@ -40,7 +40,8 @@ class PostgresAdapter:
 
     def register_kill_function(self) -> None:
         cursor = self._conn.cursor()
-        cursor.execute(POSTGRES_KILL_DDL)
+        for statement in POSTGRES_KILL_DDL:
+            cursor.execute(statement)
         if not self._conn.autocommit:
             self._conn.commit()
 

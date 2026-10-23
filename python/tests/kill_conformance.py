@@ -16,7 +16,8 @@ def kill_scan_conformance(
 ) -> None:
     """Register a KILL policy and assert violating scan queries abort."""
     if not skip_ddl:
-        db.execute(f"CREATE TABLE {table} (id INTEGER)")
+        engine = " ENGINE=Memory" if db.adapter.dialect == "clickhouse" else ""
+        db.execute(f"CREATE TABLE {table} (id INTEGER){engine}")
         db.execute(f"INSERT INTO {table} VALUES (1)")
     db.register_policy(
         Policy(

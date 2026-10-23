@@ -52,7 +52,8 @@ class ClickHouseAdapter:
         return quote_sql_identifier(name)
 
     def register_kill_function(self) -> None:
-        self._client.command(CLICKHOUSE_KILL_DDL)
+        for statement in CLICKHOUSE_KILL_DDL:
+            self._client.command(statement)
 
     def register_resolution_function(
         self,
