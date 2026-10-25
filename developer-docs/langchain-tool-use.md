@@ -134,3 +134,11 @@ for `direct_tool_mode` raise `ValueError` instead of silently defaulting to `obs
 
 `CallToolWithDataFlow` rejects inserts that target `__passant_` metadata columns or omit an
 explicit user column list.
+
+## Opt-in constraint-aware retry
+
+For an ordinary-call → policy feedback → source-derived SQL replacement loop, see
+[the model-neutral tool retry API](tool-retry.md). It reuses `ToolUseDatabase` and
+native DFC checks with explicit per-policy retry directives. It does not change
+`observe`/`enforce`, convert all KILL policies into retries, or add a native PGN
+`RETRY` resolution.

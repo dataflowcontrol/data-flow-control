@@ -29,6 +29,11 @@ The **Rust core** owns policy semantics, rewrite planning, and SQL generation.
 and executes rewritten SQL. Resolutions are **`REMOVE`**, **`KILL`**, tuple-level **`ON FAIL UDF`**, and
 relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutions; see capability table).
 
+For opt-in, model-neutral tool-call recovery, see the
+[constraint-aware RETRY integration](developer-docs/tool-retry.md). It wraps native
+KILL checks with a bounded callback loop; it does not add a new engine resolution
+or retry tools after a potentially side-effecting execution failure.
+
 ## Workspace
 
 - `passant-core`: parser, IR, planner, optimizer, SQL rewriter, and explain output.

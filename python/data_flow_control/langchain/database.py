@@ -8,9 +8,8 @@ from typing import Any, Literal
 
 import duckdb
 
-from data_flow_control.connection import dfc
+from data_flow_control.connection import Connection, dfc
 from data_flow_control.policy import Policy
-from data_flow_control.connection import Connection
 
 from .schema import (
     input_table_name,
@@ -357,10 +356,18 @@ class ToolUseDatabase:
         row = self._fetchone_raw(f"SELECT MAX(__passant_output_id) FROM {quote_identifier(table)}")
         return int(row[0])
 
-    def execute_tool_for_input(self, tool_name: str, input_id: int) -> tuple[str, Any, int]:
+    def execute_tool_for_input(
+        self, tool_name: str, input_id: int, *, include_nulls: bool = False
+    ) -> tuple[str, Any, int]:
         spec = self.spec_by_name[tool_name]
         row = self._read_input_row(tool_name, input_id)
-        kwargs = {col: row.get(col) for col in spec.input_schema if row.get(col) is not None}
+        # The retry runner must dispatch the exact checked SQL values, including
+        # NULL, rather than silently replacing them with callable defaults.
+        kwargs = {
+            col: row.get(col)
+            for col in spec.input_schema
+            if include_nulls or row.get(col) is not None
+        }
         try:
             if spec.call_sync is None:
                 raise ValueError(f"Tool {tool_name!r} does not support sync execution")
