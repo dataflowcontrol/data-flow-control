@@ -5,7 +5,7 @@ fn existing_where_or_clause_combines_with_policy_using_and() {
     assert_rewrite(
         "SELECT id FROM foo WHERE id = 1 OR id = 3",
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
-        "SELECT id FROM foo WHERE id = 1 OR id = 3 AND foo.id > 1",
+        "SELECT id FROM foo WHERE (id = 1 OR id = 3) AND foo.id > 1",
     );
 }
 
@@ -14,7 +14,7 @@ fn existing_having_or_clause_combines_with_policy_using_and() {
     assert_rewrite(
         "SELECT category, SUM(amount) FROM foo GROUP BY category HAVING SUM(amount) > 0 OR SUM(amount) < 0",
         &[pgn_policy(&["foo"], "max(foo.amount) > 6")],
-        "SELECT category, SUM(amount) FROM foo GROUP BY category HAVING SUM(amount) > 0 OR SUM(amount) < 0 AND max(foo.amount) > 6",
+        "SELECT category, SUM(amount) FROM foo GROUP BY category HAVING (SUM(amount) > 0 OR SUM(amount) < 0) AND max(foo.amount) > 6",
     );
 }
 

@@ -73,3 +73,33 @@ def test_kill_or_policy_cannot_bypass_second_policy_with_null(reverse):
             guarded.fetchall("SELECT tool, kind, text_value FROM action")
     finally:
         guarded.close()
+
+
+@pytest.mark.parametrize(
+    "query,constraint,expected",
+    [
+        (
+            "SELECT id FROM foo WHERE id = 1 OR id = 3",
+            "max(foo.id) > 1",
+            [(3,)],
+        ),
+        (
+            "SELECT category, SUM(amount) FROM foo GROUP BY category "
+            "HAVING SUM(amount) > 0 OR SUM(amount) < 0",
+            "max(foo.amount) > 6",
+            [("large", 10)],
+        ),
+    ],
+)
+def test_existing_or_clause_cannot_bypass_policy(query, constraint, expected):
+    raw = duckdb.connect()
+    raw.execute("CREATE TABLE foo (id INTEGER, category VARCHAR, amount INTEGER)")
+    raw.execute("INSERT INTO foo VALUES (1, 'small', 1), (3, 'large', 10)")
+    guarded = dfc(raw)
+    guarded.register_policy(
+        Policy(sources=["foo"], constraint=constraint, on_fail=Resolution.REMOVE)
+    )
+    try:
+        assert guarded.fetchall(query) == expected
+    finally:
+        guarded.close()
