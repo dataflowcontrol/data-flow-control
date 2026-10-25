@@ -1,7 +1,7 @@
 use crate::aggregate_registry::AggregateRegistry;
 use crate::sql::{parse_projection_expr, wrap_table_with_filter};
 use sqlparser::ast::{
-    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, TableFactor,
+    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, TableFactor,
 };
 
 use crate::diagnostics::RewriteError;
@@ -89,13 +89,7 @@ pub(crate) fn add_filter(
     Ok(())
 }
 
-pub(crate) fn and_expr(left: Expr, right: Expr) -> Expr {
-    Expr::BinaryOp {
-        left: Box::new(left),
-        op: BinaryOperator::And,
-        right: Box::new(right),
-    }
-}
+pub(crate) use crate::sql::builders::and_expr;
 
 pub(crate) fn parse_expr(sql: &str) -> Result<Expr, RewriteError> {
     parse_projection_expr(sql)

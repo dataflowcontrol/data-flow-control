@@ -84,7 +84,33 @@ def main() -> int:
     else:
         raise AssertionError("KILL failed to abort a violating SELECT")
     conn.close()
-    print("ok: installed package enforces REMOVE, KILL, and INSERT policies")
+    # A true OR branch in one policy must not bypass a second policy.
+    conn = dfc(duckdb.connect())
+    conn.execute("CREATE TABLE action (tool VARCHAR, kind VARCHAR, text_value VARCHAR)")
+    conn.execute("INSERT INTO action VALUES ('slack', 'string', NULL)")
+    conn.register_policies(
+        [
+            Policy(
+                sources=["action"],
+                constraint="action.kind <> 'recipient' OR action.text_value = 'ok'",
+                on_fail=Resolution.KILL,
+            ),
+            Policy(
+                sources=["action"],
+                constraint="action.tool <> 'slack'",
+                on_fail=Resolution.KILL,
+            ),
+        ]
+    )
+    try:
+        conn.fetchall("SELECT tool, kind, text_value FROM action")
+    except Exception as exc:
+        if "KILLing due to dfc policy violation" not in str(exc):
+            raise
+    else:
+        raise AssertionError("OR in one policy bypassed another policy")
+    conn.close()
+    print("ok: installed package enforces REMOVE, KILL, INSERT, and policy composition")
     return 0
 
 

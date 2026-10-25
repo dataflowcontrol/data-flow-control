@@ -307,15 +307,8 @@ pub(crate) fn split_conjuncts(expr: Expr) -> Vec<Expr> {
     }
 }
 
-pub(crate) fn join_conjuncts(mut conjuncts: Vec<Expr>) -> Expr {
-    let first = conjuncts.remove(0);
-    conjuncts
-        .into_iter()
-        .fold(first, |left, right| Expr::BinaryOp {
-            left: Box::new(left),
-            op: BinaryOperator::And,
-            right: Box::new(right),
-        })
+pub(crate) fn join_conjuncts(conjuncts: Vec<Expr>) -> Expr {
+    crate::sql::and_exprs(conjuncts).expect("non-empty conjuncts")
 }
 
 pub(crate) fn parse_constraint_expr(sql: &str) -> Result<Expr, String> {
