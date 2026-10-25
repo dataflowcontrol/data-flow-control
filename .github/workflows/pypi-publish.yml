@@ -1,17 +1,59 @@
 # Publish data-flow-control to PyPI.
 #
-# Manual only: run from Actions → Publish to PyPI → Run workflow.
+# A deliberate version increase on main releases only after both test workflows pass.
+# Manual dispatch uses the same gates and can retry interrupted publication.
 # Uses PyPI trusted publishing (OIDC); no PYPI_API_TOKEN secret required.
 name: Publish to PyPI
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: [CI, Backend integration]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
 
+# Serialize all attempts; never cancel an upload partway through.
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.id == github.event.repository.id)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release: ${{ steps.gate.outputs.release }}
+      sha: ${{ steps.gate.outputs.sha }}
+      version: ${{ steps.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify deliberate version bump and exact-SHA tests
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: python scripts/release_gate.py preflight
+
   linux:
+    needs: preflight
+    if: needs.preflight.outputs.release == 'true'
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -37,6 +79,9 @@ jobs:
             manylinux: 2_28
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -73,6 +118,8 @@ jobs:
           path: dist
 
   musllinux:
+    needs: preflight
+    if: needs.preflight.outputs.release == 'true'
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -87,6 +134,9 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -106,6 +156,8 @@ jobs:
           path: dist
 
   windows:
+    needs: preflight
+    if: needs.preflight.outputs.release == 'true'
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -121,6 +173,9 @@ jobs:
             python_arch: arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -140,6 +195,8 @@ jobs:
           path: dist
 
   macos:
+    needs: preflight
+    if: needs.preflight.outputs.release == 'true'
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -150,6 +207,9 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -168,9 +228,14 @@ jobs:
           path: dist
 
   sdist:
+    needs: preflight
+    if: needs.preflight.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -186,7 +251,7 @@ jobs:
 
   smoke-test:
     name: Installed wheel smoke test
-    needs: [linux, windows, macos]
+    needs: [preflight, linux, windows, macos]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -209,6 +274,9 @@ jobs:
             python: '3.12'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -232,12 +300,22 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [linux, musllinux, windows, macos, sdist, smoke-test]
+    needs: [preflight, linux, musllinux, windows, macos, sdist, smoke-test]
     permissions:
+      actions: read
       id-token: write
       contents: write
       attestations: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # No run-id: download only artifacts produced by this pinned-source run.
       - uses: actions/download-artifact@v4
         with:
           pattern: wheels-*
@@ -252,5 +330,26 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Publish to PyPI
-        run: uv publish --trusted-publishing always dist/*
+      # Recheck immediately before upload, after all potentially lengthy setup.
+      - name: Recheck source, tests, and exact PyPI artifact hashes
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
+        run: python scripts/release_gate.py publish
+
+      - name: Publish missing files to PyPI
+        if: steps.gate.outputs.publish == 'true'
+        run: uv publish --trusted-publishing always pending-dist/*
+
+      - name: Verify complete published release
+        env:
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
+        run: python scripts/release_gate.py verify
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-manifest
+          path: release-manifest.json
+          if-no-files-found: ignore
