@@ -111,19 +111,33 @@ pub fn binary_comparison(left: Expr, op: BinaryOperator, right: Expr) -> Expr {
     }
 }
 
-pub fn and_exprs(mut exprs: Vec<Expr>) -> Option<Expr> {
-    if exprs.is_empty() {
-        return None;
+// sqlparser's Display preserves explicit Nested nodes but does not insert
+// parentheses based on operator precedence. Keep OR operands grouped whenever
+// independently constructed predicates are combined with AND.
+pub(crate) fn and_expr(left: Expr, right: Expr) -> Expr {
+    fn operand(expr: Expr) -> Expr {
+        if matches!(
+            expr,
+            Expr::BinaryOp {
+                op: BinaryOperator::Or,
+                ..
+            }
+        ) {
+            Expr::Nested(Box::new(expr))
+        } else {
+            expr
+        }
     }
-    let mut acc = exprs.remove(0);
-    for expr in exprs {
-        acc = Expr::BinaryOp {
-            left: Box::new(acc),
-            op: BinaryOperator::And,
-            right: Box::new(expr),
-        };
+
+    Expr::BinaryOp {
+        left: Box::new(operand(left)),
+        op: BinaryOperator::And,
+        right: Box::new(operand(right)),
     }
-    Some(acc)
+}
+
+pub fn and_exprs(exprs: Vec<Expr>) -> Option<Expr> {
+    exprs.into_iter().reduce(and_expr)
 }
 
 pub fn ident(name: &str) -> Ident {

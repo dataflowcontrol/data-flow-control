@@ -472,7 +472,7 @@ def test_update_kill_uses_passant_kill_tuple_filter():
         """
 UPDATE t SET amount = 200
 WHERE
-  id = 1 AND 200 < 100 OR CASE WHEN NOT 200 < 100 THEN PASSANT_KILL() ELSE TRUE END
+  id = 1 AND (200 < 100 OR CASE WHEN NOT 200 < 100 THEN PASSANT_KILL() ELSE TRUE END)
 """,
     )
 
