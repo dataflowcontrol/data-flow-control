@@ -137,8 +137,9 @@ explicit user column list.
 
 ## Opt-in constraint-aware retry
 
-For an ordinary-call → policy feedback → source-derived SQL replacement loop, see
-[the model-neutral tool retry API](tool-retry.md). It reuses `ToolUseDatabase` and
-native DFC checks with explicit per-policy retry directives. It does not change
-`observe`/`enforce`, convert all KILL policies into retries, or add a native PGN
-`RETRY` resolution.
+For single-attempt guarded tool dispatch and exact policy feedback, see
+[the model-neutral tool retry API](tool-retry.md). It reuses `ToolUseDatabase`
+and native PGN `ON FAIL RETRY('message')`. The host may submit a replacement
+query after receiving feedback; the runner does not preflight or automatically
+replay the original query. This does not change `observe`/`enforce` or convert
+KILL policies into retries.
