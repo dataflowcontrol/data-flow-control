@@ -1,5 +1,10 @@
+#[path = "common/mod.rs"]
+mod common;
+
 use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
+// A shared policy alias keeps the identical constraint text interned while
+// resolving it against each explicitly registered physical source.
 fn shared_constraint_policy(source: &str) -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec![source.to_string()],
@@ -9,7 +14,10 @@ fn shared_constraint_policy(source: &str) -> PolicyIr {
         dimension_queries: std::collections::HashMap::new(),
         sink: None,
         sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
+        source_aliases: std::collections::HashMap::from([(
+            "source".to_string(),
+            source.to_string(),
+        )]),
         constraint: "max(source.amount) > 1".to_string(),
         on_fail: Resolution::Remove,
         description: None,
@@ -20,7 +28,13 @@ fn shared_constraint_policy(source: &str) -> PolicyIr {
 fn rewriter_exposes_store_memory_usage() {
     let mut rewriter = PassantRewriter::new();
     for index in 0..64usize {
-        rewriter.register_policy(shared_constraint_policy(&format!("source_{index:03}")));
+        rewriter.catalog_mut().register_table(
+            format!("source_{index:03}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(shared_constraint_policy(&format!("source_{index:03}")))
+            .expect("generated fixture policy must validate");
     }
     let usage = rewriter.store_memory_usage();
     assert_eq!(usage.entry_count, 64);
@@ -30,11 +44,20 @@ fn rewriter_exposes_store_memory_usage() {
 
 #[test]
 fn registry_index_metadata_scales_linearly_with_unique_sources() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(shared_constraint_policy("orders"));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
+    rewriter
+        .register_policy(shared_constraint_policy("orders"))
+        .expect("generated fixture policy must validate");
     let policy_count = 10_000usize;
     for index in 0..policy_count {
-        rewriter.register_policy(shared_constraint_policy(&format!("other_{index:06}")));
+        rewriter.catalog_mut().register_table(
+            format!("other_{index:06}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(shared_constraint_policy(&format!("other_{index:06}")))
+            .expect("generated fixture policy must validate");
     }
     let usage = rewriter.store_memory_usage();
     assert_eq!(usage.entry_count, policy_count + 1);
@@ -50,10 +73,19 @@ fn registry_index_metadata_scales_linearly_with_unique_sources() {
 #[test]
 #[ignore = "manual: large registry memory budget smoke test"]
 fn large_registry_memory_budget() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(shared_constraint_policy("orders"));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
+    rewriter
+        .register_policy(shared_constraint_policy("orders"))
+        .expect("generated fixture policy must validate");
     for index in 0..100_000usize {
-        rewriter.register_policy(shared_constraint_policy(&format!("other_{index:06}")));
+        rewriter.catalog_mut().register_table(
+            format!("other_{index:06}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(shared_constraint_policy(&format!("other_{index:06}")))
+            .expect("generated fixture policy must validate");
     }
     let usage = rewriter.store_memory_usage();
     eprintln!("100k shared-constraint registry memory usage: {usage:?}");
@@ -68,10 +100,19 @@ fn large_registry_memory_budget() {
 #[test]
 #[ignore = "manual: 1M-policy registry memory budget smoke test"]
 fn rewrite_1m_memory_budget() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(shared_constraint_policy("orders"));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
+    rewriter
+        .register_policy(shared_constraint_policy("orders"))
+        .expect("generated fixture policy must validate");
     for index in 0..1_000_000usize {
-        rewriter.register_policy(shared_constraint_policy(&format!("other_{index:07}")));
+        rewriter.catalog_mut().register_table(
+            format!("other_{index:07}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(shared_constraint_policy(&format!("other_{index:07}")))
+            .expect("generated fixture policy must validate");
     }
     let usage = rewriter.store_memory_usage();
     eprintln!("1M shared-constraint registry memory usage: {usage:?}");

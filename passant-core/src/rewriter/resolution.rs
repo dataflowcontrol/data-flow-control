@@ -49,7 +49,7 @@ pub(crate) fn remap_query_order_by_after_kill_wrap(
     let SetExpr::Select(select) = query.body.as_mut() else {
         return;
     };
-    if !is_kill_wrapped_select(select) {
+    if !is_kill_wrapped_select(select) && !is_joint_resolution_wrapped_select(select) {
         return;
     }
     if let Some(order_by) = query.order_by.as_mut() {
@@ -159,6 +159,567 @@ pub(crate) struct UiResolutionSpec {
     pub description: Option<String>,
     pub sink: Option<String>,
     pub policy_index: usize,
+}
+
+// Reconstructed after workspace loss from the agreed contract and retained
+// regression evidence; not a byte-for-byte restoration of the lost patch.
+pub(crate) const JOINT_RESOLUTION_WRAPPER: &str = "__passant_joint_resolution";
+
+pub(crate) fn is_joint_resolution_wrapped_select(select: &Select) -> bool {
+    matches!(select.from.first(), Some(TableWithJoins {
+        relation: TableFactor::Derived { alias: Some(alias), .. }, joins, ..
+    }) if alias.name.value == JOINT_RESOLUTION_WRAPPER && joins.is_empty())
+}
+
+fn fresh_abort_identifier(used: &mut HashSet<String>, stem: &str) -> String {
+    let mut name = stem.to_owned();
+    let mut suffix = 0;
+    while !used.insert(name.to_ascii_lowercase()) {
+        suffix += 1;
+        name = format!("{stem}_{suffix}");
+    }
+    name
+}
+
+#[cfg(test)]
+fn wrap_select_with_retry(
+    inner: Select,
+    policies: Vec<(usize, Expr)>,
+) -> Result<Select, RewriteError> {
+    let actions = policies
+        .into_iter()
+        .map(
+            |(policy_index, filter)| super::plan::PolicyResolutionAction::Retry {
+                policy_index,
+                filter,
+            },
+        )
+        .collect::<Vec<_>>();
+    wrap_select_with_resolution_stages(
+        inner,
+        &actions,
+        &crate::resolution_registry::ResolutionRegistry::default(),
+    )
+}
+
+/// Resolve already-computed policy evidence at one candidate boundary. Hidden
+/// evidence is not part of the public projection and never becomes a repair arg.
+/// CASE dependencies, rather than action order alone, enforce effect precedence.
+pub(crate) fn wrap_select_with_resolution_stages(
+    mut inner: Select,
+    actions: &[super::plan::PolicyResolutionAction],
+    registry: &crate::resolution_registry::ResolutionRegistry,
+) -> Result<Select, RewriteError> {
+    use super::plan::PolicyResolutionAction as A;
+    use crate::rewriter::expr::and_expr;
+    use crate::sql::{binary_comparison, int_literal, null_literal, scalar_subquery};
+    use sqlparser::ast::{BinaryOperator, UnaryOperator};
+    ensure_projection_aliases(&mut inner);
+    let names = inner
+        .projection
+        .iter()
+        .map(|item| match item {
+            SelectItem::ExprWithAlias { alias, .. } => Some(alias.clone()),
+            SelectItem::UnnamedExpr(Expr::Identifier(name)) => Some(name.clone()),
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => parts.last().cloned(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            RewriteError::unsupported_statement(
+                "joint resolution requires explicit projected columns",
+            )
+        })?;
+    let unique = names
+        .iter()
+        .map(|name| name.value.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    if names.is_empty() || unique.len() != names.len() {
+        return Err(RewriteError::unsupported_statement(
+            "joint resolution requires unique non-empty output columns",
+        ));
+    }
+    // Includes expanded wildcard/schema identifiers and hidden evidence refs.
+    let mut sql = inner.to_string();
+    for action in actions {
+        let filter = match action {
+            A::Filter { filter, .. }
+            | A::TupleUdf { filter, .. }
+            | A::RelationUdf { filter, .. }
+            | A::Retry { filter, .. }
+            | A::Ui { filter, .. } => filter,
+        };
+        sql.push(' ');
+        sql.push_str(&filter.to_string());
+    }
+    let tokens = sqlparser::tokenizer::Tokenizer::new(&sqlparser::dialect::GenericDialect {}, &sql)
+        .tokenize()
+        .map_err(|_| {
+            RewriteError::unsupported_statement("cannot allocate resolution identifiers")
+        })?;
+    let mut used = tokens
+        .into_iter()
+        .filter_map(|token| match token {
+            sqlparser::tokenizer::Token::Word(word) => Some(word.value.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let input = fresh_abort_identifier(&mut used, "__passant_candidates");
+    let repaired = fresh_abort_identifier(&mut used, "__passant_repaired");
+    let resolved = fresh_abort_identifier(&mut used, "__passant_resolved");
+    let mut kill = Vec::new();
+    let mut remove = Vec::new();
+    let mut retries = std::collections::BTreeMap::<usize, Vec<String>>::new();
+    let mut udfs: Vec<(bool, String, Vec<String>)> = Vec::new();
+    for action in actions {
+        let (filter, kind) = match action {
+            A::Filter { filter, .. } => (filter, 0),
+            A::TupleUdf {
+                filter, udf_name, ..
+            } if udf_name.eq_ignore_ascii_case(PASSANT_KILL_UDF) => (filter, 1),
+            A::Retry { filter, .. } => (filter, 2),
+            A::TupleUdf { filter, .. } => (filter, 3),
+            A::RelationUdf { filter, .. } => (filter, 4),
+            A::Ui { .. } => {
+                return Err(RewriteError::unsupported_statement(
+                    "UI ordering with joint resolution is not specified",
+                ));
+            }
+        };
+        let pass = fresh_abort_identifier(&mut used, PASS_COLUMN);
+        inner.projection.push(alias_expr(filter.clone(), &pass));
+        match kind {
+            0 => remove.push(pass),
+            1 => kill.push(pass),
+            2 => {
+                if let A::Retry { policy_index, .. } = action {
+                    retries.entry(*policy_index).or_default().push(pass);
+                }
+            }
+            _ => {
+                let name = match action {
+                    A::TupleUdf { udf_name, .. } | A::RelationUdf { udf_name, .. } => udf_name,
+                    _ => unreachable!(),
+                };
+                if let Some((relation, _, columns)) = udfs
+                    .iter_mut()
+                    .find(|(_, existing, _)| existing.eq_ignore_ascii_case(name))
+                {
+                    if *relation != (kind == 4) {
+                        return Err(RewriteError::unsupported_statement(
+                            "one resolution function cannot be both tuple and relation UDF",
+                        ));
+                    }
+                    columns.push(pass);
+                } else {
+                    udfs.push((kind == 4, name.clone(), vec![pass]));
+                }
+            }
+        }
+    }
+    let col = |name: &str| qualified_column(&input, name);
+    let public_col =
+        |name: &Ident| Expr::CompoundIdentifier(vec![Ident::new(&input), name.clone()]);
+    let all = |exprs: Vec<Expr>| {
+        exprs
+            .into_iter()
+            .reduce(and_expr)
+            .unwrap_or_else(|| bool_literal(true))
+    };
+    let not = |expr: Expr| Expr::UnaryOp {
+        op: UnaryOperator::Not,
+        expr: Box::new(Expr::Nested(Box::new(expr))),
+    };
+    let any = |condition: Expr| {
+        binary_comparison(
+            function_call(
+                "max",
+                vec![case_when(condition, int_literal(1), int_literal(0))],
+            ),
+            BinaryOperator::Eq,
+            int_literal(1),
+        )
+    };
+    let survivors = all(kill
+        .iter()
+        .chain(&remove)
+        .map(|name| Expr::IsTrue(Box::new(col(name))))
+        .collect());
+    let retry_parts = retries
+        .iter()
+        .map(|(index, columns)| {
+            let pass = all(columns.iter().map(|name| col(name)).collect());
+            case_when(
+                any(and_expr(
+                    survivors.clone(),
+                    Expr::IsNotTrue(Box::new(Expr::Nested(Box::new(pass)))),
+                )),
+                string_literal(&index.to_string()),
+                null_literal(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut concat_args = vec![string_literal(",")];
+    concat_args.extend(retry_parts);
+    let payload = function_call("concat_ws", concat_args);
+    let retry_guard = if retries.is_empty() {
+        bool_literal(true)
+    } else {
+        case_when(
+            binary_comparison(payload.clone(), BinaryOperator::NotEq, string_literal("")),
+            function_call("passant_retry_many", vec![payload]),
+            bool_literal(true),
+        )
+    };
+    let guard = if kill.is_empty() && retries.is_empty() {
+        bool_literal(true)
+    } else {
+        let aggregate = if kill.is_empty() {
+            retry_guard
+        } else {
+            let pass = all(kill.iter().map(|name| col(name)).collect());
+            case_when(
+                any(not(pass)),
+                function_call(PASSANT_KILL_UDF, vec![]),
+                retry_guard,
+            )
+        };
+        scalar_subquery(aggregate, &input)
+    };
+    let gated = |expr| case_when(guard.clone(), expr, bool_literal(false));
+    let from = || {
+        vec![TableWithJoins {
+            relation: table_factor(&input),
+            joins: vec![],
+        }]
+    };
+    let projection = || {
+        names
+            .iter()
+            .map(|name| SelectItem::ExprWithAlias {
+                expr: public_col(name),
+                alias: name.clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    if udfs.len() > 1 {
+        for (_, name, _) in &udfs {
+            if registry.registration_order(name).is_none() {
+                return Err(RewriteError::unsupported_statement(format!(
+                    "resolution function {name} has no definition registration order"
+                )));
+            }
+        }
+        udfs.sort_by_key(|(_, name, _)| registry.registration_order(name).unwrap());
+        return wrap_ordered_resolution_effects(
+            inner, &input, &names, &udfs, guard, survivors, &mut used,
+        );
+    }
+    let mut ctes = vec![cte(&input, query_from_select(inner))];
+    let body = match udfs.pop() {
+        None => SetExpr::Select(Box::new(grouped_select(
+            projection(),
+            from(),
+            Some(gated(survivors)),
+            vec![],
+        ))),
+        Some((true, name, columns)) => {
+            let pass = all(columns.iter().map(|name| col(name)).collect());
+            // Preserve nullable bool_or: all-unknown retains the legacy strict
+            // callback skip, rather than introducing a definite false effect.
+            let violation = function_call(
+                "bool_or",
+                vec![case_when(survivors.clone(), not(pass), null_literal())],
+            );
+            let effect = scalar_subquery(
+                case_when(
+                    guard.clone(),
+                    case_when(
+                        any(survivors.clone()),
+                        function_call(&name, vec![violation]),
+                        bool_literal(true),
+                    ),
+                    bool_literal(false),
+                ),
+                &input,
+            );
+            let filter = case_when(
+                guard.clone(),
+                case_when(survivors, effect, bool_literal(false)),
+                bool_literal(false),
+            );
+            SetExpr::Select(Box::new(grouped_select(
+                projection(),
+                from(),
+                Some(filter),
+                vec![],
+            )))
+        }
+        Some((false, name, columns)) => {
+            let pass = all(columns.iter().map(|name| col(name)).collect());
+            let passing = grouped_select(
+                projection(),
+                from(),
+                Some(gated(and_expr(survivors.clone(), pass.clone()))),
+                vec![],
+            );
+            let failing = and_expr(survivors, not(pass));
+            let call = function_call(&name, names.iter().map(public_col).collect());
+            let repair = grouped_select(
+                vec![alias_expr(
+                    case_when(
+                        guard.clone(),
+                        case_when(failing.clone(), call, null_literal()),
+                        null_literal(),
+                    ),
+                    &resolved,
+                )],
+                from(),
+                Some(gated(failing)),
+                vec![],
+            );
+            ctes.push(cte(&repaired, query_from_select(repair)));
+            let repaired_projection = if names.len() == 1 {
+                vec![SelectItem::ExprWithAlias {
+                    expr: qualified_column(&repaired, &resolved),
+                    alias: names[0].clone(),
+                }]
+            } else {
+                names
+                    .iter()
+                    .map(|name| SelectItem::ExprWithAlias {
+                        expr: Expr::CompoundIdentifier(vec![
+                            Ident::new(&repaired),
+                            Ident::new(&resolved),
+                            name.clone(),
+                        ]),
+                        alias: name.clone(),
+                    })
+                    .collect()
+            };
+            let repaired_select = grouped_select(
+                repaired_projection,
+                vec![TableWithJoins {
+                    relation: table_factor(&repaired),
+                    joins: vec![],
+                }],
+                Some(is_not_null(qualified_column(&repaired, &resolved))),
+                vec![],
+            );
+            SetExpr::SetOperation {
+                op: SetOperator::Union,
+                set_quantifier: SetQuantifier::All,
+                left: Box::new(SetExpr::Select(Box::new(passing))),
+                right: Box::new(SetExpr::Select(Box::new(repaired_select))),
+            }
+        }
+    };
+    let mut outer = empty_select();
+    outer.projection = vec![SelectItem::Wildcard(WildcardAdditionalOptions::default())];
+    outer.from = vec![TableWithJoins {
+        relation: TableFactor::Derived {
+            lateral: false,
+            subquery: Box::new(with_ctes(ctes, body)),
+            alias: Some(crate::sql::table_alias(JOINT_RESOLUTION_WRAPPER)),
+        },
+        joins: vec![],
+    }];
+    Ok(outer)
+}
+
+/// Original pass evidence is materialized once and carried unchanged. Only the
+/// visible values are replaced by each repair; later policy predicates are not
+/// evaluated again on those repaired values.
+fn wrap_ordered_resolution_effects(
+    inner: Select,
+    input: &str,
+    names: &[Ident],
+    udfs: &[(bool, String, Vec<String>)],
+    guard: Expr,
+    survivors: Expr,
+    used: &mut HashSet<String>,
+) -> Result<Select, RewriteError> {
+    use crate::rewriter::expr::and_expr;
+    use crate::sql::{binary_comparison, int_literal, null_literal, scalar_subquery};
+    use sqlparser::ast::{BinaryOperator, CteAsMaterialized, UnaryOperator};
+    let materialized = |name: &str, query: Query| {
+        let mut result = cte(name, query);
+        result.materialized = Some(CteAsMaterialized::Materialized);
+        result
+    };
+    let from = |name: &str| {
+        vec![TableWithJoins {
+            relation: table_factor(name),
+            joins: vec![],
+        }]
+    };
+    let flags = udfs
+        .iter()
+        .flat_map(|(_, _, columns)| columns.iter().cloned())
+        .collect::<Vec<_>>();
+    let public = |relation: &str| {
+        names
+            .iter()
+            .map(|name| SelectItem::ExprWithAlias {
+                expr: Expr::CompoundIdentifier(vec![Ident::new(relation), name.clone()]),
+                alias: name.clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let evidence = |relation: &str| {
+        flags
+            .iter()
+            .map(|flag| alias_expr(qualified_column(relation, flag), flag))
+            .collect::<Vec<_>>()
+    };
+    let all_columns = |relation: &str| {
+        let mut columns = public(relation);
+        columns.extend(evidence(relation));
+        columns
+    };
+    let pass = |relation: &str, columns: &[String]| {
+        columns
+            .iter()
+            .map(|name| qualified_column(relation, name))
+            .reduce(and_expr)
+            .unwrap_or_else(|| bool_literal(true))
+    };
+    let not = |expr: Expr| Expr::UnaryOp {
+        op: UnaryOperator::Not,
+        expr: Box::new(Expr::Nested(Box::new(expr))),
+    };
+    let mut ctes = vec![materialized(input, query_from_select(inner))];
+    let original = fresh_abort_identifier(used, "__passant_original_failures");
+    ctes.push(materialized(
+        &original,
+        query_from_select(grouped_select(
+            all_columns(input),
+            from(input),
+            Some(case_when(guard, survivors, bool_literal(false))),
+            vec![],
+        )),
+    ));
+    let mut current = original.clone();
+    for (relation, function, columns) in udfs {
+        let next = fresh_abort_identifier(used, "__passant_effect_stage");
+        if *relation {
+            // Freeze the aggregate selection on original surviving candidates;
+            // consume the preceding stage before invoking this relation effect.
+            let frozen_violation = scalar_subquery(
+                function_call("bool_or", vec![not(pass(&original, columns))]),
+                &original,
+            );
+            let effect_name = fresh_abort_identifier(used, "__passant_relation_effect");
+            let effect_column = fresh_abort_identifier(used, "__passant_effect_allowed");
+            let nonempty = binary_comparison(
+                function_call("max", vec![int_literal(1)]),
+                BinaryOperator::Eq,
+                int_literal(1),
+            );
+            let effect = case_when(
+                nonempty,
+                function_call(function, vec![frozen_violation]),
+                bool_literal(true),
+            );
+            ctes.push(materialized(
+                &effect_name,
+                query_from_select(grouped_select(
+                    vec![alias_expr(effect, &effect_column)],
+                    from(&current),
+                    None,
+                    vec![],
+                )),
+            ));
+            ctes.push(materialized(
+                &next,
+                query_from_select(grouped_select(
+                    all_columns(&current),
+                    from(&current),
+                    Some(scalar_subquery(
+                        qualified_column(&effect_name, &effect_column),
+                        &effect_name,
+                    )),
+                    vec![],
+                )),
+            ));
+        } else {
+            let current_pass = pass(&current, columns);
+            let passing = grouped_select(
+                all_columns(&current),
+                from(&current),
+                Some(current_pass.clone()),
+                vec![],
+            );
+            let called = fresh_abort_identifier(used, "__passant_called_repair");
+            let value = fresh_abort_identifier(used, "__passant_repaired_value");
+            let failing = not(current_pass);
+            let args = names
+                .iter()
+                .map(|name| Expr::CompoundIdentifier(vec![Ident::new(&current), name.clone()]))
+                .collect();
+            let mut call_columns = vec![alias_expr(
+                case_when(
+                    failing.clone(),
+                    function_call(function, args),
+                    null_literal(),
+                ),
+                &value,
+            )];
+            call_columns.extend(evidence(&current));
+            ctes.push(materialized(
+                &called,
+                query_from_select(grouped_select(
+                    call_columns,
+                    from(&current),
+                    Some(failing),
+                    vec![],
+                )),
+            ));
+            let mut repaired = names
+                .iter()
+                .map(|name| SelectItem::ExprWithAlias {
+                    expr: if names.len() == 1 {
+                        qualified_column(&called, &value)
+                    } else {
+                        Expr::CompoundIdentifier(vec![
+                            Ident::new(&called),
+                            Ident::new(&value),
+                            name.clone(),
+                        ])
+                    },
+                    alias: name.clone(),
+                })
+                .collect::<Vec<_>>();
+            repaired.extend(evidence(&called));
+            let repaired = grouped_select(
+                repaired,
+                from(&called),
+                Some(is_not_null(qualified_column(&called, &value))),
+                vec![],
+            );
+            let mut stage_query = query_from_select(empty_select());
+            stage_query.body = Box::new(SetExpr::SetOperation {
+                op: SetOperator::Union,
+                set_quantifier: SetQuantifier::All,
+                left: Box::new(SetExpr::Select(Box::new(passing))),
+                right: Box::new(SetExpr::Select(Box::new(repaired))),
+            });
+            ctes.push(materialized(&next, stage_query));
+        }
+        current = next;
+    }
+    let body = grouped_select(public(&current), from(&current), None, vec![]);
+    let mut outer = empty_select();
+    outer.projection = vec![SelectItem::Wildcard(WildcardAdditionalOptions::default())];
+    outer.from = vec![TableWithJoins {
+        relation: TableFactor::Derived {
+            lateral: false,
+            subquery: Box::new(with_ctes(ctes, SetExpr::Select(Box::new(body)))),
+            alias: Some(crate::sql::table_alias(JOINT_RESOLUTION_WRAPPER)),
+        },
+        joins: vec![],
+    }];
+    Ok(outer)
 }
 
 pub(crate) fn wrap_select_with_tuple_resolution(
@@ -867,5 +1428,32 @@ mod tests {
         assert!(sql.contains("UNION ALL"));
         assert!(sql.contains("repair_row"));
         assert!(sql.contains(PASS_COLUMN));
+    }
+    #[test]
+    fn retry_stage_preserves_quotes_and_reserves_projected_helper_names() {
+        let mut inner = empty_select();
+        inner.projection = vec![
+            SelectItem::ExprWithAlias {
+                expr: qualified_column("a", "x"),
+                alias: Ident::with_quote('"', "A B"),
+            },
+            alias_expr(qualified_column("a", "y"), PASS_COLUMN),
+        ];
+        inner.from = vec![TableWithJoins {
+            relation: table_factor("a"),
+            joins: vec![],
+        }];
+        let wrapped = wrap_select_with_retry(inner, vec![(7, bool_literal(false))]).unwrap();
+        let sql = render_statement(
+            &crate::sql::statement_from_query(query_from_select(wrapped)),
+            None,
+        );
+        assert!(
+            sql.contains("__passant_candidates.\"A B\" AS \"A B\""),
+            "{sql}"
+        );
+        assert!(sql.contains("false AS __passant_policy_pass_1"), "{sql}");
+        assert!(sql.contains("passant_retry_many"), "{sql}");
+        assert!(sql.contains("THEN '7' ELSE NULL"), "{sql}");
     }
 }

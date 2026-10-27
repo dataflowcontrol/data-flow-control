@@ -19,6 +19,8 @@ def test_public_exports():
         "UiUpdateMode",
         "PassantRewriteError",
         "UiViolationEvent",
+        "RetryFailure",
+        "RetryViolation",
     }
     assert set(data_flow_control.__all__) == expected
 

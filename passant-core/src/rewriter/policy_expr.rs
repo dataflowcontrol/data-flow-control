@@ -921,6 +921,11 @@ pub(crate) fn apply_update_resolution(
     ui_followup: &crate::rewriter::types::UiFollowupCell,
 ) -> Result<(), RewriteError> {
     match on_fail {
+        Resolution::Retry(_) => {
+            return Err(RewriteError::unsupported_statement(
+                "RETRY resolution on UPDATE requires a statement-wide resolution stage and is not supported yet",
+            ));
+        }
         Resolution::Remove => {
             *selection = Some(match selection.take() {
                 Some(existing) => and_expr(existing, expr),

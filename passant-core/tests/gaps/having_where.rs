@@ -1,4 +1,4 @@
-use crate::common::{assert_rewrite, pgn_policy, pgn_policy_kill, rewrite};
+use crate::common::{pgn_policy, pgn_policy_kill};
 
 #[test]
 fn existing_where_or_clause_combines_with_policy_using_and() {
@@ -41,4 +41,16 @@ fn kill_and_remove_policies_combine_on_scan() {
     );
     assert!(sql.contains("passant_kill"));
     assert!(sql.contains("foo.amount > 0"));
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[("foo", &["id", "amount", "category"])])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
+}
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

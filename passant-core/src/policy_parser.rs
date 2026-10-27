@@ -17,7 +17,7 @@ pub(crate) struct RawPgnPolicy {
 }
 
 pub(crate) fn parse_raw_pgn(normalized: &str) -> Result<RawPgnPolicy, PolicyParseError> {
-    if normalized.is_empty() {
+    if normalized.trim().is_empty() {
         return Err(PolicyParseError::Empty);
     }
 
@@ -108,7 +108,11 @@ fn map_pest_error(err: pest::error::Error<Rule>) -> PolicyParseError {
 }
 
 fn has_clause(text: &str, keywords: &[&str]) -> bool {
-    let upper = text.to_ascii_uppercase();
+    let upper = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
     keywords.iter().any(|keyword| {
         if keyword.contains(' ') {
             upper.contains(keyword)
@@ -123,8 +127,7 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> RawPgnPolicy {
-        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        parse_raw_pgn(&normalized).expect("policy should parse")
+        parse_raw_pgn(text.trim()).expect("policy should parse")
     }
 
     #[test]

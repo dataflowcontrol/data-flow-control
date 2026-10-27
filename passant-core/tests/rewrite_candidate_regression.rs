@@ -1,4 +1,7 @@
-//! CI-safe regressions for indexed candidate lookup and rewrite candidate counts.
+#[path = "common/mod.rs"]
+mod common;
+
+// CI-safe regressions for indexed candidate lookup and rewrite candidate counts.
 
 use std::collections::HashSet;
 
@@ -68,22 +71,40 @@ fn rewrite_candidate_count(rewriter: &PassantRewriter, sql: &str) -> usize {
 
 #[test]
 fn many_unrelated_single_source_policies_keep_candidate_count_small() {
+    let mut catalog = common::fixture_catalog(&[("orders", &["id", "amount"])]);
+    for index in 0..2000_usize {
+        catalog.register_table(format!("other_{index:05}"), vec!["amount".into()]);
+    }
     let mut store = PolicyStore::default();
-    store.register(dfc("orders", 1));
+    store
+        .register(
+            dfc("orders", 1),
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
     for index in 0..2_000_usize {
-        store.register(dfc(
-            &format!("other_{index:05}"),
-            i64::try_from(index).unwrap_or(0),
-        ));
+        store
+            .register(
+                dfc(
+                    &format!("other_{index:05}"),
+                    i64::try_from(index).unwrap_or(0),
+                ),
+                &catalog,
+                &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+            )
+            .expect("fixture store policy must validate");
     }
 
     let orders_only = HashSet::from([TableKey::new("orders")]);
     assert_eq!(store.candidate_ids_for_scope(&orders_only, None), vec![0]);
     store.assert_candidates_match_slow_scan(&orders_only, None, MultiSourceLookupMode::Subset);
 
-    let mut rewriter = PassantRewriter::new();
+    let mut rewriter = PassantRewriter::with_catalog(catalog.clone());
     for policy in store.policies_vec() {
-        rewriter.register_policy(policy);
+        rewriter
+            .register_policy(policy)
+            .expect("fixture rewriter policy must validate");
     }
     assert_eq!(
         rewrite_candidate_count(&rewriter, "SELECT id, amount FROM orders WHERE amount > 0"),
@@ -93,18 +114,36 @@ fn many_unrelated_single_source_policies_keep_candidate_count_small() {
 
 #[test]
 fn sink_only_policies_are_excluded_from_plain_select_candidates() {
-    let mut store = PolicyStore::default();
-    store.register(dfc("orders", 1));
+    let mut catalog = common::fixture_catalog(&[("orders", &["id", "amount"])]);
     for index in 0..500_usize {
-        store.register(sink_only_policy(&format!("sink_{index:03}")));
+        catalog.register_table(format!("sink_{index:03}"), vec!["amount".into()]);
+    }
+    let mut store = PolicyStore::default();
+    store
+        .register(
+            dfc("orders", 1),
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
+    for index in 0..500_usize {
+        store
+            .register(
+                sink_only_policy(&format!("sink_{index:03}")),
+                &catalog,
+                &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+            )
+            .expect("fixture store policy must validate");
     }
 
     let orders_only = HashSet::from([TableKey::new("orders")]);
     assert_eq!(store.candidate_ids_for_scope(&orders_only, None), vec![0]);
 
-    let mut rewriter = PassantRewriter::new();
+    let mut rewriter = PassantRewriter::with_catalog(catalog.clone());
     for policy in store.policies_vec() {
-        rewriter.register_policy(policy);
+        rewriter
+            .register_policy(policy)
+            .expect("fixture rewriter policy must validate");
     }
     assert_eq!(
         rewrite_candidate_count(&rewriter, "SELECT id, amount FROM orders WHERE amount > 0"),
@@ -114,14 +153,30 @@ fn sink_only_policies_are_excluded_from_plain_select_candidates() {
 
 #[test]
 fn hot_source_multi_source_subset_lookup_avoids_policy_blowup() {
+    let mut catalog = common::fixture_catalog(&[("hot_source", &["id", "amount"])]);
+    for index in 0..1000_usize {
+        catalog.register_table(format!("other_{index:04}"), vec!["amount".into()]);
+    }
     let mut store = PolicyStore::default();
-    store.register(dfc("hot_source", 1));
+    store
+        .register(
+            dfc("hot_source", 1),
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
     for index in 0..1_000_usize {
-        store.register(multi_source_policy(
-            "hot_source",
-            &format!("other_{index:04}"),
-            i64::try_from(index).unwrap_or(0),
-        ));
+        store
+            .register(
+                multi_source_policy(
+                    "hot_source",
+                    &format!("other_{index:04}"),
+                    i64::try_from(index).unwrap_or(0),
+                ),
+                &catalog,
+                &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+            )
+            .expect("fixture store policy must validate");
     }
 
     let hot_only = HashSet::from([TableKey::new("hot_source")]);
@@ -134,9 +189,11 @@ fn hot_source_multi_source_subset_lookup_avoids_policy_blowup() {
     );
     store.assert_candidates_match_slow_scan(&hot_only, None, MultiSourceLookupMode::Subset);
 
-    let mut rewriter = PassantRewriter::new();
+    let mut rewriter = PassantRewriter::with_catalog(catalog.clone());
     for policy in store.policies_vec() {
-        rewriter.register_policy(policy);
+        rewriter
+            .register_policy(policy)
+            .expect("fixture rewriter policy must validate");
     }
     assert_eq!(
         rewrite_candidate_count(
@@ -149,20 +206,27 @@ fn hot_source_multi_source_subset_lookup_avoids_policy_blowup() {
 
 #[test]
 fn partial_push_enforcement_lookup_uses_overlap_for_multi_source() {
+    let catalog = common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]);
     let mut store = PolicyStore::default();
-    store.register(PolicyIr::Pgn {
-        sources: vec!["foo".to_string(), "bar".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "avg(foo.id) > avg(bar.id)".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    store
+        .register(
+            PolicyIr::Pgn {
+                sources: vec!["foo".to_string(), "bar".to_string()],
+                required_sources: Vec::new(),
+                dimension_tables: Vec::new(),
+                dimension_aliases: std::collections::HashMap::new(),
+                dimension_queries: std::collections::HashMap::new(),
+                sink: None,
+                sink_alias: None,
+                source_aliases: std::collections::HashMap::new(),
+                constraint: "avg(foo.id) > avg(bar.id)".to_string(),
+                on_fail: Resolution::Remove,
+                description: None,
+            },
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
 
     let foo_only = HashSet::from([TableKey::new("foo")]);
     assert!(
@@ -175,9 +239,11 @@ fn partial_push_enforcement_lookup_uses_overlap_for_multi_source() {
         Vec::<usize>::new()
     );
 
-    let mut rewriter = PassantRewriter::new();
+    let mut rewriter = PassantRewriter::with_catalog(catalog.clone());
     for policy in store.policies_vec() {
-        rewriter.register_policy(policy);
+        rewriter
+            .register_policy(policy)
+            .expect("fixture rewriter policy must validate");
     }
     let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")

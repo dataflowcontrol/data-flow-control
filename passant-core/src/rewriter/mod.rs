@@ -1,3 +1,5 @@
+mod joint_lineage;
+pub(crate) mod output_scope;
 use std::collections::HashSet;
 
 use sqlparser::ast::{Select, Statement};
@@ -73,6 +75,7 @@ impl PassantRewriter {
             store: PolicyStore::default(),
             catalog,
             aggregate_registry: AggregateRegistry::for_dialect(SqlDialect::default()),
+            resolution_registry: crate::resolution_registry::ResolutionRegistry::default(),
             parse_dialect: SqlDialect::default(),
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
@@ -80,12 +83,17 @@ impl PassantRewriter {
         }
     }
 
-    pub fn from_policies(policies: Vec<PolicyIr>) -> Self {
-        let mut rewriter = Self::new();
-        for policy in policies {
-            rewriter.register_policy(policy);
-        }
-        rewriter
+    pub fn from_policies(policies: Vec<PolicyIr>) -> Result<Self, RewriteError> {
+        Self::from_policies_with_catalog(policies, TableCatalog::default())
+    }
+
+    pub fn from_policies_with_catalog(
+        policies: Vec<PolicyIr>,
+        catalog: TableCatalog,
+    ) -> Result<Self, RewriteError> {
+        let mut rewriter = Self::with_catalog(catalog);
+        rewriter.register_policies(policies)?;
+        Ok(rewriter)
     }
 
     /// Branch-local rewriter: small `PolicyStoreView` sharing parent interners and catalog facts.
@@ -94,12 +102,14 @@ impl PassantRewriter {
         entries: Vec<BranchPolicyEntry>,
         catalog: TableCatalog,
         parse_dialect: SqlDialect,
+        resolution_registry: &crate::resolution_registry::ResolutionRegistry,
     ) -> Self {
         let store = PolicyStoreView::build(parent, entries).into_store();
         let mut rewriter = Self {
             store,
             catalog,
             aggregate_registry: AggregateRegistry::for_dialect(parse_dialect),
+            resolution_registry: resolution_registry.clone(),
             parse_dialect,
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
@@ -130,25 +140,32 @@ impl PassantRewriter {
         &self.store
     }
 
-    pub fn register_policy(&mut self, policy: PolicyIr) {
-        let registry = self.aggregate_registry.clone();
-        let index = self.store.register(policy);
-        self.finalize_scan_ready_expr(index, &registry);
+    /// Every declared physical SOURCE/SINK must have explicit catalog metadata.
+    pub fn register_policy(&mut self, policy: PolicyIr) -> Result<(), RewriteError> {
+        self.register_policies(vec![policy])
     }
 
     pub fn register_validated_policy(&mut self, policy: PolicyIr) -> Result<(), RewriteError> {
-        let PolicyIr::Pgn { constraint, .. } = &policy;
-        let parsed = crate::policy_compile::parse_policy_constraint_with_registry(
-            constraint,
-            &self.aggregate_registry,
-        )?;
-        if self.catalog.is_loaded() {
+        self.register_policy(policy)
+    }
+
+    /// Validate the entire batch before allocating stable policy identities.
+    pub fn register_policies(&mut self, policies: Vec<PolicyIr>) -> Result<(), RewriteError> {
+        let mut validated = Vec::with_capacity(policies.len());
+        for policy in policies {
+            let parsed = crate::policy_compile::parse_policy_constraint_with_registry(
+                policy.constraint(),
+                &self.aggregate_registry,
+            )?;
             self.catalog
                 .validate_pgn_policy_parsed(&policy, &parsed, &self.aggregate_registry)?;
+            validated.push((policy, parsed));
         }
         let registry = self.aggregate_registry.clone();
-        let index = self.store.register_with_parsed(policy, parsed);
-        self.finalize_scan_ready_expr(index, &registry);
+        for (policy, parsed) in validated {
+            let index = self.store.register_with_parsed(policy, parsed);
+            self.finalize_scan_ready_expr(index, &registry);
+        }
         Ok(())
     }
 
@@ -205,6 +222,10 @@ impl PassantRewriter {
 
     fn finalize_scan_ready_expr(&mut self, index: usize, registry: &AggregateRegistry) {
         aggregates::finalize_policy_scan_ready(&mut self.store, index, registry);
+    }
+
+    pub fn policy_by_index(&self, index: usize) -> Option<&PolicyIr> {
+        self.store.policy_by_original_index(index)
     }
 
     pub fn policies(&self) -> Vec<PolicyIr> {
@@ -286,5 +307,74 @@ impl PassantRewriter {
         select: &mut Select,
     ) -> Result<(HashSet<usize>, Vec<ExtraDfcFilter>), RewriteError> {
         self.rewrite_in_subqueries_as_joins_impl(select)
+    }
+}
+
+#[cfg(test)]
+mod registration_catalog_tests {
+    use super::*;
+    fn policy(sql: &str) -> PolicyIr {
+        parse_policy_text(sql).unwrap()
+    }
+    fn catalog() -> TableCatalog {
+        let mut catalog = TableCatalog::default();
+        catalog.register_table("s.a", vec!["x".into(), "Quoted Column".into()]);
+        catalog.register_table("target", vec!["x".into()]);
+        catalog
+    }
+
+    #[test]
+    fn every_physical_resolution_requires_explicit_tables_and_columns() {
+        for resolution in [
+            "REMOVE",
+            "KILL",
+            "RETRY('x')",
+            "UDF repair",
+            "RELATION UDF repair",
+            "UI",
+        ] {
+            let mut absent = PassantRewriter::default();
+            let p = policy(&format!(
+                "SOURCE s.a SINK target CONSTRAINT s.a.x > 0 ON FAIL {resolution}"
+            ));
+            assert!(absent.register_policy(p.clone()).is_err());
+            assert_eq!(absent.store.len(), 0);
+            let mut known = PassantRewriter::with_catalog(catalog());
+            known.register_policy(p).unwrap();
+            let invalid = policy(&format!(
+                "SOURCE s.a SINK target CONSTRAINT target.missing > 0 ON FAIL {resolution}"
+            ));
+            assert!(known.register_policy(invalid).is_err());
+            assert_eq!(known.store.len(), 1);
+        }
+    }
+
+    #[test]
+    fn failed_batch_leaves_ids_and_existing_policy_unchanged() {
+        let mut rewriter = PassantRewriter::with_catalog(catalog());
+        let valid = policy("SOURCE s.a SINK target CONSTRAINT s.a.x > 0 ON FAIL RETRY('exact')");
+        rewriter.register_policy(valid.clone()).unwrap();
+        let invalid = policy("SOURCE missing CONSTRAINT TRUE ON FAIL REMOVE");
+        assert!(
+            rewriter
+                .register_policies(vec![valid.clone(), invalid])
+                .is_err()
+        );
+        assert_eq!(rewriter.store.len(), 1);
+        assert_eq!(rewriter.policy_by_index(0), Some(&valid));
+        rewriter.register_policy(valid.clone()).unwrap();
+        assert_eq!(rewriter.policy_by_index(1), Some(&valid));
+    }
+
+    #[test]
+    fn explicit_unloaded_catalog_aliases_and_quoted_columns_are_validated() {
+        let mut rewriter = PassantRewriter::with_catalog(catalog());
+        rewriter.register_policy_text("SOURCE s.a AS a SINK target AS t CONSTRAINT a.\"Quoted Column\" > 0 AND t.x > 0 ON FAIL REMOVE").unwrap();
+        let bad =
+            policy("SOURCE s.a AS a SINK target AS t CONSTRAINT a.missing > 0 ON FAIL REMOVE");
+        assert!(rewriter.register_policy(bad).is_err());
+        let cloned = rewriter.clone();
+        assert!(cloned.catalog.table_exists("s.a"));
+        assert_eq!(cloned.policies().len(), 1);
     }
 }

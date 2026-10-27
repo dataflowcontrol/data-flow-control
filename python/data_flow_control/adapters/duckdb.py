@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -7,6 +8,7 @@ import duckdb
 
 from ..aggregate_introspection import introspect_duckdb_aggregates
 from ..catalog import build_catalog_snapshot
+from ..errors import _NativeRetrySignal
 from .base import Capabilities
 from .kill import python_kill
 
@@ -28,6 +30,8 @@ def quote_sql_identifier(name: str) -> str:
 
 
 _kill_registrations: WeakKeyDictionary = WeakKeyDictionary()
+_retry_registrations: WeakKeyDictionary = WeakKeyDictionary()
+_retry_registration_lock = Lock()
 
 
 class DuckDBAdapter:
@@ -37,6 +41,7 @@ class DuckDBAdapter:
         tuple_udf=True,
         relation_udf=True,
         ui_resolution=True,
+        retry_resolution=True,
     )
 
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
@@ -47,9 +52,26 @@ class DuckDBAdapter:
         return self._conn
 
     def execute(self, sql: str, params: Any = None):
-        if params is None:
-            return self._conn.execute(sql)
-        return self._conn.execute(sql, params)
+        state = _retry_registrations.get(self._conn)
+        if state is not None:
+            if not state["lock"].acquire(blocking=False):
+                raise RuntimeError("Overlapping executions on a RETRY connection are not supported")
+            state["failure"] = None
+            state["active"] = True
+        try:
+            if params is None:
+                return self._conn.execute(sql)
+            return self._conn.execute(sql, params)
+        except duckdb.Error as exc:
+            failure = state["failure"] if state is not None else None
+            if failure is not None:
+                raise _NativeRetrySignal(failure) from exc
+            raise
+        finally:
+            if state is not None:
+                state["failure"] = None
+                state["active"] = False
+                state["lock"].release()
 
     def quote_identifier(self, name: str) -> str:
         return quote_sql_identifier(name)
@@ -78,6 +100,37 @@ class DuckDBAdapter:
             ) from exc
         _kill_registrations[self._conn] = True
 
+    def register_retry_function(self) -> None:
+        # All adapters wrapping one raw connection share execution-local state.
+        # A callback sets evidence before DuckDB wraps its exception; ordinary
+        # backend errors are never classified from their text.
+        with _retry_registration_lock:
+            if self._conn in _retry_registrations:
+                return
+            state = {"failure": None, "active": False, "lock": Lock()}
+
+            def retry_many(policy_ids: str) -> bool:
+                if not state["active"]:
+                    raise RuntimeError("Native RETRY must execute through the DFC adapter")
+                parts = policy_ids.split(",") if isinstance(policy_ids, str) else []
+                if not parts or any(
+                    not part or not part.isascii() or not part.isdigit() for part in parts
+                ):
+                    raise RuntimeError("Invalid native RETRY policy identity list")
+                failure = tuple((index, None) for index in sorted({int(part) for part in parts}))
+                state["failure"] = failure
+                raise _NativeRetrySignal(failure)
+
+            self._conn.create_function(
+                "passant_retry_many",
+                retry_many,
+                ["VARCHAR"],
+                "BOOLEAN",
+                side_effects=True,
+                null_handling="special",
+            )
+            _retry_registrations[self._conn] = state
+
     def register_resolution_function(
         self,
         name: str,
@@ -91,11 +144,12 @@ class DuckDBAdapter:
             parameter_types,
             return_type,
             null_handling="special",
+            side_effects=True,
         )
 
     def register_relation_resolution_function(self, name: str, func: Any) -> None:
         """Register a scalar UDF invoked with bool_or(violation) over the relation input."""
-        self._conn.create_function(name, func, ["BOOLEAN"], "BOOLEAN")
+        self._conn.create_function(name, func, ["BOOLEAN"], "BOOLEAN", side_effects=True)
 
     def introspect_catalog(self, *, include_row_counts: bool = False) -> dict:
         table_names = self._list_catalog_tables()

@@ -23,7 +23,13 @@ fn planner_chooses_full_push_for_aggregate_query() {
         description: None,
     }];
 
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
+    let result = PassantPlanner::new().plan_query_with_rewriter(
+        &ir,
+        &crate::common::rewriter_with_catalog(
+            &policies,
+            crate::common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+        ),
+    );
     assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
 }
 
@@ -45,7 +51,13 @@ fn planner_chooses_full_push_for_monotonic_spj_query() {
         description: None,
     }];
 
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
+    let result = PassantPlanner::new().plan_query_with_rewriter(
+        &ir,
+        &crate::common::rewriter_with_catalog(
+            &policies,
+            crate::common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+        ),
+    );
     assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert!(result.scope.has_join);
     assert!(!result.scope.has_non_monotonic_operation);
@@ -83,7 +95,13 @@ fn planner_uses_full_push_for_decomposable_avg_policy_aggregate() {
         description: None,
     }];
 
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
+    let result = PassantPlanner::new().plan_query_with_rewriter(
+        &ir,
+        &crate::common::rewriter_with_catalog(
+            &policies,
+            crate::common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+        ),
+    );
     assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert_eq!(result.scope.policy_aggregate_count, 1);
     assert!(result.scope.policy_aggregates_distributive);
@@ -92,20 +110,25 @@ fn planner_uses_full_push_for_decomposable_avg_policy_aggregate() {
 
 #[test]
 fn rewriter_uses_full_push_for_decomposable_avg_scan_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "avg(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "avg(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
@@ -118,20 +141,25 @@ fn rewriter_uses_full_push_for_decomposable_avg_scan_policy() {
 
 #[test]
 fn rewriter_splits_source_local_decomposable_avg_policies_via_full_push() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string(), "bar".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "avg(foo.id) > 1 AND avg(bar.id) > 10".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string(), "bar".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "avg(foo.id) > 1 AND avg(bar.id) > 10".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
@@ -146,20 +174,25 @@ fn rewriter_splits_source_local_decomposable_avg_policies_via_full_push() {
 
 #[test]
 fn rewriter_uses_full_push_for_alias_decomposable_avg_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "avg(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "avg(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT f.id FROM foo AS f")
@@ -174,20 +207,25 @@ fn rewriter_uses_full_push_for_alias_decomposable_avg_policy() {
 
 #[test]
 fn rewriter_full_pushes_cross_source_decomposable_avg_comparison() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string(), "bar".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "avg(foo.id) > avg(bar.id)".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string(), "bar".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "avg(foo.id) > avg(bar.id)".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT foo.id FROM foo JOIN bar ON foo.id = bar.id")
@@ -202,20 +240,25 @@ fn rewriter_full_pushes_cross_source_decomposable_avg_comparison() {
 
 #[test]
 fn rewriter_full_pushes_mixed_row_and_decomposable_avg_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "foo.id > 0 AND avg(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "foo.id > 0 AND avg(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
@@ -243,7 +286,13 @@ fn planner_chooses_full_push_for_non_monotonic_query() {
         description: None,
     }];
 
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
+    let result = PassantPlanner::new().plan_query_with_rewriter(
+        &ir,
+        &crate::common::rewriter_with_catalog(
+            &policies,
+            crate::common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+        ),
+    );
     assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert!(result.scope.has_non_monotonic_operation);
     assert!(result.scope.requires_source_set_annotations);
@@ -267,13 +316,19 @@ fn planner_marks_outer_join_as_requiring_source_set_annotations() {
         description: None,
     }];
 
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
+    let result = PassantPlanner::new().plan_query_with_rewriter(
+        &ir,
+        &crate::common::rewriter_with_catalog(
+            &policies,
+            crate::common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+        ),
+    );
     assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert!(result.scope.requires_source_set_annotations);
 }
 
 #[test]
-fn planner_records_successful_except_rewrite_in_explain_output() {
+fn planner_records_policy_specific_negative_provenance_error_in_explain_output() {
     let ir = parse_query_to_ir("SELECT id FROM bar EXCEPT SELECT id FROM foo")
         .expect("query should parse");
     let policies = vec![PolicyIr::Pgn {
@@ -290,8 +345,23 @@ fn planner_records_successful_except_rewrite_in_explain_output() {
         description: None,
     }];
 
-    let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
-    assert!(explanation.chosen.rewrite_error.is_none());
+    let explanation = PassantPlanner::new().explain_rewrite_with_rewriter(
+        &ir,
+        &crate::common::rewriter_with_catalog(
+            &policies,
+            crate::common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+        ),
+        false,
+    );
+    let error = explanation
+        .chosen
+        .rewrite_error
+        .expect("negative-side policy must fail");
+    assert!(
+        error.contains("policy 0") && error.contains("max(foo.id) > 1"),
+        "{error}"
+    );
+    assert!(error.contains("negative-side SOURCE foo"), "{error}");
 }
 
 #[test]
@@ -312,7 +382,14 @@ fn planner_records_successful_source_set_rewrite_in_explain_output() {
         description: None,
     }];
 
-    let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
+    let explanation = PassantPlanner::new().explain_rewrite_with_rewriter(
+        &ir,
+        &crate::common::rewriter_with_catalog(
+            &policies,
+            crate::common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+        ),
+        false,
+    );
     assert!(explanation.chosen.rewrite_error.is_none());
     assert!(explanation.scope.requires_source_set_annotations);
 }

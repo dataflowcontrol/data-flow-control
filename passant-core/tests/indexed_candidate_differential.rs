@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 use std::collections::HashSet;
 
 use passant_core::{MultiSourceLookupMode, PolicyIr, PolicyStore, Resolution, TableKey};
@@ -19,53 +22,98 @@ fn dfc(source: &str, constraint: &str, on_fail: Resolution) -> PolicyIr {
 }
 
 fn register_diverse_registry(store: &mut PolicyStore) {
-    store.register(dfc("orders", "max(orders.amount) > 1", Resolution::Remove));
-    store.register(dfc("customers", "max(customers.id) > 0", Resolution::Kill));
-    store.register(PolicyIr::Pgn {
-        sources: vec!["orders".to_string(), "customers".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(orders.amount) + max(customers.id) > 10".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
-    store.register(PolicyIr::Pgn {
-        sources: vec!["receipts".to_string()],
-        required_sources: vec!["receipts".to_string()],
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: Some("reports".to_string()),
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "reports.id > 0".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
-    store.register(PolicyIr::Pgn {
-        sources: vec![],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: Some("reports".to_string()),
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(reports.amount) <= 0".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut catalog = common::fixture_catalog(&[
+        ("orders", &["id", "amount"]),
+        ("customers", &["id"]),
+        ("receipts", &["id"]),
+        ("reports", &["id", "amount"]),
+    ]);
     for index in 0..500_usize {
-        store.register(dfc(
-            &format!("other_{index:03}"),
-            &format!("max(other_{index}.id) > {index}"),
-            Resolution::Remove,
-        ));
+        catalog.register_table(format!("other_{index:03}"), vec!["id".into()]);
+    }
+    store
+        .register(
+            dfc("orders", "max(orders.amount) > 1", Resolution::Remove),
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
+    store
+        .register(
+            dfc("customers", "max(customers.id) > 0", Resolution::Kill),
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
+    store
+        .register(
+            PolicyIr::Pgn {
+                sources: vec!["orders".to_string(), "customers".to_string()],
+                required_sources: Vec::new(),
+                dimension_tables: Vec::new(),
+                dimension_aliases: std::collections::HashMap::new(),
+                dimension_queries: std::collections::HashMap::new(),
+                sink: None,
+                sink_alias: None,
+                source_aliases: std::collections::HashMap::new(),
+                constraint: "max(orders.amount) + max(customers.id) > 10".to_string(),
+                on_fail: Resolution::Remove,
+                description: None,
+            },
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
+    store
+        .register(
+            PolicyIr::Pgn {
+                sources: vec!["receipts".to_string()],
+                required_sources: vec!["receipts".to_string()],
+                dimension_tables: Vec::new(),
+                dimension_aliases: std::collections::HashMap::new(),
+                dimension_queries: std::collections::HashMap::new(),
+                sink: Some("reports".to_string()),
+                sink_alias: None,
+                source_aliases: std::collections::HashMap::new(),
+                constraint: "reports.id > 0".to_string(),
+                on_fail: Resolution::Remove,
+                description: None,
+            },
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
+    store
+        .register(
+            PolicyIr::Pgn {
+                sources: vec![],
+                required_sources: Vec::new(),
+                dimension_tables: Vec::new(),
+                dimension_aliases: std::collections::HashMap::new(),
+                dimension_queries: std::collections::HashMap::new(),
+                sink: Some("reports".to_string()),
+                sink_alias: None,
+                source_aliases: std::collections::HashMap::new(),
+                constraint: "max(reports.amount) <= 0".to_string(),
+                on_fail: Resolution::Remove,
+                description: None,
+            },
+            &catalog,
+            &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+        )
+        .expect("fixture store policy must validate");
+    for index in 0..500_usize {
+        store
+            .register(
+                dfc(
+                    &format!("other_{index:03}"),
+                    &format!("max(other_{index:03}.id) > {index}"),
+                    Resolution::Remove,
+                ),
+                &catalog,
+                &passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb),
+            )
+            .expect("fixture store policy must validate");
     }
 }
 

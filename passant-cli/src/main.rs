@@ -4,6 +4,7 @@ use passant_core::{
     PassantPlanner, PassantRewriter, PolicyIr, Resolution, RewriteOptions, parse_policy_text,
     parse_query_to_ir,
 };
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "passant")]
@@ -21,6 +22,11 @@ enum Commands {
         sql: String,
         #[arg(long)]
         policy: Vec<String>,
+        #[arg(
+            long,
+            help = "Path to explicit CatalogSnapshot JSON (required for policy SOURCE/SINK registration)"
+        )]
+        catalog: Option<PathBuf>,
         #[arg(long, help = "Print rewrite stats JSON after rewritten SQL")]
         stats: bool,
     },
@@ -28,6 +34,11 @@ enum Commands {
         sql: String,
         #[arg(long)]
         policy: Vec<String>,
+        #[arg(
+            long,
+            help = "Path to explicit CatalogSnapshot JSON (required for policy SOURCE/SINK registration)"
+        )]
+        catalog: Option<PathBuf>,
         #[arg(
             long,
             help = "Run a rewrite with stats collection and include timings in output"
@@ -38,6 +49,11 @@ enum Commands {
         sql: String,
         #[arg(long)]
         policy: Vec<String>,
+        #[arg(
+            long,
+            help = "Path to explicit CatalogSnapshot JSON (required for policy SOURCE/SINK registration)"
+        )]
+        catalog: Option<PathBuf>,
     },
     ParsePolicy {
         #[arg(
@@ -59,13 +75,13 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Rewrite { sql, policy, stats } => {
-            let mut rewriter = PassantRewriter::new();
-            for policy_text in policy {
-                rewriter
-                    .register_policy_text(&policy_text)
-                    .context("failed to parse policy")?;
-            }
+        Commands::Rewrite {
+            sql,
+            policy,
+            catalog,
+            stats,
+        } => {
+            let rewriter = configured_rewriter(catalog, policy)?;
             let options = RewriteOptions {
                 collect_stats: stats,
                 ..RewriteOptions::default()
@@ -79,38 +95,26 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("{}", serde_json::to_string_pretty(&export)?);
             }
         }
-        Commands::Explain { sql, policy, stats } => {
-            let mut rewriter = PassantRewriter::new();
-            for policy_text in policy {
-                rewriter
-                    .register_policy_text(&policy_text)
-                    .context("failed to parse policy")?;
-            }
+        Commands::Explain {
+            sql,
+            policy,
+            catalog,
+            stats,
+        } => {
+            let rewriter = configured_rewriter(catalog, policy)?;
             let ir = parse_query_to_ir(&sql).context("failed to parse SQL")?;
-            let registry = rewriter.aggregate_registry().clone();
-            let mut explanation = PassantPlanner::new().explain_rewrite_with_registry(
-                &ir,
-                &rewriter.policies(),
-                &registry,
-            );
-            if stats {
-                rewriter
-                    .rewrite_with_options(
-                        &sql,
-                        RewriteOptions {
-                            collect_stats: true,
-                            ..RewriteOptions::default()
-                        },
-                    )
-                    .context("failed to rewrite SQL for stats")?;
-                explanation.rewrite_stats = Some(rewriter.last_rewrite_stats().into());
-            }
+            let explanation =
+                PassantPlanner::new().explain_rewrite_with_rewriter(&ir, &rewriter, stats);
             println!("{}", serde_json::to_string_pretty(&explanation)?);
         }
-        Commands::Plan { sql, policy } => {
+        Commands::Plan {
+            sql,
+            policy,
+            catalog,
+        } => {
             let ir = parse_query_to_ir(&sql).context("failed to parse SQL")?;
-            let policies = parse_policy_args(policy)?;
-            let result = PassantPlanner::new().plan_query(&ir, &policies);
+            let rewriter = configured_rewriter(catalog, policy)?;
+            let result = PassantPlanner::new().plan_query_with_rewriter(&ir, &rewriter);
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Commands::ParsePolicy {
@@ -144,9 +148,22 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_policy_args(policy_texts: Vec<String>) -> anyhow::Result<Vec<PolicyIr>> {
-    policy_texts
-        .into_iter()
-        .map(|policy_text| parse_policy_text(&policy_text).context("failed to parse policy"))
-        .collect()
+fn configured_rewriter(
+    catalog: Option<PathBuf>,
+    policies: Vec<String>,
+) -> anyhow::Result<PassantRewriter> {
+    let mut rewriter = PassantRewriter::new();
+    if let Some(path) = catalog {
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("failed to read catalog {}", path.display()))?;
+        let snapshot: passant_core::catalog::CatalogSnapshot =
+            serde_json::from_slice(&bytes).context("invalid CatalogSnapshot JSON")?;
+        rewriter.apply_catalog_snapshot(snapshot);
+    }
+    for policy in policies {
+        rewriter
+            .register_policy_text(&policy)
+            .context("failed to register policy against explicit catalog")?;
+    }
+    Ok(rewriter)
 }

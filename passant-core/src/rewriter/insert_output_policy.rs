@@ -64,7 +64,6 @@ pub(crate) fn plan_insert_output_policy(
             }
         }
     }
-    let mut render_select_body_only = false;
     let mut aggregation_cte = None;
     let mut policy_source_tables = None;
 
@@ -134,14 +133,6 @@ pub(crate) fn plan_insert_output_policy(
         policy_indices.insert(index);
         aggregation_cte = Some(cte_name.clone());
         policy_source_tables = Some(cte_transitive_source_tables(with, &cte_name));
-        if policy_sink.is_none() && constraint.contains(OUTPUT_MARKER) {
-            render_select_body_only = true;
-        }
-        if policy_sink.is_some()
-            && sink.is_some_and(|insert_sink| policy_sink.as_deref() == Some(insert_sink))
-        {
-            render_select_body_only = false;
-        }
     }
 
     let Some(aggregation_cte) = aggregation_cte else {
@@ -155,7 +146,6 @@ pub(crate) fn plan_insert_output_policy(
         policy_source_tables,
         aggregate_aliases,
         aggregate_projections,
-        render_select_body_only,
     }))
 }
 
@@ -516,7 +506,7 @@ fn replace_aggregate_expr_recursive(mut expr: Expr, plan: &InsertOutputPolicyPla
 
 // Track only direct column lineage. Computed expressions cannot safely stand in for
 // the original source value, even if their output alias happens to match its name.
-type InputColumn = (Expr, Option<(TableKey, String)>);
+pub(crate) type InputColumn = (Expr, Option<(TableKey, String)>);
 
 fn input_columns(
     with: &sqlparser::ast::With,

@@ -25,6 +25,8 @@ fn insert_remove_filters_violating_sink_rows() {
 fn required_source_fail_closed_on_insert() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE other (id INTEGER)");
+    // Registered source exists, but contributes nothing to the INSERT query.
+    db.exec("CREATE TABLE receipts (id INTEGER)");
     db.exec("CREATE TABLE reports (id INTEGER)");
     db.exec("INSERT INTO other VALUES (1)");
     db.register_policy(PolicyIr::Pgn {

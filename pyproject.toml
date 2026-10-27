@@ -1,6 +1,6 @@
 [project]
 name = "data-flow-control"
-version = "0.1.8"
+version = "0.2.0"
 description = "Rust-backed Data Flow Control rewrite engine"
 license = "MIT"
 license-files = ["LICENSE"]

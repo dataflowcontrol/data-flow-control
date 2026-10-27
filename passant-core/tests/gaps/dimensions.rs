@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use passant_core::{PolicyIr, Resolution, TableCatalog};
 
-use crate::common::{assert_rewrite, rewrite_with_catalog};
+use crate::common::rewrite_with_catalog;
 
 fn dimension_policy(
     sources: &[&str],
@@ -194,4 +194,13 @@ fn catalog_rejects_unknown_dimension_table() {
         )
         .expect_err("missing dimension table");
     assert!(err.to_string().contains("Dimension table 'missing_dim'"));
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[("foo", &["id", "region_id"]), ("regions", &["id", "code"])])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
 }

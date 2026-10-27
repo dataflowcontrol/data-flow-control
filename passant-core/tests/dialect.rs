@@ -27,7 +27,13 @@ fn catalog_for_dialect(dialect: &str) -> CatalogSnapshot {
         dialect: Some(dialect.to_string()),
         default_schema: None,
         search_path: Vec::new(),
-        tables: HashMap::new(),
+        tables: HashMap::from([(
+            "foo".into(),
+            passant_core::CatalogTableInfo {
+                columns: vec!["id".into()],
+                ..Default::default()
+            },
+        )]),
         unique_columns: vec![],
         aggregate_functions: vec![],
     }
@@ -66,7 +72,9 @@ fn remove_scan_sql_matches_expected_per_dialect() {
     for dialect in ["duckdb", "sqlite", "postgres"] {
         let mut rewriter = PassantRewriter::new();
         rewriter.apply_catalog_snapshot(catalog_for_dialect(dialect));
-        rewriter.register_policy(remove_scan_policy());
+        rewriter
+            .register_policy(remove_scan_policy())
+            .expect("dialect fixture policy must validate");
         let rewritten = rewriter
             .rewrite("SELECT id FROM foo")
             .unwrap_or_else(|err| panic!("rewrite failed for {dialect}: {err}"));
@@ -78,7 +86,9 @@ fn remove_scan_sql_matches_expected_per_dialect() {
 fn rewrite_options_parse_dialect_overrides_catalog() {
     let mut rewriter = PassantRewriter::new();
     rewriter.apply_catalog_snapshot(catalog_for_dialect("duckdb"));
-    rewriter.register_policy(remove_scan_policy());
+    rewriter
+        .register_policy(remove_scan_policy())
+        .expect("dialect fixture policy must validate");
     let options = RewriteOptions {
         parse_dialect: Some(SqlDialect::SQLite),
         ..RewriteOptions::default()

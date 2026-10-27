@@ -2,20 +2,23 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
 #[test]
 fn rewriter_applies_scan_remove_policy_without_comment_stub() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
@@ -25,33 +28,38 @@ fn rewriter_applies_scan_remove_policy_without_comment_stub() {
 
 #[test]
 fn rewriter_collapses_dominated_remove_thresholds() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 10".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 10".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
@@ -61,33 +69,38 @@ fn rewriter_collapses_dominated_remove_thresholds() {
 
 #[test]
 fn rewriter_collapses_dominated_upper_thresholds() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) <= 10".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) < 5".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) <= 10".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) < 5".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo")
@@ -97,20 +110,25 @@ fn rewriter_collapses_dominated_upper_thresholds() {
 
 #[test]
 fn rewriter_applies_aliases_and_having_for_aggregation() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.amount) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[(
+        "foo",
+        &["category", "amount"],
+    )]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.amount) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT f.category, sum(f.amount) FROM foo AS f GROUP BY f.category")
@@ -123,20 +141,23 @@ fn rewriter_applies_aliases_and_having_for_aggregation() {
 
 #[test]
 fn rewriter_filters_after_limit_for_remove_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo ORDER BY id LIMIT 1")
@@ -149,20 +170,23 @@ fn rewriter_filters_after_limit_for_remove_policy() {
 
 #[test]
 fn rewriter_filters_after_offset_for_remove_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 2".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 2".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo ORDER BY id OFFSET 1")
@@ -175,20 +199,23 @@ fn rewriter_filters_after_offset_for_remove_policy() {
 
 #[test]
 fn rewriter_filters_after_limit_offset_for_remove_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 2".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 2".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo ORDER BY id LIMIT 2 OFFSET 1")
@@ -201,20 +228,23 @@ fn rewriter_filters_after_limit_offset_for_remove_policy() {
 
 #[test]
 fn rewriter_limit_without_order_by_uses_cte_wrapper() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo LIMIT 1")
@@ -227,20 +257,23 @@ fn rewriter_limit_without_order_by_uses_cte_wrapper() {
 
 #[test]
 fn rewriter_order_by_without_limit_keeps_inline_remove() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo ORDER BY id")
@@ -250,20 +283,23 @@ fn rewriter_order_by_without_limit_keeps_inline_remove() {
 
 #[test]
 fn select_kill_order_by_remapped() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Kill,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Kill,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo ORDER BY foo.id")
@@ -281,20 +317,25 @@ fn select_kill_order_by_remapped() {
 
 #[test]
 fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.secret) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[(
+        "foo",
+        &["id", "secret"],
+    )]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.secret) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo ORDER BY id LIMIT 1")
@@ -307,20 +348,25 @@ fn rewriter_propagates_hidden_filter_column_for_limit_wrapper() {
 
 #[test]
 fn rewriter_wraps_aggregate_limit_for_kill_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.amount) > 1".to_string(),
-        on_fail: Resolution::Kill,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[(
+        "foo",
+        &["category", "amount"],
+    )]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.amount) > 1".to_string(),
+            on_fail: Resolution::Kill,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite(
@@ -335,20 +381,25 @@ fn rewriter_wraps_aggregate_limit_for_kill_policy() {
 
 #[test]
 fn rewriter_wraps_aggregate_limit_for_remove_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.amount) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[(
+        "foo",
+        &["category", "amount"],
+    )]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.amount) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite(
@@ -362,20 +413,23 @@ fn rewriter_wraps_aggregate_limit_for_remove_policy() {
 
 #[test]
 fn rewriter_wraps_limit_for_kill_policy() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Kill,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Kill,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT id FROM foo ORDER BY id LIMIT 1")
@@ -386,20 +440,23 @@ fn rewriter_wraps_limit_for_kill_policy() {
 
 #[test]
 fn rewriter_passthrough_delete_when_policies_are_registered() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter =
+        PassantRewriter::with_catalog(crate::common::fixture_catalog(&[("foo", &["id"])]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("DELETE FROM foo WHERE id = 1")
@@ -408,25 +465,37 @@ fn rewriter_passthrough_delete_when_policies_are_registered() {
 }
 
 #[test]
-fn rewriter_rewrites_except_branch_when_policies_are_registered() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+fn rewriter_rejects_negative_source_provenance_with_policy_identity() {
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
-    let sql = rewriter
+    let err = rewriter
         .rewrite("SELECT id FROM bar EXCEPT SELECT id FROM foo")
-        .expect("except branch rewrite should succeed");
-    assert!(sql.contains("EXCEPT"));
-    assert!(sql.contains("foo.id > 1"));
+        .expect_err("negative provenance is unsupported")
+        .to_string();
+    assert!(
+        err.contains("policy 0") && err.contains("max(foo.id) > 1"),
+        "{err}"
+    );
+    assert!(
+        err.contains("negative-side SOURCE foo") && err.contains("EXCEPT"),
+        "{err}"
+    );
 }

@@ -1,6 +1,6 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
-use crate::common::{pgn_policy, rewrite};
+use crate::common::pgn_policy;
 
 #[test]
 fn derived_scan_reuses_existing_projection_alias_for_policy_metric() {
@@ -40,20 +40,25 @@ fn derived_scan_under_outer_aggregate_defers_row_filter_to_parent_having() {
 
 #[test]
 fn derived_scan_preserves_aggregate_inputs_for_passing_groups() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["lineitem".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(lineitem.l_quantity) >= 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("lineitem", &["l_orderkey", "l_quantity"]),
+        ("part", &["p_partkey"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["lineitem".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(lineitem.l_quantity) >= 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
     let sql = rewriter
         .rewrite(
             "SELECT g, SUM(v) FROM (SELECT l_quantity AS v, 1 AS g FROM lineitem) AS d GROUP BY g",
@@ -77,8 +82,24 @@ fn derived_scan_projects_shared_metric_for_each_policy_alias() {
         &policies,
     );
 
-    assert_eq!(
+    for parts in ["", "INSERT INTO part VALUES (1), (2);"] {
+        crate::assert_same_rows(
+            &sql,
+            "SELECT g, SUM(v) FROM (SELECT l_quantity AS v, l_orderkey AS g FROM lineitem, part) AS d GROUP BY g HAVING sum(d.v - 30) <= 0",
+            &format!(
+                "CREATE TABLE lineitem(l_orderkey INTEGER, l_quantity INTEGER); CREATE TABLE part(p_partkey INTEGER); INSERT INTO lineitem VALUES (1, 10), (1, 20), (2, 40), (3, NULL); {parts}"
+            ),
+        );
+    }
+}
+
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(
         sql,
-        "SELECT g, SUM(v) FROM (SELECT l_quantity AS v, l_orderkey AS g, lineitem.l_quantity - 30 AS __passant_filter_policy_0_lineitem_l_quantity___30, lineitem.l_quantity - 30 AS __passant_filter_policy_1_lineitem_l_quantity___30 FROM lineitem, part) AS d GROUP BY g HAVING sum(d.__passant_filter_policy_0_lineitem_l_quantity___30) <= 0 AND sum(d.__passant_filter_policy_1_lineitem_l_quantity___30) <= 0"
-    );
+        policies,
+        crate::common::fixture_catalog(&[
+            ("lineitem", &["l_orderkey", "l_quantity"]),
+            ("part", &["p_partkey"]),
+        ]),
+    )
 }

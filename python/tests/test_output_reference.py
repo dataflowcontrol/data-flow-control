@@ -74,7 +74,7 @@ def test_ambiguous_output_marker_reference_is_rejected():
         rewriter.transform_query("SELECT a.id, b.id FROM foo AS a JOIN foo AS b ON a.id = b.id")
 
 
-def test_missing_output_marker_column_is_rejected():
+def test_missing_no_sink_output_marker_column_skips_policy():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.register_policy(
@@ -85,5 +85,5 @@ def test_missing_output_marker_column_is_rejected():
         )
     )
 
-    with pytest.raises(PassantRewriteError, match="not a projected output column"):
-        rewriter.transform_query("SELECT foo.id FROM foo")
+    rewriter.execute("INSERT INTO foo VALUES (1), (2)")
+    assert rewriter.fetchall("SELECT foo.id FROM foo ORDER BY id") == [(1,), (2,)]

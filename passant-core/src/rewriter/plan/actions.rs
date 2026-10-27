@@ -29,6 +29,10 @@ use super::applicability::{ScopePlanDiagnostics, resolve_scope_policies};
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum PolicyResolutionAction {
+    Retry {
+        filter: Expr,
+        policy_index: usize,
+    },
     Filter {
         filter: Expr,
         #[allow(dead_code)]
@@ -61,6 +65,10 @@ pub(crate) fn action_for_resolution(
     policy_index: usize,
 ) -> Result<PolicyResolutionAction, crate::diagnostics::RewriteError> {
     match on_fail {
+        Resolution::Retry(_) => Ok(PolicyResolutionAction::Retry {
+            filter,
+            policy_index,
+        }),
         Resolution::Remove => Ok(PolicyResolutionAction::Filter {
             filter,
             description,
@@ -193,13 +201,11 @@ pub(crate) fn build_policy_resolution_actions(
         {
             expr = and_expr(guard, expr);
         }
-        actions.push(action_for_resolution(
-            expr,
-            on_fail,
-            description.clone(),
-            policy,
-            index,
-        )?);
+        let mut action = action_for_resolution(expr, on_fail, description.clone(), policy, index)?;
+        if let PolicyResolutionAction::Retry { policy_index, .. } = &mut action {
+            *policy_index = store.original_policy_index(index).unwrap_or(index);
+        }
+        actions.push(action);
     }
     Ok(actions)
 }
@@ -260,10 +266,36 @@ pub(crate) fn apply_policy_resolution_actions(
         ));
     }
 
+    let kinds = actions
+        .iter()
+        .map(|action| match action {
+            PolicyResolutionAction::Filter { .. } => 0,
+            PolicyResolutionAction::TupleUdf { udf_name, .. }
+                if udf_name.eq_ignore_ascii_case(PASSANT_KILL_UDF) =>
+            {
+                1
+            }
+            PolicyResolutionAction::Retry { .. } => 2,
+            PolicyResolutionAction::TupleUdf { .. } => 3,
+            PolicyResolutionAction::RelationUdf { .. } => 4,
+            PolicyResolutionAction::Ui { .. } => 5,
+        })
+        .collect::<HashSet<_>>();
+    let repeated_udf = actions.len() > 1 && (kinds.contains(&3) || kinds.contains(&4));
+    if kinds.contains(&2) || ((kinds.len() > 1 || repeated_udf) && !kinds.contains(&5)) {
+        let inner = std::mem::replace(select, crate::sql::empty_select());
+        *select = crate::rewriter::resolution::wrap_select_with_resolution_stages(
+            inner,
+            actions,
+            &context.resolution_registry,
+        )?;
+        return Ok(());
+    }
     let mut kill_filters = Vec::new();
 
     for action in actions {
         match action {
+            PolicyResolutionAction::Retry { .. } => unreachable!("retry routed to joint stage"),
             PolicyResolutionAction::Filter { filter, .. } => {
                 add_filter(select, filter.clone(), is_aggregation)?;
             }

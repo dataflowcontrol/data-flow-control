@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn split_policy_by_source_local_conjuncts_for_outer_join() {
+    fn outer_join_does_not_narrow_multi_source_policy_scope() {
         let policy = PolicyIr::Pgn {
             sources: vec!["bar".to_string(), "foo".to_string()],
             required_sources: Vec::new(),
@@ -107,19 +107,11 @@ mod tests {
             crate::identifiers::TableKey::new("bar"),
             crate::identifiers::TableKey::new("foo"),
         ]);
-        let split = split_policy_by_source_local_conjuncts(&policy, None, None, &available)
-            .expect("policy should split");
-        assert_eq!(split.len(), 2);
-        assert!(split.iter().any(|(policy, _)| {
-            policy.sources() == ["bar"] && policy.constraint().contains("max(bar.id) > 1")
-        }));
-        assert!(split.iter().any(|(policy, _)| {
-            policy.sources() == ["foo"] && policy.constraint().contains("max(foo.id) > 1")
-        }));
+        assert!(split_policy_by_source_local_conjuncts(&policy, None, None, &available).is_none());
     }
 
     #[test]
-    fn split_set_operation_policies_into_branch_local_policies() {
+    fn disjoint_set_branches_do_not_apply_partial_source_scope() {
         let left = set_expr_from_sql("SELECT id FROM foo");
         let right = set_expr_from_sql("SELECT id FROM bar");
         let policy = PolicyIr::Pgn {
@@ -137,10 +129,36 @@ mod tests {
         };
         let (left_policies, right_policies) =
             split_set_operation_policies(&[policy], &left, &right).expect("should split");
-        assert_eq!(left_policies.len(), 1);
-        assert_eq!(right_policies.len(), 1);
-        assert_eq!(left_policies[0].sources(), ["foo"]);
-        assert_eq!(right_policies[0].sources(), ["bar"]);
+        assert!(left_policies.is_empty());
+        assert!(right_policies.is_empty());
+    }
+
+    #[test]
+    fn complete_branch_keeps_whole_policy_and_required_contract_is_unchanged() {
+        let policy = crate::policy::parse_policy_text(
+            "SOURCE foo, bar CONSTRAINT max(foo.id) > 1 AND max(bar.id) > 1 ON FAIL REMOVE",
+        )
+        .unwrap();
+        let complete = set_expr_from_sql("SELECT foo.id FROM foo CROSS JOIN bar");
+        let partial = set_expr_from_sql("SELECT id FROM foo");
+        let (left, right) =
+            split_set_operation_policies(std::slice::from_ref(&policy), &complete, &partial)
+                .unwrap();
+        assert_eq!(left, vec![policy]);
+        assert!(right.is_empty());
+        let required = crate::policy::parse_policy_text(
+            "SOURCE REQUIRED foo, bar SINK target CONSTRAINT max(foo.id) > 1 ON FAIL REMOVE",
+        )
+        .unwrap();
+        assert!(
+            split_policy_for_set_branches(
+                &required,
+                None,
+                &set_expr_source_tables(&complete),
+                &set_expr_source_tables(&partial)
+            )
+            .is_none()
+        );
     }
 
     #[test]

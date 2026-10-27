@@ -31,6 +31,19 @@ class Planner:
     ) -> None:
         self._planner.register_aggregate_function_name(name, schema, classification)
 
+    def register_resolution_splittability(self, name: str, *, splittable: bool) -> None:
+        self._planner.register_resolution_splittability(name, splittable)
+
+    def policy_by_index(self, index: int) -> Policy | None:
+        encoded = self._planner.policy_json(index)
+        if encoded is None:
+            return None
+        entry = json.loads(encoded)
+        if entry is None:
+            return None
+        policies = _policies_from_rust(json.dumps([entry]))
+        return policies[0] if policies else None
+
     def register_policy(self, policy: Policy) -> None:
         self._planner.register_policy_specs(_policy_specs_json([policy]))
 
@@ -137,6 +150,9 @@ def _policies_from_rust(policies_json: str) -> list[Policy]:
                 dimension_aliases=spec.get("dimension_aliases", {}),
                 dimension_queries=spec.get("dimension_queries", {}),
                 udf_name=_udf_name_from_spec(spec),
+                retry_message=spec["on_fail"].get("Retry")
+                if isinstance(spec["on_fail"], dict)
+                else None,
             )
         )
     return policies

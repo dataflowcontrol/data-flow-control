@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use passant_core::{PassantPlanner, PassantRewriter, PolicyIr, parse_query, parse_query_to_ir};
+use passant_core::{PassantPlanner, PassantRewriter, PolicyIr, parse_query_to_ir};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use serde::Deserialize;
@@ -31,6 +31,8 @@ pub struct PolicySpec {
     pub source_aliases: HashMap<String, String>,
     pub constraint: String,
     pub on_fail: String,
+    #[serde(default)]
+    pub retry_message: Option<String>,
     pub description: Option<String>,
 }
 
@@ -51,12 +53,9 @@ impl PyPlanner {
     }
 
     fn register_policy_specs(&mut self, policies_json: String) -> PyResult<()> {
-        for policy in parse_policy_specs(&policies_json)? {
-            self.rewriter
-                .register_validated_policy(policy)
-                .map_err(map_rewrite_error)?;
-        }
-        Ok(())
+        self.rewriter
+            .register_policies(parse_policy_specs(&policies_json)?)
+            .map_err(map_rewrite_error)
     }
 
     fn sync_catalog(&mut self, catalog_json: String) -> PyResult<()> {
@@ -141,6 +140,32 @@ impl PyPlanner {
         self.explain_rewrite_registered_with_options(query, false)
     }
 
+    fn register_resolution_splittability(&mut self, name: String, splittable: bool) -> usize {
+        self.rewriter
+            .register_resolution_splittability(&name, splittable)
+    }
+
+    fn resolution_splittable(&self, resolution: String) -> PyResult<bool> {
+        Ok(self
+            .rewriter
+            .resolution_properties(&parse_resolution(&resolution)?)
+            .splittable)
+    }
+
+    fn resolution_registration_order(&self, name: String) -> Option<usize> {
+        self.rewriter
+            .resolution_registry()
+            .registration_order(&name)
+    }
+
+    fn policy_json(&self, index: usize) -> PyResult<Option<String>> {
+        self.rewriter
+            .policy_by_index(index)
+            .map(serde_json::to_string_pretty)
+            .transpose()
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     fn policies_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.rewriter.policies())
             .map_err(|err| PyValueError::new_err(err.to_string()))
@@ -165,25 +190,8 @@ impl PyPlanner {
         include_stats: bool,
     ) -> PyResult<String> {
         let ir = parse_query_to_ir(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let policies = self.rewriter.policies();
-        let registry = self.rewriter.aggregate_registry().clone();
-        let mut explanation =
-            PassantPlanner::new().explain_rewrite_with_registry(&ir, &policies, &registry);
-        let statement =
-            parse_query(&query).map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let statement_plan = self.rewriter.plan_statement_summary(&statement);
-        explanation.policy_plan = Some(statement_plan.aggregate());
-        explanation.statement_plan = Some(statement_plan);
-        if include_stats {
-            let options = passant_core::RewriteOptions {
-                collect_stats: true,
-                ..passant_core::RewriteOptions::default()
-            };
-            self.rewriter
-                .rewrite_with_options(&query, options)
-                .map_err(map_rewrite_error)?;
-            explanation.rewrite_stats = Some(self.rewriter.last_rewrite_stats().into());
-        }
+        let explanation =
+            PassantPlanner::new().explain_rewrite_with_rewriter(&ir, &self.rewriter, include_stats);
         serde_json::to_string_pretty(&explanation)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
@@ -224,7 +232,15 @@ fn policy_ir_from_spec(spec: &PolicySpec) -> PyResult<PolicyIr> {
         sink_alias: spec.sink_alias.clone(),
         source_aliases: spec.source_aliases.clone(),
         constraint: spec.constraint.clone(),
-        on_fail: parse_resolution(&spec.on_fail)?,
+        on_fail: if spec.on_fail.trim().eq_ignore_ascii_case("RETRY") {
+            passant_core::Resolution::Retry(
+                spec.retry_message
+                    .clone()
+                    .ok_or_else(|| PyValueError::new_err("RETRY requires retry_message"))?,
+            )
+        } else {
+            parse_resolution(&spec.on_fail)?
+        },
         description: spec.description.clone(),
     })
 }

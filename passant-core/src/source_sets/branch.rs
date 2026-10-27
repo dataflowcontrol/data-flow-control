@@ -17,6 +17,7 @@ pub(crate) fn branch_entry(
             parse_constraint_expr(policy.constraint()).expect("branch policy constraint must parse")
         });
     BranchPolicyEntry {
+        original_policy_index: parent_index.and_then(|index| store.original_policy_index(index)),
         policy,
         constraint_ast,
     }

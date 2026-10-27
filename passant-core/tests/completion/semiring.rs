@@ -2,8 +2,6 @@
 
 use passant_core::{PolicyIr, Resolution, RewriteStrategy};
 
-use crate::common::{assert_explain_strategy, plan_query, rewrite};
-
 fn multi_source_sum_policy() -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec!["foo".to_string(), "bar".to_string()],
@@ -193,4 +191,31 @@ fn aggregation_query_full_push_inlines_having_semiring() {
         sql,
         "SELECT foo.category, sum(foo.amount) FROM foo GROUP BY foo.category HAVING sum(foo.amount) > 100"
     );
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("foo", &["id", "amount", "category", "name"]),
+        ("bar", &["id", "amount"]),
+    ])
+}
+
+fn assert_explain_strategy(
+    sql: &str,
+    policies: &[passant_core::PolicyIr],
+    strategy: passant_core::RewriteStrategy,
+) {
+    assert_eq!(
+        crate::common::plan_query_with_catalog(sql, policies, family_catalog())
+            .chosen
+            .strategy,
+        strategy
+    );
+}
+fn plan_query(sql: &str, policies: &[passant_core::PolicyIr]) -> passant_core::PlanQueryResult {
+    crate::common::plan_query_with_catalog(sql, policies, family_catalog())
+}
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

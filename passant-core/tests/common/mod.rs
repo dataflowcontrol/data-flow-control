@@ -60,7 +60,9 @@ pub fn pgn_policy_required(sources: &[&str], required: &[&str], constraint: &str
 pub fn rewriter_with_policies(policies: &[PolicyIr]) -> PassantRewriter {
     let mut rewriter = PassantRewriter::new();
     for policy in policies {
-        rewriter.register_policy(policy.clone());
+        rewriter
+            .register_policy(policy.clone())
+            .expect("fixture must provide explicit SOURCE/SINK catalog metadata");
     }
     rewriter
 }
@@ -70,13 +72,17 @@ pub fn rewrite(sql: &str, policies: &[PolicyIr]) -> String {
 }
 
 pub fn rewrite_result(sql: &str, policies: &[PolicyIr]) -> Result<String, RewriteError> {
-    rewriter_with_policies(policies).rewrite(sql)
+    let mut rewriter = PassantRewriter::new();
+    rewriter.register_policies(policies.to_vec())?;
+    rewriter.rewrite(sql)
 }
 
 pub fn rewrite_with_catalog(sql: &str, policies: &[PolicyIr], catalog: TableCatalog) -> String {
     let mut rewriter = PassantRewriter::with_catalog(catalog);
     for policy in policies {
-        rewriter.register_policy(policy.clone());
+        rewriter
+            .register_policy(policy.clone())
+            .expect("fixture must provide explicit SOURCE/SINK catalog metadata");
     }
     rewriter
         .rewrite(sql)
@@ -108,4 +114,73 @@ pub fn assert_explain_strategy(sql: &str, policies: &[PolicyIr], strategy: Rewri
 
 pub fn pgn_policy_kill(sources: &[&str], constraint: &str) -> PolicyIr {
     pgn_policy_with(sources, constraint, Resolution::Kill)
+}
+
+/// Caller-owned complete fixture schemas; never inferred from SQL or policies.
+pub fn fixture_catalog(tables: &[(&str, &[&str])]) -> TableCatalog {
+    let mut catalog = TableCatalog::new();
+    for (table, columns) in tables {
+        catalog.register_table(
+            *table,
+            columns.iter().map(|column| (*column).to_string()).collect(),
+        );
+    }
+    catalog
+}
+
+pub fn rewriter_with_catalog(policies: &[PolicyIr], catalog: TableCatalog) -> PassantRewriter {
+    PassantRewriter::from_policies_with_catalog(policies.to_vec(), catalog)
+        .expect("policy should match caller-declared fixture schema")
+}
+
+pub fn assert_rewrite_with_catalog(
+    sql: &str,
+    policies: &[PolicyIr],
+    expected: &str,
+    catalog: TableCatalog,
+) {
+    pretty_assertions::assert_eq!(rewrite_with_catalog(sql, policies, catalog), expected);
+}
+
+pub fn plan_query_with_catalog(
+    sql: &str,
+    policies: &[PolicyIr],
+    catalog: TableCatalog,
+) -> PlanQueryResult {
+    let ir = parse_query_to_ir(sql).expect("query should parse");
+    let rewriter = rewriter_with_catalog(policies, catalog);
+    PassantPlanner::new().plan_query_with_rewriter(&ir, &rewriter)
+}
+
+/// Compare public schema and bag semantics, not optimizer-specific SQL spelling.
+pub fn assert_same_rows(actual: &str, reference: &str, setup: &str) {
+    let db = duckdb::Connection::open_in_memory().expect("fixture database");
+    db.execute_batch(setup)
+        .expect("explicit fixture schema/data");
+    let read = |sql: &str| {
+        let mut stmt = db.prepare(sql).unwrap_or_else(|e| panic!("{e}: {sql}"));
+        let mut cursor = stmt.query([]).expect("execute reference/rewritten SQL");
+        let names = cursor.as_ref().expect("statement").column_names();
+        let width = cursor.as_ref().expect("statement").column_count();
+        let mut rows = Vec::new();
+        while let Some(row) = cursor.next().expect("next row") {
+            rows.push(
+                (0..width)
+                    .map(|i| row.get::<_, duckdb::types::Value>(i))
+                    .collect::<duckdb::Result<Vec<_>>>()
+                    .expect("row values"),
+            );
+        }
+        let mut rows = rows
+            .into_iter()
+            .map(|row| format!("{row:?}"))
+            .collect::<Vec<_>>();
+        rows.sort();
+        (names, rows)
+    };
+    assert_eq!(
+        read(actual),
+        read(reference),
+        "rewritten: {actual}\nreference: {reference}"
+    );
 }

@@ -1,21 +1,24 @@
 from ._passant import PassantRewriteError
 from .connection import dfc
 from .dialect import Dialect
+from .errors import RetryFailure, RetryViolation
 from .options import RewriteOptions, UiUpdateMode
 from .policy import Policy, Resolution
 from .ui import UiViolationEvent
 
 __all__ = [
-    "create_agent",
-    "dfc",
     "Dialect",
-    "langchain_dfc",
+    "PassantRewriteError",
     "Policy",
     "Resolution",
+    "RetryFailure",
+    "RetryViolation",
     "RewriteOptions",
     "UiUpdateMode",
-    "PassantRewriteError",
     "UiViolationEvent",
+    "create_agent",
+    "dfc",
+    "langchain_dfc",
 ]
 
 

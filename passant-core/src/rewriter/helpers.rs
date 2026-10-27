@@ -104,7 +104,11 @@ pub(crate) fn prune_dominated_applicable_with_store<'a>(
     > = HashMap::new();
 
     for (slot, (index, policy, applicability)) in applicable.iter().enumerate() {
-        if *applicability != PolicyApplicability::Normal {
+        // Threshold metadata may exist for effectful policies too. Logical
+        // implication does not erase their distinct callbacks/failure identities.
+        if *applicability != PolicyApplicability::Normal
+            || policy.resolution() != crate::policy::Resolution::Remove
+        {
             continue;
         }
         let Some(candidate) = store

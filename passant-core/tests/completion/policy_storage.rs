@@ -1,6 +1,6 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
-use crate::common::{pgn_policy, pgn_policy_sink, pgn_policy_with, rewriter_with_policies};
+use crate::common::{pgn_policy, pgn_policy_sink, pgn_policy_with};
 
 #[test]
 fn delete_policy_matches_sources_and_constraint() {
@@ -73,7 +73,7 @@ fn policies_json_roundtrip_filters_policy_type() {
 
 #[test]
 fn has_registered_policies_tracks_all_policy_types() {
-    let empty = PassantRewriter::new();
+    let empty = PassantRewriter::with_catalog(family_catalog());
     assert!(!empty.has_registered_policies());
     assert!(!empty.has_policies());
     let dfc = rewriter_with_policies(&[pgn_policy(&["foo"], "max(foo.id) > 1")]);
@@ -103,4 +103,17 @@ fn register_policy_text_roundtrip() {
         .rewrite("SELECT id FROM foo")
         .expect("registered policy should rewrite");
     assert_eq!(sql, "SELECT id FROM foo WHERE foo.id > 1");
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+        ("reports", &["id", "total"]),
+    ])
+}
+
+fn rewriter_with_policies(policies: &[passant_core::PolicyIr]) -> passant_core::PassantRewriter {
+    crate::common::rewriter_with_catalog(policies, family_catalog())
 }

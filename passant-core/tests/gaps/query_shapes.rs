@@ -1,6 +1,6 @@
 use passant_core::{PolicyIr, Resolution};
 
-use crate::common::{assert_rewrite, pgn_policy, rewrite};
+use crate::common::pgn_policy;
 
 #[test]
 fn cross_join_applies_root_where_filter() {
@@ -13,10 +13,14 @@ fn cross_join_applies_root_where_filter() {
 
 #[test]
 fn select_distinct_scan_applies_where_filter() {
-    assert_rewrite(
+    let sql = rewrite(
         "SELECT DISTINCT id FROM foo",
-        &[pgn_policy(&["foo"], "max(foo.id) > 1")],
-        "SELECT DISTINCT id FROM foo WHERE foo.id > 1",
+        &[pgn_policy(&["foo"], "max(foo.id)>1")],
+    );
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT DISTINCT id FROM foo WHERE id>1",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); INSERT INTO foo VALUES(1,NULL),(2,NULL),(2,NULL),(NULL,NULL);",
     );
 }
 
@@ -102,4 +106,16 @@ fn nested_aggregation_constraint_uses_inner_expression() {
         sql.contains("foo.amount") || sql.contains("sum("),
         "expected nested aggregation fallback in rewrite: {sql}"
     );
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[("foo", &["id", "amount"]), ("baz", &["x"])])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
+}
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

@@ -11,7 +11,6 @@ import pathlib
 import duckdb
 import pytest
 import sqlglot
-
 from data_flow_control import Policy, Resolution, dfc
 
 lineitem_policy = Policy(
@@ -251,7 +250,7 @@ FROM (
     l_extendedprice * (
       1 - l_discount
     ) AS volume,
-    lineitem.l_quantity AS __passant_filter_policy_0_lineitem_l_quantity
+    lineitem."l_quantity" AS __passant_lineage_0
   FROM supplier, lineitem, orders, customer, nation AS n1, nation AS n2
   WHERE
     s_suppkey = l_suppkey
@@ -274,7 +273,7 @@ GROUP BY
   cust_nation,
   l_year
 HAVING
-  MAX(shipping.__passant_filter_policy_0_lineitem_l_quantity) >= 1
+  MAX(shipping.__passant_lineage_0) >= 1
 ORDER BY
   supp_nation,
   cust_nation,
@@ -298,7 +297,7 @@ FROM (
       1 - l_discount
     ) AS volume,
     n2.n_name AS nation,
-    lineitem.l_quantity AS __passant_filter_policy_0_lineitem_l_quantity
+    lineitem."l_quantity" AS __passant_lineage_0
   FROM part, supplier, lineitem, orders, customer, nation AS n1, nation AS n2, region
   WHERE
     p_partkey = l_partkey
@@ -315,7 +314,7 @@ FROM (
 GROUP BY
   o_year
 HAVING
-  MAX(all_nations.__passant_filter_policy_0_lineitem_l_quantity) >= 1
+  MAX(all_nations.__passant_lineage_0) >= 1
 ORDER BY
   o_year
 """,
@@ -338,7 +337,7 @@ FROM (
     l_extendedprice * (
       1 - l_discount
     ) - ps_supplycost * l_quantity AS amount,
-    lineitem.l_quantity AS __passant_filter_policy_0_lineitem_l_quantity
+    lineitem."l_quantity" AS __passant_lineage_0
   FROM part, supplier, lineitem, partsupp, orders, nation
   WHERE
     s_suppkey = l_suppkey
@@ -353,7 +352,7 @@ GROUP BY
   nation,
   o_year
 HAVING
-  MAX(profit.__passant_filter_policy_0_lineitem_l_quantity) >= 1
+  MAX(profit.__passant_lineage_0) >= 1
 ORDER BY
   nation,
   o_year DESC

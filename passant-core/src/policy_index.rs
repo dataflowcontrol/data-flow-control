@@ -305,7 +305,7 @@ mod tests {
     fn roaring_bitmap_index_promotes_at_threshold() {
         let mut store = PolicyStore::default();
         for index in 0..600usize {
-            store.register(crate::policy::PolicyIr::Pgn {
+            store.register_unchecked(crate::policy::PolicyIr::Pgn {
                 sources: vec!["orders".to_string()],
                 required_sources: Vec::new(),
                 dimension_tables: Vec::new(),

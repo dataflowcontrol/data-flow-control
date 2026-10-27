@@ -78,8 +78,27 @@ pub(crate) fn plan_select_rewrite(
 ) -> Result<SelectRewritePlan, crate::diagnostics::RewriteError> {
     let mut plan = SelectRewritePlan::default();
 
-    plan_join_input_source_filters(store, catalog, stats, select, analysis, context, &mut plan)?;
-    plan_join_policy_pushdown(store, catalog, stats, select, analysis, context, &mut plan)?;
+    // Filtering and joint-effect boundaries must settle before any resolution.
+    // REMOVE-only legacy pushdown remains an optional optimization outside them.
+    let sink_key = context.sink.as_deref().map(TableKey::new);
+    let has_other_resolution = store.policy_indices().into_iter().any(|index| {
+        store.compiled(index).is_some_and(|compiled| {
+            compiled.policy.resolution() != crate::policy::Resolution::Remove
+                && crate::rewriter::policy_expr::compiled_policy_applicability(
+                    compiled,
+                    &analysis.scope.direct_base_tables,
+                    sink_key.as_ref(),
+                    context.allow_partial_source_visibility,
+                )
+                .is_some()
+        })
+    });
+    if !context.joint_resolution_prepared && select.selection.is_none() && !has_other_resolution {
+        plan_join_input_source_filters(
+            store, catalog, stats, select, analysis, context, &mut plan,
+        )?;
+        plan_join_policy_pushdown(store, catalog, stats, select, analysis, context, &mut plan)?;
+    }
 
     let policy_tables = policy_lookup_tables(analysis, context);
     let (applicable, policy_diag) = resolve_scope_policies(

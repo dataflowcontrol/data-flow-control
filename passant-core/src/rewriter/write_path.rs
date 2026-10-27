@@ -61,6 +61,34 @@ impl PassantRewriter {
         statement: &mut Statement,
         options: &RewriteOptions,
     ) -> Result<(), RewriteError> {
+        let statement_sink = crate::statement_tables::statement_sink_key(statement);
+        let statement_sources = match statement {
+            Statement::Insert(insert) => {
+                insert.source.as_ref().map_or_else(HashSet::new, |source| {
+                    crate::statement_tables::statement_table_keys(&Statement::Query(source.clone()))
+                })
+            }
+            _ => crate::statement_tables::statement_table_keys(statement),
+        };
+        let has_retry = self.store.policy_indices().into_iter().any(|index| {
+            self.store.compiled(index).is_some_and(|compiled| {
+                matches!(
+                    compiled.policy.resolution(),
+                    crate::policy::Resolution::Retry(_)
+                ) && super::policy_expr::compiled_policy_applicability(
+                    compiled,
+                    &statement_sources,
+                    statement_sink.as_ref(),
+                    true,
+                )
+                .is_some()
+            })
+        });
+        if has_retry && !matches!(statement, Statement::Query(_) | Statement::Insert(_)) {
+            return Err(RewriteError::unsupported_statement(
+                "native RETRY currently requires SELECT or INSERT SELECT",
+            ));
+        }
         let collect_stats = options.collect_stats;
         match statement {
             Statement::Query(query) => {
@@ -71,6 +99,7 @@ impl PassantRewriter {
                 };
                 let mut context = RewriteContext {
                     aggregate_registry: self.aggregate_registry.clone(),
+                    resolution_registry: self.resolution_registry.clone(),
                     sink: None,
                     sink_expr_by_column: HashMap::new(),
                     ambiguous_output_columns: HashSet::new(),
@@ -104,7 +133,9 @@ impl PassantRewriter {
                 };
                 let mut context = RewriteContext {
                     aggregate_registry: self.aggregate_registry.clone(),
+                    resolution_registry: self.resolution_registry.clone(),
                     sink: Some(sink.clone()),
+                    sink_output_columns: insert.columns.clone(),
                     sink_expr_by_column: output_mapping.expr_by_column,
                     ambiguous_output_columns: output_mapping.ambiguous_columns,
                     allow_partial_source_visibility: false,
@@ -118,13 +149,6 @@ impl PassantRewriter {
                 if let Some(source) = insert.source.as_mut() {
                     self.rewrite_query_with_context(source, &mut context)?;
                     self.apply_insert_relation_resolution(source, &context)?;
-                    if context
-                        .insert_output_policy
-                        .as_ref()
-                        .is_some_and(|plan| plan.render_select_body_only)
-                    {
-                        *statement = Statement::Query(source.clone());
-                    }
                 }
                 Ok(())
             }
@@ -162,6 +186,9 @@ impl PassantRewriter {
         let SetExpr::Select(select) = query.body.as_ref() else {
             return Ok(());
         };
+        if super::resolution::is_joint_resolution_wrapped_select(select) {
+            return Ok(());
+        }
         let mut plan_select = select.as_ref().clone();
         let table_scope = TableScope::from_select(&plan_select);
         let is_aggregation =
@@ -243,6 +270,7 @@ impl PassantRewriter {
             UiResolutionMode::Disabled
         };
         let context = RewriteContext {
+            resolution_registry: self.resolution_registry.clone(),
             sink: sink.clone(),
             sink_expr_by_column: output_mapping.expr_by_column,
             ambiguous_output_columns: output_mapping.ambiguous_columns,

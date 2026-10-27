@@ -84,6 +84,7 @@ fn split_select_policy_entries_for_nullable_joins(
         };
         changed = true;
         split_policies.extend(split.into_iter().map(|(policy, ast)| BranchPolicyEntry {
+            original_policy_index: store.original_policy_index(*index),
             policy,
             constraint_ast: ast,
         }));
@@ -97,6 +98,11 @@ pub fn split_policy_by_source_local_conjuncts(
     constraint_ast: Option<&Expr>,
     available_tables: &HashSet<TableKey>,
 ) -> Option<Vec<(PolicyIr, Expr)>> {
+    // Source-local conjuncts are not independent policies: narrowing SOURCE
+    // changes applicability on null-extended rows. Keep the whole policy intact.
+    if policy.sources().len() > 1 {
+        return None;
+    }
     if let Some(conjuncts) = cached_conjuncts
         && let Some(split) = split_policy_from_cached_conjuncts(policy, conjuncts, available_tables)
     {

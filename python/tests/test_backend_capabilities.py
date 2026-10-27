@@ -51,7 +51,8 @@ def test_backend_registers_kill_function_used_by_rewriter(monkeypatch, dialect):
     assert "passant_kill()" in rewritten
     assert {"kill", "passant_kill"} <= registered
     if dialect == "postgres":
-        backend.commit.assert_called_once()
+        # KILL and RETRY each install their helper using the existing DDL contract.
+        assert backend.commit.call_count == 2
 
 
 @dataclass

@@ -16,6 +16,8 @@ pub mod policy_index;
 mod policy_parser;
 pub mod policy_store;
 pub mod query_analysis;
+pub mod resolution_placement;
+pub mod resolution_registry;
 pub mod rewrite_stats;
 pub mod rewrite_strategy;
 pub mod rewriter;
@@ -79,3 +81,5 @@ pub use source_sets::{
 pub use sql::SqlDialect;
 pub use statement_tables::{statement_sink_key, statement_table_keys};
 pub use threshold::{prune_dominated_remove_policies, threshold_dominates};
+
+pub use resolution_registry::{ResolutionPrecedence, ResolutionProperties, ResolutionRegistry};

@@ -9,6 +9,7 @@ use crate::identifiers::{Alias, SourceName, TableName, normalize_key};
 pub enum Resolution {
     Remove,
     Kill,
+    Retry(String),
     Udf(String),
     RelationUdf(String),
     Ui,
@@ -23,6 +24,27 @@ impl Resolution {
         }
         if upper == "KILL" {
             return Ok(Self::Kill);
+        }
+        if upper.starts_with("RETRY") {
+            let rest = trimmed[5..].trim();
+            let literal = rest
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .map(str::trim)
+                .ok_or_else(|| PolicyParseError::InvalidResolution(trimmed.into()))?;
+            let body = literal
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+                .ok_or_else(|| PolicyParseError::InvalidResolution(trimmed.into()))?;
+            let mut chars = body.chars().peekable();
+            let mut message = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == '\'' && chars.next() != Some('\'') {
+                    return Err(PolicyParseError::InvalidResolution(trimmed.into()));
+                }
+                message.push(ch);
+            }
+            return Ok(Self::Retry(message));
         }
         if upper == "UI" {
             return Ok(Self::Ui);
@@ -54,6 +76,7 @@ impl Resolution {
         match self {
             Self::Remove => "REMOVE".to_string(),
             Self::Kill => "KILL".to_string(),
+            Self::Retry(message) => format!("RETRY('{}')", message.replace('\'', "''")),
             Self::Udf(name) => format!("UDF {name}"),
             Self::RelationUdf(name) => format!("RELATION UDF {name}"),
             Self::Ui => "UI".to_string(),
@@ -61,7 +84,7 @@ impl Resolution {
     }
 
     pub fn is_tuple_resolution(&self) -> bool {
-        matches!(self, Self::Kill | Self::Udf(_))
+        matches!(self, Self::Kill | Self::Retry(_) | Self::Udf(_))
     }
 
     pub fn is_relation_resolution(&self) -> bool {
@@ -253,8 +276,7 @@ pub fn normalize_policy_dimension_queries(
 }
 
 pub fn parse_policy_text(text: &str) -> Result<PolicyIr, PolicyParseError> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let raw = crate::policy_parser::parse_raw_pgn(&normalized)?;
+    let raw = crate::policy_parser::parse_raw_pgn(text.trim())?;
 
     let sources = raw.sources.unwrap_or_default();
     let (sink, sink_alias) = raw
@@ -534,6 +556,28 @@ fn parse_name_alias(value: &str) -> Result<(Option<String>, Option<String>), Pol
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_preserves_literal_bytes_and_roundtrips() {
+        let message = "Don't  leak\n秘密\t ON FAIL DESCRIPTION (safe)";
+        let resolution = Resolution::Retry(message.into());
+        assert_eq!(
+            Resolution::parse(&resolution.as_label()).unwrap(),
+            resolution
+        );
+        let pgn = format!(
+            "SOURCE a\nCONSTRAINT a.x > 0 ON\n FAIL {}",
+            resolution.as_label()
+        );
+        assert_eq!(parse_policy_text(&pgn).unwrap().resolution(), resolution);
+        for invalid in ["RETRY", "RETRY(foo)", "RETRY('a'b')", "RETRY('x') trailing"] {
+            assert!(Resolution::parse(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(
+            Resolution::parse("RETRY('')").unwrap(),
+            Resolution::Retry(String::new())
+        );
+    }
 
     #[test]
     fn resolution_parsing_covers_all_supported_values() {

@@ -36,6 +36,7 @@ fn kill_allows_query_when_constraint_passes() {
 #[test]
 fn kill_rewrite_emits_kill_call_in_sql() {
     let mut db = TestDb::new();
+    db.exec("CREATE TABLE foo (id INTEGER)");
     db.register_policy(pgn_policy_with(
         &["foo"],
         "max(foo.id) > 10",

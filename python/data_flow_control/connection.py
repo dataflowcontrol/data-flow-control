@@ -7,9 +7,10 @@ from dataclasses import replace
 from typing import Any
 
 from .adapters.base import Adapter
-from .adapters.duckdb import DuckDBAdapter
 from .adapters.datafusion import DataFusionAdapter
+from .adapters.duckdb import DuckDBAdapter
 from .adapters.registry import create_adapter, sniff_dialect
+from .errors import RetryFailure, RetryViolation, _NativeRetrySignal
 from .options import RewriteOptions, UiUpdateMode
 from .planner import Planner
 from .policy import Policy, Resolution
@@ -97,6 +98,8 @@ class Connection:
         self._user_aggregate_functions: list[dict] = []
         if adapter.capabilities.exception_udf:
             adapter.register_kill_function()
+        if adapter.capabilities.retry_resolution:
+            adapter.register_retry_function()
 
     @property
     def raw_connection(self):
@@ -232,19 +235,29 @@ class Connection:
         func: Any,
         parameter_types: list[Any],
         return_type: Any,
+        *,
+        splittable: bool = False,
     ) -> None:
+        if type(splittable) is not bool:
+            raise TypeError("splittable must be a bool")
         if not self.adapter.capabilities.tuple_udf:
             raise ValueError(
                 f"Tuple UDF resolution is not supported for dialect {self.adapter.dialect!r}"
             )
         self.adapter.register_resolution_function(name, func, parameter_types, return_type)
+        self.planner.register_resolution_splittability(name, splittable=splittable)
 
-    def register_relation_resolution_function(self, name: str, func: Any) -> None:
+    def register_relation_resolution_function(
+        self, name: str, func: Any, *, splittable: bool = False
+    ) -> None:
+        if type(splittable) is not bool:
+            raise TypeError("splittable must be a bool")
         if not self.adapter.capabilities.relation_udf:
             raise ValueError(
                 f"Relation UDF resolution is not supported for dialect {self.adapter.dialect!r}"
             )
         self.adapter.register_relation_resolution_function(name, func)
+        self.planner.register_resolution_splittability(name, splittable=splittable)
 
     def register_policy(self, policy: Policy) -> None:
         self._validate_policy_capabilities(policy)
@@ -265,6 +278,14 @@ class Connection:
                 raise ValueError(
                     f"Resolution {policy.on_fail.value} is not supported for dialect "
                     f"{self.adapter.dialect!r}: missing capability exception_udf"
+                )
+        elif policy.on_fail == Resolution.RETRY:
+            if not self.adapter.capabilities.retry_resolution:
+                reason = getattr(self.adapter, "retry_unavailable_reason", None)
+                detail = f" ({reason})" if reason else ""
+                raise ValueError(
+                    f"Resolution RETRY is not supported for dialect {self.adapter.dialect!r}: "
+                    f"missing capability retry_resolution{detail}"
                 )
         elif policy.on_fail == Resolution.UDF:
             if not self.adapter.capabilities.tuple_udf:
@@ -397,10 +418,18 @@ class Connection:
             description=description,
         )
 
+    def _ensure_catalog_for_rewrite(self) -> None:
+        # DDL through this connection invalidates the catalog. Output applicability
+        # must use actual target schemas, never treat unknown metadata as absence.
+        if not self._catalog_synced and self.planner.inner.has_registered_policies():
+            self._ensure_catalog_for_registration(self.policies())
+
     def transform_query(self, sql: str, *, options: RewriteOptions | None = None) -> str:
+        self._ensure_catalog_for_rewrite()
         return self.planner.rewrite(sql, options=self._effective_rewrite_options(options))
 
     def explain(self, query: str) -> dict:
+        self._ensure_catalog_for_rewrite()
         return self.planner.explain_dict(query)
 
     def last_rewrite_stats(self):
@@ -439,7 +468,18 @@ class Connection:
         rewritten = self.transform_query(query, options=options)
         executable = strip_passant_comment(rewritten)
         self._ensure_ui_stream_extension_for_execute(executable)
-        result = self.adapter.execute(executable, params)
+        try:
+            result = self.adapter.execute(executable, params)
+        except _NativeRetrySignal as exc:
+            failures = []
+            for index, _ in exc.failures:
+                policy = self.planner.policy_by_index(index)
+                if policy is None or policy.on_fail is not Resolution.RETRY:
+                    raise RuntimeError(
+                        f"Native RETRY identified unknown/non-RETRY policy {index}"
+                    ) from exc
+                failures.append(RetryFailure(index, policy.retry_message, policy))
+            raise RetryViolation(failures) from exc
         if self._statement_may_change_schema(query):
             self._invalidate_catalog_cache()
         followup = self.planner.last_ui_followup_sql()

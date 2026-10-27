@@ -28,6 +28,8 @@ pub struct CompiledExpr {
 #[derive(Debug, Clone)]
 pub struct CompiledPolicy {
     pub index: usize,
+    /// Stable identity in the original registry, including in branch views.
+    pub original_policy_index: usize,
     pub policy: PolicyIr,
     pub active: bool,
     pub constraint: Option<CompiledExpr>,
@@ -54,6 +56,7 @@ pub(crate) fn is_enforcement_resolution(resolution: Resolution) -> bool {
         resolution,
         Resolution::Remove
             | Resolution::Kill
+            | Resolution::Retry(_)
             | Resolution::Udf(_)
             | Resolution::RelationUdf(_)
             | Resolution::Ui
@@ -146,6 +149,7 @@ impl PolicyStore {
         });
 
         CompiledPolicy {
+            original_policy_index: index,
             index,
             policy,
             active: true,
@@ -233,6 +237,7 @@ pub(crate) fn compile_branch_policy(
         };
 
     CompiledPolicy {
+        original_policy_index: index,
         index,
         policy,
         active: true,

@@ -123,6 +123,7 @@ impl PassantRewriter {
             left_policies,
             self.catalog.clone(),
             self.parse_dialect,
+            &self.resolution_registry,
         )
         .rewrite_set_expr(left, &mut branch_context)?;
         PassantRewriter::with_branch_view(
@@ -130,6 +131,7 @@ impl PassantRewriter {
             right_policies,
             self.catalog.clone(),
             self.parse_dialect,
+            &self.resolution_registry,
         )
         .rewrite_set_expr(right, &mut branch_context)
     }
@@ -139,6 +141,59 @@ impl PassantRewriter {
         select: &mut Select,
         context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
+        let nullable = select
+            .from
+            .iter()
+            .flat_map(|table| &table.joins)
+            .any(|join| {
+                matches!(
+                    join.join_operator,
+                    sqlparser::ast::JoinOperator::LeftOuter(_)
+                        | sqlparser::ast::JoinOperator::RightOuter(_)
+                        | sqlparser::ast::JoinOperator::FullOuter(_)
+                )
+            });
+        if nullable && !context.joint_resolution_prepared {
+            let tables = super::TableScope::from_select(select).direct_base_tables;
+            let sink = context.sink.as_deref().map(TableKey::new);
+            let applicable_multisource = self.store.policy_indices().into_iter().any(|index| {
+                self.store.compiled(index).is_some_and(|compiled| {
+                    compiled.policy.sources().len() > 1
+                        && super::policy_expr::compiled_policy_applicability(
+                            compiled,
+                            &tables,
+                            sink.as_ref(),
+                            context.allow_partial_source_visibility,
+                        )
+                        .is_some()
+                })
+            });
+            if applicable_multisource {
+                return Err(RewriteError::unsupported_statement(
+                    "multi-source nullable JOIN requires contributor-presence provenance",
+                ));
+            }
+        }
+        let mut policy_tables = super::TableScope::from_select(select).direct_base_tables;
+        policy_tables.extend(context.joint_resolution_sources.iter().cloned());
+        let sink = context.sink.as_deref().map(TableKey::new);
+        let applicable_retry = self.store.policy_indices().into_iter().any(|index| {
+            self.store.compiled(index).is_some_and(|compiled| {
+                matches!(
+                    compiled.policy.resolution(),
+                    crate::policy::Resolution::Retry(_)
+                ) && super::policy_expr::compiled_policy_applicability(
+                    compiled,
+                    &policy_tables,
+                    sink.as_ref(),
+                    context.allow_partial_source_visibility,
+                )
+                .is_some()
+            })
+        });
+        if applicable_retry && (context.sink.is_none() || context.require_output_labels) {
+            super::joint_lineage::preserve_public_output_names(select, self.parse_dialect)?;
+        }
         if context.collect_stats {
             self.stats
                 .add_ast_nodes_visited_rewrite(count_select(select));
@@ -148,11 +203,11 @@ impl PassantRewriter {
         let mut handled = exists_handled;
         handled.extend(in_handled.iter().copied());
 
-        let derived_prep = plan_derived_policy_propagations(
-            self.policy_store(),
-            select,
-            &self.aggregate_registry,
-        )?;
+        let derived_prep = if context.joint_resolution_prepared {
+            None
+        } else {
+            plan_derived_policy_propagations(self.policy_store(), select, &self.aggregate_registry)?
+        };
         if let Some(ref prep) = derived_prep {
             apply_derived_hidden_projections(
                 select,
@@ -172,10 +227,16 @@ impl PassantRewriter {
             inject_insert_output_aggregate_columns(select, &plan);
         }
 
-        self.rewrite_expression_subqueries(select, context)?;
-        self.rewrite_derived_subqueries(select, context)?;
+        if !context.joint_resolution_prepared {
+            self.rewrite_expression_subqueries(select, context)?;
+            self.rewrite_derived_subqueries(select, context)?;
+        }
 
-        let select_analysis = SelectAnalysis::from_select(select);
+        let mut select_analysis = SelectAnalysis::from_select(select);
+        select_analysis
+            .scope
+            .direct_base_tables
+            .extend(context.joint_resolution_sources.iter().cloned());
         let is_aggregation = select_analysis.is_aggregation;
 
         if !extra_dfc.is_empty() {
@@ -197,6 +258,7 @@ impl PassantRewriter {
                 entries,
                 self.catalog.clone(),
                 self.parse_dialect,
+                &self.resolution_registry,
             )
             .rewrite_select(select, context);
         }
@@ -323,13 +385,23 @@ impl PassantRewriter {
             SetExpr::Select(select) => self.rewrite_select(select, context),
             SetExpr::Query(query) => self.rewrite_query_with_context(query, context),
             SetExpr::SetOperation {
-                op, left, right, ..
+                op,
+                set_quantifier,
+                left,
+                right,
             } => {
                 if set_operation_requires_cross_source_policies_for_store(
                     self.policy_store(),
                     left,
                     right,
                 ) {
+                    if !matches!(op, SetOperator::Union)
+                        || !matches!(set_quantifier, sqlparser::ast::SetQuantifier::All)
+                    {
+                        return Err(RewriteError::unsupported_statement(
+                            "cross-source non-UNION-ALL set operation requires contributor provenance; catalog-backed joint finalization is unavailable for this shape",
+                        ));
+                    }
                     let Some((left_policies, right_policies)) =
                         split_set_operation_policies_for_store(self.policy_store(), left, right)
                     else {
@@ -345,6 +417,7 @@ impl PassantRewriter {
                         left_policies,
                         self.catalog.clone(),
                         self.parse_dialect,
+                        &self.resolution_registry,
                     )
                     .rewrite_set_expr(left, context)?;
                     PassantRewriter::with_branch_view(
@@ -352,6 +425,7 @@ impl PassantRewriter {
                         right_policies,
                         self.catalog.clone(),
                         self.parse_dialect,
+                        &self.resolution_registry,
                     )
                     .rewrite_set_expr(right, context)?;
                     return Ok(());
@@ -368,6 +442,28 @@ impl PassantRewriter {
         query: &mut Query,
         context: &mut RewriteContext,
     ) -> Result<(), RewriteError> {
+        let original_node = query as *const Query as usize;
+        let result = self.rewrite_query_with_context_impl(query, context);
+        super::joint_lineage::record_legacy_synthesis(context, original_node);
+        result
+    }
+
+    fn rewrite_query_with_context_impl(
+        &self,
+        query: &mut Query,
+        context: &mut RewriteContext,
+    ) -> Result<(), RewriteError> {
+        context.require_output_labels |= super::joint_lineage::query_requires_output_names(query);
+        if context.joint_lineage.is_some() {
+            return super::joint_lineage::synthesize_query(self, query, context);
+        }
+        if context.joint_resolution_prepared && !context.joint_resolution_endpoint {
+            return Ok(());
+        }
+        if super::joint_lineage::rewrite_joint_root(self, query, context)? {
+            return Ok(());
+        }
+
         if let Some(with) = query.with.as_mut() {
             let saved_site = context.insert_rewrite_site.clone();
             for cte in &mut with.cte_tables {
@@ -387,6 +483,14 @@ impl PassantRewriter {
         } else if context.insert_output_policy.is_some() && context.insert_rewrite_site.is_none() {
             context.insert_rewrite_site = Some(InsertRewriteSite::Body);
         }
+        self.rewrite_query_endpoint(query, context)
+    }
+
+    pub(crate) fn rewrite_query_endpoint(
+        &self,
+        query: &mut Query,
+        context: &mut RewriteContext,
+    ) -> Result<(), RewriteError> {
         if let Some(wrapped) = wrap_limited_policy_query(self, query, context)? {
             *query = wrapped;
             if context.sink.is_none() {

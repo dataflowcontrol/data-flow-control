@@ -12,6 +12,7 @@ class Capabilities:
     tuple_udf: bool = False
     relation_udf: bool = False
     ui_resolution: bool = False
+    retry_resolution: bool = False
 
     @property
     def supports_kill(self) -> bool:
@@ -31,6 +32,8 @@ class Adapter(Protocol):
     def quote_identifier(self, name: str) -> str: ...
 
     def register_kill_function(self) -> None: ...
+
+    def register_retry_function(self) -> None: ...
 
     def register_resolution_function(
         self,

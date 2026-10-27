@@ -4,7 +4,7 @@ mod common;
 #[path = "common/duckdb.rs"]
 mod duckdb;
 
-use common::{assert_rewrite, pgn_policy};
+use common::{assert_rewrite_with_catalog, pgn_policy};
 use duckdb::TestDb;
 use passant_core::{PassantRewriter, parse_policy_text};
 
@@ -15,9 +15,10 @@ fn tax_agent_grounding_policy_rewrites_insert() {
     )
     .expect("grounding policy should parse");
 
-    let sql = crate::common::rewrite(
+    let sql = crate::common::rewrite_with_catalog(
         "INSERT INTO Expenses (id, item) SELECT Receipts.id, Receipts.item FROM Receipts",
         &[policy],
+        common::fixture_catalog(&[("Receipts", &["id", "item"]), ("Expenses", &["id", "item"])]),
     );
     assert!(sql.contains("Receipts.id"));
     assert!(sql.contains("passant_kill"));
@@ -30,10 +31,14 @@ fn tax_agent_law_abiding_policy_rewrites_insert() {
     )
     .expect("law-abiding policy should parse");
 
-    assert_rewrite(
+    assert_rewrite_with_catalog(
         "INSERT INTO Expenses (id, biz_use, cat) SELECT Receipts.id, Receipts.biz_use, Receipts.cat FROM Receipts",
         &[policy],
         "INSERT INTO Expenses (id, biz_use, cat) SELECT Receipts.id, Receipts.biz_use, Receipts.cat FROM Receipts WHERE Receipts.biz_use <= 50 OR Receipts.cat <> 'Meal'",
+        common::fixture_catalog(&[
+            ("Receipts", &["id", "biz_use", "cat"]),
+            ("Expenses", &["id", "biz_use", "cat"]),
+        ]),
     );
 }
 
@@ -41,28 +46,36 @@ fn tax_agent_law_abiding_policy_rewrites_insert() {
 fn tax_agent_privacy_policy_rewrites_scan() {
     let policy = pgn_policy(&["Receipts"], "NOT UNIQUE Receipts.uid");
 
-    assert_rewrite(
+    assert_rewrite_with_catalog(
         "SELECT uid FROM Receipts",
         &[policy],
         "SELECT uid FROM Receipts WHERE false",
+        common::fixture_catalog(&[("Receipts", &["uid"])]),
     );
 }
 
 #[test]
 fn k_anonymity_template_dominance_collapses_to_max_k() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(pgn_policy(
-        &["Receipts"],
-        "count(distinct Receipts.uid) > 2",
-    ));
-    rewriter.register_policy(pgn_policy(
-        &["Receipts"],
-        "count(distinct Receipts.uid) > 5",
-    ));
-    rewriter.register_policy(pgn_policy(
-        &["Receipts"],
-        "count(distinct Receipts.uid) > 3",
-    ));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("Receipts", &["uid"])]));
+    rewriter
+        .register_policy(pgn_policy(
+            &["Receipts"],
+            "count(distinct Receipts.uid) > 2",
+        ))
+        .expect("paper fixture policy must validate");
+    rewriter
+        .register_policy(pgn_policy(
+            &["Receipts"],
+            "count(distinct Receipts.uid) > 5",
+        ))
+        .expect("paper fixture policy must validate");
+    rewriter
+        .register_policy(pgn_policy(
+            &["Receipts"],
+            "count(distinct Receipts.uid) > 3",
+        ))
+        .expect("paper fixture policy must validate");
 
     let sql = rewriter
         .rewrite("SELECT uid FROM Receipts")

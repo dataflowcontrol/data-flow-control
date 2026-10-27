@@ -191,10 +191,37 @@ impl RewritePipeline {
             rewriter.stats.add_elapsed_parse(parse_start.elapsed());
         }
 
+        let scoped = crate::rewriter::output_scope::scoped_rewriter(rewriter, &statement)?;
+        if let Some(scoped) = scoped {
+            // Reuse the already-parsed statement; only active policies differ.
+            scoped.stats.replace(rewriter.stats.snapshot());
+            let result = self.rewrite_bound(&scoped, sql, options, &statement);
+            rewriter.stats.replace(scoped.stats.snapshot());
+            for scope in scoped.statement_summary.snapshot().scope_diagnostics {
+                rewriter.statement_summary.record_scope(scope);
+            }
+            rewriter.ui_followup.set(scoped.ui_followup.take());
+            return result;
+        }
+        self.rewrite_bound(rewriter, sql, options, &statement)
+    }
+
+    fn rewrite_bound(
+        &self,
+        rewriter: &PassantRewriter,
+        sql: &str,
+        options: RewriteOptions,
+        statement: &Statement,
+    ) -> Result<String, RewriteError> {
+        let store = rewriter.policy_store();
+        let collect_stats = options.collect_stats;
+        if store.is_empty() {
+            return Ok(sql.to_string());
+        }
         let stats = collect_stats.then_some(&rewriter.stats);
         let request = RewriteRequest::analyze_with_stats(
             sql,
-            &statement,
+            statement,
             options.clone(),
             rewriter.policy_store(),
             &rewriter.aggregate_registry,
@@ -340,7 +367,12 @@ mod tests {
     #[test]
     fn distributive_aggregation_uses_full_push() {
         let mut rewriter = PassantRewriter::new();
-        rewriter.register_policy(distributive_policy());
+        rewriter
+            .catalog_mut()
+            .register_table("foo", vec!["category".into(), "amount".into()]);
+        rewriter
+            .register_policy(distributive_policy())
+            .expect("fixture catalog validates policy");
         let statement = sqlparser::parser::Parser::parse_sql(
             &sqlparser::dialect::GenericDialect {},
             "SELECT category, sum(amount) FROM foo GROUP BY category",
@@ -370,14 +402,12 @@ mod tests {
         let sql = "INSERT INTO Expenses SELECT 1, 100.0 FROM Receipts";
 
         let mut rewriter = PassantRewriter::new();
-        rewriter
-            .register_validated_policy(crate::parse_policy_text(policy_text).expect("parse"))
-            .expect("register without catalog");
-        let without_catalog = rewriter.rewrite(sql).expect("rewrite without catalog");
         assert!(
-            without_catalog.contains("passant_kill"),
-            "baseline rewrite without catalog introspection: {without_catalog}"
+            rewriter
+                .register_validated_policy(crate::parse_policy_text(policy_text).unwrap())
+                .is_err()
         );
+        assert!(!rewriter.has_registered_policies());
 
         let mut tables = HashMap::new();
         tables.insert(
