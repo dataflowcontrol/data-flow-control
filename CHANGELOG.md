@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Preserve KILL aborts for constant-false candidate policies instead of allowing
+  optimizer filtering to silently return no rows. Genuine empty candidates and
+  legacy NULL filtering retain their existing behavior.
+- Bind source, sink, and `_OUTPUT_` references inside `IS NULL` and `IS NOT NULL`
+  predicates, including INSERT output expressions.
+
 ## 0.2.0
 
 ### Native RETRY and resolution placement

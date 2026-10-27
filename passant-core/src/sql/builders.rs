@@ -385,7 +385,7 @@ pub fn passant_kill_pass_filter(pass_expr: Expr) -> Expr {
     }
 }
 
-/// Tuple-resolution KILL filter: relation-level abort guard plus per-row pass filter.
+/// Tuple-resolution KILL filter: relation-level abort guard plus legacy NULL filtering.
 ///
 /// DuckDB may invoke `passant_kill()` from the legacy per-row `pass OR CASE …` pattern even
 /// when every row passes; aggregating violations first avoids that.
@@ -413,7 +413,11 @@ pub fn passant_kill_tuple_filter(relation: &str, pass_column: &str) -> Expr {
         ),
         relation,
     );
-    and_exprs(vec![violation_guard, pass_col]).expect("kill tuple filter is non-empty")
+    // Do not filter FALSE rows here: a constant FALSE filter can let the optimizer
+    // discard the entire candidate relation without evaluating the abort guard.
+    // Keep NULL filtering to preserve KILL's existing three-valued behavior.
+    and_exprs(vec![violation_guard, Expr::IsNotNull(Box::new(pass_col))])
+        .expect("kill tuple filter is non-empty")
 }
 
 pub fn string_concat(left: Expr, right: Expr) -> Expr {
