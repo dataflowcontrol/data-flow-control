@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from dataclasses import replace
 from typing import Any
 
@@ -121,8 +122,10 @@ class _BufferedCursor:
         self._cursor.arraysize = self.arraysize
         self._cursor.fetchmany(*args, **kwargs)
         size = index(args[0] if args else kwargs.get("size", self.arraysize))
-        # sqlite3 versions accepting nonpositive sizes return all remaining
-        # rows; versions rejecting negative sizes have already raised above.
+        # Python 3.14 changed zero from "all remaining" to an empty batch.
+        # Negative-size validation is delegated to the native cursor above.
+        if size == 0 and sys.version_info >= (3, 14):
+            return []
         return list(self._rows) if size <= 0 else list(islice(self._rows, size))
 
     def __iter__(self):

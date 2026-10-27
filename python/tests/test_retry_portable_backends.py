@@ -224,3 +224,19 @@ def test_sqlite_retry_version_gate_simulated_minimum(monkeypatch):
         assert db.adapter.retry_unavailable_reason is None
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("use_arraysize", [False, True])
+def test_sqlite_buffered_zero_fetch_preserves_native_position(use_arraysize):
+    raw = sqlite3.connect(":memory:")
+    db = dfc(raw)
+    sql = "SELECT 1 UNION ALL SELECT 2"
+    native, buffered = raw.execute(sql), db.execute(sql)
+    if use_arraysize:
+        native.arraysize = buffered.arraysize = 0
+        assert buffered.fetchmany() == native.fetchmany()
+    else:
+        assert buffered.fetchmany(size=0) == native.fetchmany(size=0)
+    assert buffered.fetchone() == native.fetchone()
+    assert buffered.fetchall() == native.fetchall()
+    db.close()

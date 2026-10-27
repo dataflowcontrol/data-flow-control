@@ -60,8 +60,7 @@ unsupported. It is not a claim that every SQL shape or backend version is covere
 
 - **Read/write scope:** DataFusion RETRY is SELECT-only, matching the existing
   read-oriented KILL adapter. DuckDB, SQLite and PostgreSQL implement RETRY for
-  supported SELECT / INSERT SELECT rewrite shapes; PostgreSQL live verification
-  remains pending. Applicable RETRY on UPDATE,
+  supported SELECT / INSERT SELECT rewrite shapes. Applicable RETRY on UPDATE,
   MERGE, DELETE or literal VALUES is not implemented. DELETE is otherwise
   passthrough, not a policy-enforced write.
 - **Failure handling:** RETRY submits one SQL statement, aborts it on violation,
@@ -76,18 +75,18 @@ unsupported. It is not a claim that every SQL shape or backend version is covere
   this minimum is derived from required SQL features, not exhaustive version testing.
 - **PostgreSQL version:** the generated guard requires PostgreSQL 12 or newer
   ([MATERIALIZED CTE syntax](https://www.postgresql.org/docs/12/release-12.html)).
-  Existing backend CI targets PostgreSQL 16; live verification is still pending
-  in this environment. This is a SQL-feature bound, not certification of older
+  Backend CI exercises live RETRY transport and atomic inserts on PostgreSQL 16.
+  This is a SQL-feature bound, not certification of older
   or end-of-life server releases.
 - **Transactions:** use each engine's normal statement/transaction behavior;
   there is no added savepoint-isolation guarantee. PostgreSQL retains the
   existing KILL adapter's setup commits and rollback-on-error behavior, which
   can roll back earlier uncommitted work. Construction is not transaction-neutral.
   ClickHouse's KILL `X` does not imply transactional rollback for writes.
-- **Verification:** deterministic RETRY runtime tests exercise DuckDB, SQLite and
-  DataFusion. PostgreSQL has structured-error transport tests plus opt-in live
-  integration tests requiring a PostgreSQL service; a skipped service test is
-  not a live pass. ClickHouse/Umbra RETRY fail capability validation explicitly.
+- **Verification:** deterministic RETRY runtime tests exercise DuckDB, SQLite,
+  DataFusion and PostgreSQL. Live PostgreSQL CI covers structured feedback, all
+  failing policy identities, atomic inserts and connection reuse. Local service
+  tests remain opt-in; a skipped service test is not a live pass. ClickHouse/Umbra RETRY fail capability validation explicitly.
 - **Limits:** UI requires the supported DuckDB UI extension. Custom resolution
   callbacks are currently exposed only by DuckDB. Shared query-shape limits,
   including provenance boundaries and unsupported non-distributive PartialPush
