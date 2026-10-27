@@ -96,7 +96,7 @@ def test_literal_abort_insert_is_atomic_including_missing_required_source(engine
     )
     source = "dfc021_b" if required else "dfc021_a"
     with pytest.raises(Exception, match=kill_exc_match(engine.adapter.dialect)):
-        engine.execute(f"INSERT INTO dfc021_target SELECT x, x FROM {source}")
+        engine.execute(f"INSERT INTO dfc021_target SELECT x AS x, x AS y FROM {source}")
     assert engine.adapter.execute("SELECT * FROM dfc021_target").fetchall() == [(99, 99)]
 
 
