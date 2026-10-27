@@ -114,7 +114,7 @@ FROM (
         CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
       FROM t1
     )
-    AND t1.__passant_policy_pass
+    AND t1.__passant_policy_pass IS NOT NULL
 ) AS __passant_kill
 """,
     )
@@ -147,7 +147,7 @@ FROM (
         CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
       FROM t1
     )
-    AND t1.__passant_policy_pass
+    AND t1.__passant_policy_pass IS NOT NULL
 ) AS __passant_kill
 """,
     )
@@ -255,7 +255,7 @@ FROM (
         CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
       FROM t1
     )
-    AND t1.__passant_policy_pass
+    AND t1.__passant_policy_pass IS NOT NULL
 ) AS __passant_kill
 """,
     )
@@ -300,7 +300,7 @@ FROM (
         CASE WHEN MAX(CASE WHEN NOT t1.__passant_policy_pass THEN 1 ELSE 0 END) = 1 THEN PASSANT_KILL() ELSE TRUE END
       FROM t1
     )
-    AND t1.__passant_policy_pass
+    AND t1.__passant_policy_pass IS NOT NULL
 ) AS __passant_kill
 """,
     )

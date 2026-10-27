@@ -39,6 +39,14 @@ pub(crate) fn replace_source_alias_qualifiers(
             op,
             expr: Box::new(replace_source_alias_qualifiers(*expr, source_aliases)),
         },
+        Expr::IsNull(expr) => Expr::IsNull(Box::new(replace_source_alias_qualifiers(
+            *expr,
+            source_aliases,
+        ))),
+        Expr::IsNotNull(expr) => Expr::IsNotNull(Box::new(replace_source_alias_qualifiers(
+            *expr,
+            source_aliases,
+        ))),
         Expr::Case {
             operand,
             conditions,
@@ -144,6 +152,16 @@ pub(crate) fn replace_sink_columns(
             op,
             expr: Box::new(replace_sink_columns(*expr, sink, sink_expr_by_column)),
         },
+        Expr::IsNull(expr) => Expr::IsNull(Box::new(replace_sink_columns(
+            *expr,
+            sink,
+            sink_expr_by_column,
+        ))),
+        Expr::IsNotNull(expr) => Expr::IsNotNull(Box::new(replace_sink_columns(
+            *expr,
+            sink,
+            sink_expr_by_column,
+        ))),
         Expr::Case {
             operand,
             conditions,
@@ -238,6 +256,18 @@ fn replace_sink_columns_strict(
                 ambiguous_output_columns,
             )?),
         }),
+        Expr::IsNull(expr) => Ok(Expr::IsNull(Box::new(replace_sink_columns_strict(
+            *expr,
+            sink,
+            sink_expr_by_column,
+            ambiguous_output_columns,
+        )?))),
+        Expr::IsNotNull(expr) => Ok(Expr::IsNotNull(Box::new(replace_sink_columns_strict(
+            *expr,
+            sink,
+            sink_expr_by_column,
+            ambiguous_output_columns,
+        )?))),
         Expr::Case {
             operand,
             conditions,
@@ -675,5 +705,123 @@ mod tests {
             &AliasByBase::single("\"MySchema\".\"MyTable\"", "mt"),
         );
         assert_eq!(expr.to_string(), "mt.\"OrderID\" > 1");
+    }
+
+    #[test]
+    fn source_alias_replacement_descends_through_nested_null_tests() {
+        let aliases = HashMap::from([("src".to_string(), "receipts".to_string())]);
+        for (input, expected) in [
+            ("src.amount IS NULL", "receipts.amount IS NULL"),
+            ("src.amount IS NOT NULL", "receipts.amount IS NOT NULL"),
+            (
+                "NOT ((src.amount IS NULL) IS NOT NULL)",
+                "NOT ((receipts.amount IS NULL) IS NOT NULL)",
+            ),
+            (
+                "CASE WHEN src.amount IS NULL THEN src.id IS NOT NULL ELSE false END",
+                "CASE WHEN receipts.amount IS NULL THEN receipts.id IS NOT NULL ELSE false END",
+            ),
+            (
+                "coalesce(src.amount IS NOT NULL, false)",
+                "coalesce(receipts.amount IS NOT NULL, false)",
+            ),
+        ] {
+            assert_eq!(
+                replace_source_alias_qualifiers(parse_expr(input), &aliases),
+                parse_expr(expected),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn sink_replacement_descends_through_nested_null_tests() {
+        let columns = HashMap::from([("amount".to_string(), parse_expr("input.cost"))]);
+        for (input, expected) in [
+            ("reports.amount IS NULL", "input.cost IS NULL"),
+            ("reports.amount IS NOT NULL", "input.cost IS NOT NULL"),
+            (
+                "NOT ((reports.amount IS NOT NULL) IS NULL)",
+                "NOT ((input.cost IS NOT NULL) IS NULL)",
+            ),
+            (
+                "coalesce(reports.amount IS NULL, false)",
+                "coalesce(input.cost IS NULL, false)",
+            ),
+        ] {
+            assert_eq!(
+                replace_sink_columns(parse_expr(input), "reports", &columns),
+                parse_expr(expected),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn output_marker_replacement_descends_through_nested_null_tests() {
+        let columns = HashMap::from([("amount".to_string(), parse_expr("input.cost"))]);
+        for (input, expected) in [
+            ("_OUTPUT_.amount IS NULL", "input.cost IS NULL"),
+            ("_OUTPUT_.amount IS NOT NULL", "input.cost IS NOT NULL"),
+            (
+                "NOT ((_OUTPUT_.amount IS NULL) IS NOT NULL)",
+                "NOT ((input.cost IS NULL) IS NOT NULL)",
+            ),
+            (
+                "CASE WHEN _OUTPUT_.amount IS NULL THEN false ELSE _OUTPUT_.amount IS NOT NULL END",
+                "CASE WHEN input.cost IS NULL THEN false ELSE input.cost IS NOT NULL END",
+            ),
+        ] {
+            assert_eq!(
+                apply_output_marker_replacements(parse_expr(input), &columns, &HashSet::new())
+                    .expect("valid output mapping"),
+                parse_expr(expected),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_null_output_references_still_reject_ambiguity_and_missing_columns() {
+        let columns = HashMap::from([("amount".to_string(), parse_expr("input.cost"))]);
+        let ambiguous = HashSet::from(["amount".to_string()]);
+        for predicate in [
+            "_OUTPUT_.amount IS NULL",
+            "NOT ((_OUTPUT_.amount IS NOT NULL) IS NULL)",
+        ] {
+            let error =
+                apply_output_marker_replacements(parse_expr(predicate), &columns, &ambiguous)
+                    .expect_err("ambiguous output must fail closed");
+            assert!(
+                error.to_string().contains("ambiguous _OUTPUT_ column"),
+                "{error}"
+            );
+        }
+        for predicate in [
+            "_OUTPUT_.missing IS NULL",
+            "NOT ((_OUTPUT_.missing IS NOT NULL) IS NULL)",
+        ] {
+            let error =
+                apply_output_marker_replacements(parse_expr(predicate), &columns, &HashSet::new())
+                    .expect_err("missing output must fail closed");
+            assert!(
+                error.to_string().contains("not a projected output column"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn null_replacements_preserve_unrelated_qualifiers() {
+        let columns = HashMap::from([("amount".to_string(), parse_expr("input.cost"))]);
+        let original = parse_expr("other.amount IS NULL OR other.amount IS NOT NULL");
+        assert_eq!(
+            replace_sink_columns(original.clone(), "reports", &columns),
+            original
+        );
+        assert_eq!(
+            apply_output_marker_replacements(original.clone(), &columns, &HashSet::new()).unwrap(),
+            original
+        );
     }
 }
