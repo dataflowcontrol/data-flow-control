@@ -327,7 +327,7 @@ mod scan_ready_tests {
     #[test]
     fn finalize_policy_scan_ready_populates_scan_ready_expr() {
         let mut store = PolicyStore::default();
-        let index = store.register(remove_policy("orders", "max(orders.amount) > 1"));
+        let index = store.register_unchecked(remove_policy("orders", "max(orders.amount) > 1"));
 
         let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
         finalize_policy_scan_ready(&mut store, index, &registry);

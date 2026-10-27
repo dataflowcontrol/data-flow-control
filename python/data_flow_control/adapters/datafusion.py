@@ -4,6 +4,7 @@ from typing import Any
 
 from ..aggregate_introspection import introspect_datafusion_aggregates
 from ..catalog import build_catalog_snapshot
+from ._retry import register_retry
 from .base import Capabilities
 from .kill import python_kill
 
@@ -29,10 +30,11 @@ class _DataFusionCursor:
 
 class DataFusionAdapter:
     dialect = "datafusion"
-    capabilities = Capabilities(exception_udf=True)
+    capabilities = Capabilities(exception_udf=True, retry_resolution=True)
 
     def __init__(self, context) -> None:
         self._ctx = context
+        self._retry_state = None
 
     @property
     def context(self):
@@ -41,7 +43,27 @@ class DataFusionAdapter:
     def execute(self, sql: str, params: Any = None):
         if params is not None:
             raise ValueError("DataFusion adapter does not support query parameters")
-        return _DataFusionCursor(self._ctx.sql(sql).collect())
+        if self._retry_state is None:
+            return _DataFusionCursor(self._ctx.sql(sql).collect())
+        with self._retry_state.execution():
+            return _DataFusionCursor(self._ctx.sql(sql).collect())
+
+    def register_retry_function(self) -> None:
+        import pyarrow as pa
+        from datafusion import udf
+
+        def install(state):
+            def retry_many(policy_ids):
+                # Native lowering calls this only for a failing relation guard.
+                for value in policy_ids.to_pylist():
+                    state.signal(value)
+                return pa.array([], type=pa.bool_())
+
+            self._ctx.register_udf(
+                udf(retry_many, [pa.string()], pa.bool_(), "volatile", name="passant_retry_many")
+            )
+
+        self._retry_state = register_retry(self._ctx, install)
 
     def quote_identifier(self, name: str) -> str:
         from .duckdb import quote_sql_identifier

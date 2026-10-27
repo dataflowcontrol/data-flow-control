@@ -170,8 +170,8 @@ mod tests {
     #[test]
     fn source_set_index_matches_subset_and_overlap_slow_scans() {
         let mut store = PolicyStore::default();
-        store.register(dfc_multi("max(foo.id) + max(bar.id) > 1"));
-        store.register(dfc_multi("max(foo.id) > 0"));
+        store.register_unchecked(dfc_multi("max(foo.id) + max(bar.id) > 1"));
+        store.register_unchecked(dfc_multi("max(foo.id) > 0"));
 
         let foo_only = HashSet::from([TableKey::new("foo")]);
         let both = HashSet::from([TableKey::new("foo"), TableKey::new("bar")]);

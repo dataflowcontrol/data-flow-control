@@ -93,7 +93,46 @@ impl TestDb {
     }
 
     pub fn register_policy(&mut self, policy: PolicyIr) {
-        self.rewriter.register_policy(policy);
+        // These schemas come from the fixture's real database, never from a
+        // policy's requested identifiers. Registration therefore catches typos.
+        let mut statement = self.conn.prepare(
+            "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns WHERE table_schema NOT IN ('information_schema','pg_catalog') ORDER BY table_schema, table_name, ordinal_position",
+        ).expect("fixture catalog introspection should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .expect("fixture catalog introspection should execute");
+        let mut tables = std::collections::BTreeMap::<String, Vec<(String, String)>>::new();
+        for row in rows {
+            let (schema, table, column, data_type) = row.expect("catalog row should decode");
+            tables
+                .entry(format!("{schema}.{table}"))
+                .or_default()
+                .push((column.clone(), data_type.clone()));
+            if schema == "main" || schema == "temp" {
+                tables.entry(table).or_default().push((column, data_type));
+            }
+        }
+        for (table, columns) in tables {
+            self.rewriter.catalog_mut().register_table(
+                table.clone(),
+                columns.iter().map(|(name, _)| name.clone()).collect(),
+            );
+            for (column, data_type) in columns {
+                self.rewriter
+                    .catalog_mut()
+                    .register_column_type(table.clone(), column, data_type);
+            }
+        }
+        self.rewriter
+            .register_policy(policy)
+            .expect("policy should match explicit fixture database schema");
     }
 
     pub fn rewrite(&self, sql: &str) -> Result<String, RewriteError> {

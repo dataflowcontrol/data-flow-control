@@ -1,8 +1,8 @@
 //! UNIQUE / NOT UNIQUE provenance semantics: scan vs grouped rewrites and execution.
 
-use passant_core::{PolicyIr, Resolution, TableCatalog};
+use passant_core::{PolicyIr, Resolution};
 
-use crate::common::{assert_rewrite, pgn_policy, rewrite, rewrite_with_catalog};
+use crate::common::{pgn_policy, rewrite_with_catalog};
 use crate::duckdb::TestDb;
 
 fn not_unique_policy() -> PolicyIr {
@@ -157,7 +157,7 @@ fn unique_pgn_grouped_execution_keeps_departments_with_one_email() {
 
 #[test]
 fn unique_equality_grouped_with_catalog_unique_adds_having_guard() {
-    let mut catalog = TableCatalog::new();
+    let mut catalog = family_catalog();
     catalog.register_unique_column("users", "email");
     let policy = PolicyIr::Pgn {
         sources: vec!["users".to_string()],
@@ -216,4 +216,20 @@ fn count_distinct_eq_one_scan_passes_when_table_has_one_distinct_id() {
         db.rewrite_and_fetch_i64("SELECT id FROM foo ORDER BY id"),
         vec![1, 1]
     );
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("users", &["id", "email", "dept"]),
+        ("Receipts", &["uid", "batch"]),
+        ("foo", &["id"]),
+    ])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
+}
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

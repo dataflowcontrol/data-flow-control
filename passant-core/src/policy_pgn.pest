@@ -49,4 +49,4 @@ description_body = { (single_quoted | double_quoted | paren_group | ANY)* }
 
 single_quoted = { "'" ~ ( "''" | !"'" ~ ANY )* ~ "'" }
 double_quoted = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
-paren_group = { "(" ~ (single_quoted | double_quoted | paren_group | ANY)* ~ ")" }
+paren_group = { "(" ~ (single_quoted | double_quoted | paren_group | !")" ~ ANY)* ~ ")" }

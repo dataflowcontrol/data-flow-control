@@ -4,46 +4,51 @@ use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
 #[test]
 fn subquery_missing_policy_column_is_propagated_to_select_list() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(family_catalog());
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches declared family fixture");
 
     let sql = rewriter
         .rewrite("SELECT sub.name FROM (SELECT foo.name FROM foo) AS sub")
         .expect("query should rewrite");
-    assert!(
-        sql.contains("foo.id") || sql.contains("sub.id"),
-        "expected hidden policy column propagation: {sql}"
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT name FROM foo WHERE id > 1",
+        "CREATE TABLE foo(id INTEGER, name VARCHAR); INSERT INTO foo VALUES(1,'bad'),(2,'good'),(2,'good'),(NULL,'null');",
     );
 }
 
 #[test]
 fn multi_source_subquery_join_propagates_both_policy_columns() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string(), "baz".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) >= 2 AND max(baz.x) <= 20".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(family_catalog());
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string(), "baz".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) >= 2 AND max(baz.x) <= 20".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches declared family fixture");
 
     let sql = rewriter
         .rewrite(
@@ -58,26 +63,34 @@ fn multi_source_subquery_join_propagates_both_policy_columns() {
 
 #[test]
 fn cte_missing_policy_column_is_propagated_to_select_list() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(family_catalog());
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches declared family fixture");
 
     let sql = rewriter
         .rewrite("WITH q AS (SELECT foo.name FROM foo) SELECT q.name FROM q")
         .expect("query should rewrite");
-    assert!(
-        sql.contains("foo.id"),
-        "expected policy column added to CTE select list: {sql}"
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT name FROM foo WHERE id > 1",
+        "CREATE TABLE foo(id INTEGER, name VARCHAR); INSERT INTO foo VALUES(1,'bad'),(2,'good'),(2,'good'),(NULL,'null');",
     );
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[("foo", &["id", "name"]), ("baz", &["x"])])
 }

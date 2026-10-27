@@ -51,8 +51,18 @@ mod tests {
     #[test]
     fn resolve_scope_policies_matches_indexed_candidates() {
         let mut rewriter = PassantRewriter::new();
-        rewriter.register_policy(remove_policy("foo", "foo.id > 1"));
-        rewriter.register_policy(remove_policy("bar", "bar.id > 1"));
+        rewriter
+            .catalog_mut()
+            .register_table("foo", vec!["id".into()]);
+        rewriter
+            .register_policy(remove_policy("foo", "foo.id > 1"))
+            .expect("fixture catalog");
+        rewriter
+            .catalog_mut()
+            .register_table("bar", vec!["id".into()]);
+        rewriter
+            .register_policy(remove_policy("bar", "bar.id > 1"))
+            .expect("fixture catalog");
         let tables = HashSet::from([TableKey::new("foo")]);
         let (applicable, diag) = resolve_scope_policies(
             rewriter.policy_store(),
@@ -70,7 +80,12 @@ mod tests {
     #[test]
     fn plan_select_rewrite_emits_where_action_for_scan_policy() {
         let mut rewriter = PassantRewriter::new();
-        rewriter.register_policy(remove_policy("foo", "foo.id > 1"));
+        rewriter
+            .catalog_mut()
+            .register_table("foo", vec!["id".into()]);
+        rewriter
+            .register_policy(remove_policy("foo", "foo.id > 1"))
+            .expect("fixture catalog");
         let statement = sqlparser::parser::Parser::parse_sql(
             &sqlparser::dialect::GenericDialect {},
             "SELECT id FROM foo",
@@ -107,8 +122,18 @@ mod tests {
     #[test]
     fn plan_statement_rewrite_summary_counts_each_select_scope() {
         let mut rewriter = PassantRewriter::new();
-        rewriter.register_policy(remove_policy("foo", "foo.id > 1"));
-        rewriter.register_policy(remove_policy("bar", "bar.id > 1"));
+        rewriter
+            .catalog_mut()
+            .register_table("foo", vec!["id".into()]);
+        rewriter
+            .register_policy(remove_policy("foo", "foo.id > 1"))
+            .expect("fixture catalog");
+        rewriter
+            .catalog_mut()
+            .register_table("bar", vec!["id".into()]);
+        rewriter
+            .register_policy(remove_policy("bar", "bar.id > 1"))
+            .expect("fixture catalog");
         let statement = sqlparser::parser::Parser::parse_sql(
             &sqlparser::dialect::GenericDialect {},
             "WITH cte AS (SELECT id FROM bar) SELECT id FROM foo JOIN cte ON foo.id = cte.id",

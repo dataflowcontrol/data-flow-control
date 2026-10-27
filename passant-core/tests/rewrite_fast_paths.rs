@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 use passant_core::{CatalogSnapshot, PassantRewriter, PolicyIr, Resolution, TableCatalog};
 
 fn remove_policy(source: &str) -> PolicyIr {
@@ -25,9 +28,16 @@ fn rewrite_without_policies_returns_input_unchanged() {
 
 #[test]
 fn rewrite_with_unrelated_policies_returns_input_unchanged() {
-    let mut rewriter = PassantRewriter::new();
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
     for index in 0..128 {
-        rewriter.register_policy(remove_policy(&format!("other_{index:03}")));
+        rewriter.catalog_mut().register_table(
+            format!("other_{index:03}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(remove_policy(&format!("other_{index:03}")))
+            .expect("generated fixture policy must validate");
     }
     let sql = "SELECT id, amount FROM orders";
     assert_eq!(rewriter.rewrite(sql).expect("rewrite"), sql);

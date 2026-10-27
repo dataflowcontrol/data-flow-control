@@ -2,7 +2,7 @@
 
 use passant_core::{PolicyIr, Resolution};
 
-use crate::common::{assert_rewrite, pgn_policy, rewriter_with_policies};
+use crate::common::pgn_policy;
 
 #[test]
 fn cross_source_outer_join_rewrites_with_source_sets() {
@@ -19,10 +19,14 @@ fn cross_source_outer_join_rewrites_with_source_sets() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    assert_rewrite(
+    let actual = rewrite(
         "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id",
         &policies,
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id",
+    );
+    crate::common::assert_same_rows(
+        &actual,
+        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id=foo.id WHERE foo.id IS NULL",
+        "CREATE TABLE foo(id INTEGER); CREATE TABLE bar(id INTEGER); INSERT INTO foo VALUES(1),(2),(2),(4),(NULL); INSERT INTO bar VALUES(1),(2),(2),(3),(NULL);",
     );
 }
 
@@ -41,25 +45,26 @@ fn cross_source_union_all_passes_through_when_branch_split_unavailable() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    assert_rewrite(
+    let actual = rewrite("SELECT id FROM foo UNION ALL SELECT id FROM bar", &policies);
+    crate::common::assert_same_rows(
+        &actual,
         "SELECT id FROM foo UNION ALL SELECT id FROM bar",
-        &policies,
-        "SELECT id FROM foo UNION ALL SELECT id FROM bar",
+        "CREATE TABLE foo(id INTEGER); CREATE TABLE bar(id INTEGER); INSERT INTO foo VALUES(1),(2),(2),(4),(NULL); INSERT INTO bar VALUES(1),(2),(2),(3),(NULL);",
     );
 }
 
 #[test]
-fn except_with_single_source_policy_rewrites_branch() {
-    assert_rewrite(
+fn except_with_negative_source_policy_identifies_unsupported_provenance() {
+    assert_rewrite_fails_with(
         "SELECT id FROM bar EXCEPT SELECT id FROM foo",
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
-        "SELECT id FROM bar EXCEPT SELECT id FROM foo WHERE foo.id > 1",
+        "policy 0 (max(foo.id) > 1) requires negative-side SOURCE foo",
     );
 }
 
 #[test]
 fn delete_with_policies_passthrough() {
-    crate::common::assert_rewrite(
+    assert_rewrite(
         "DELETE FROM foo WHERE id = 1",
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "DELETE FROM foo WHERE id = 1",
@@ -68,7 +73,7 @@ fn delete_with_policies_passthrough() {
 
 #[test]
 fn create_table_as_select_fails_closed_with_registered_policies() {
-    crate::common::assert_rewrite_fails_with(
+    assert_rewrite_fails_with(
         "CREATE TABLE leak AS SELECT * FROM foo",
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "create_table",
@@ -77,7 +82,7 @@ fn create_table_as_select_fails_closed_with_registered_policies() {
 
 #[test]
 fn copy_select_fails_closed_with_registered_policies() {
-    crate::common::assert_rewrite_fails_with(
+    assert_rewrite_fails_with(
         "COPY (SELECT * FROM foo) TO 'out.csv' (HEADER)",
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
         "copy",
@@ -137,4 +142,34 @@ fn duplicate_policy_registration_is_allowed() {
         .rewrite("SELECT id FROM foo")
         .expect("duplicate policies should still rewrite");
     assert_eq!(sql, "SELECT id FROM foo WHERE foo.id > 1 AND foo.id > 1");
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+        ("receipts", &["id"]),
+        ("reports", &["id"]),
+        ("other", &["id"]),
+    ])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
+}
+fn rewriter_with_policies(policies: &[passant_core::PolicyIr]) -> passant_core::PassantRewriter {
+    crate::common::rewriter_with_catalog(policies, family_catalog())
+}
+
+fn assert_rewrite_fails_with(sql: &str, policies: &[PolicyIr], expected: &str) {
+    let error = rewriter_with_policies(policies)
+        .rewrite(sql)
+        .expect_err("must reject before execution")
+        .to_string();
+    assert!(error.contains(expected), "{error}");
+}
+
+fn rewrite(sql: &str, policies: &[PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

@@ -2,8 +2,6 @@
 
 use passant_core::{PolicyIr, Resolution};
 
-use crate::common::rewrite;
-
 fn array_agg_policy(source: &str, constraint: &str) -> PolicyIr {
     PolicyIr::Pgn {
         sources: vec![source.to_string()],
@@ -74,4 +72,17 @@ fn partial_push_limit_scan_uses_cte_wrapper() {
     );
     assert!(sql.contains("WITH __passant_partial AS ("));
     assert!(sql.contains("FROM __passant_partial WHERE"));
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("orders", &["o_orderkey"]),
+        ("lineitem", &["l_orderkey", "l_quantity"]),
+        ("foo", &["id", "category", "amount"]),
+    ])
+}
+
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

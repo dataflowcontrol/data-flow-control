@@ -68,7 +68,7 @@ def resolution_to_python_py(value: str) -> str:
 
 def resolution_to_python(value) -> str:
     if isinstance(value, str):
-        if value.startswith("{"):
+        if value.startswith("{") or value.lstrip().upper().startswith("RETRY"):
             return resolution_to_python_py(value)
         return value.upper()
     if isinstance(value, dict):
@@ -76,6 +76,9 @@ def resolution_to_python(value) -> str:
             return "REMOVE"
         if "Kill" in value:
             return "KILL"
+        if "Retry" in value:
+            escaped = value["Retry"].replace("'", "''")
+            return f"RETRY('{escaped}')"
         if "Udf" in value:
             return f"UDF {value['Udf']}"
         if "RelationUdf" in value:

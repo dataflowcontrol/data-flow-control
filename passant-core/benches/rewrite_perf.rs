@@ -97,10 +97,31 @@ fn cte_chain_query() -> &'static str {
      SELECT id, amount FROM c"
 }
 
-fn register_policies(rewriter: &mut PassantRewriter, policies: &[PolicyIr]) {
-    for policy in policies {
-        rewriter.register_policy(policy.clone());
+// Explicit synthetic benchmark schema. Slot count is a benchmark dimension;
+// table/column declarations are independent of policy predicates.
+fn benchmark_catalog(slot_count: usize) -> passant_core::TableCatalog {
+    let mut catalog = passant_core::TableCatalog::new();
+    for table in ["orders", "customers", "foo", "bar", "hot_source"] {
+        catalog.register_table(table, vec!["id".into(), "amount".into()]);
     }
+    for index in 0..slot_count {
+        for table in [format!("other_{index:06}"), format!("sink_{index:04}")] {
+            catalog.register_table(table, vec!["id".into(), "amount".into()]);
+        }
+    }
+    catalog
+}
+
+fn register_policies(rewriter: &mut PassantRewriter, policies: &[PolicyIr]) {
+    // This setup is outside rewrite timing loops. Registration-only benchmarks
+    // explicitly include schema setup and validation, unlike historical results.
+    *rewriter.catalog_mut() = benchmark_catalog(policies.len());
+    for policy in policies {
+        rewriter
+            .register_policy(policy.clone())
+            .expect("benchmark policy should match declared fixture schema");
+    }
+    assert_eq!(rewriter.policies().len(), policies.len());
 }
 
 fn bench_rewrite_fixed_applicable(c: &mut Criterion) {
@@ -205,7 +226,7 @@ fn bench_join_with_unrelated_policies(c: &mut Criterion) {
 }
 
 fn bench_policy_registration(c: &mut Criterion) {
-    let mut group = c.benchmark_group("policy_registration");
+    let mut group = c.benchmark_group("policy_registration_with_catalog_setup");
     for policy_count in [1_000_usize, 10_000, 100_000] {
         let policies = generate_policies("orders", policy_count.saturating_sub(1));
         group.bench_with_input(
@@ -355,17 +376,23 @@ fn bench_rewrite_100k_ui_scan(c: &mut Criterion) {
 
 fn bench_policy_registration_compile_only(c: &mut Criterion) {
     use passant_core::policy_store::PolicyStore;
-    let mut group = c.benchmark_group("policy_registration_compile_only");
+    let mut group = c.benchmark_group("policy_registration_validated_store");
     for policy_count in [1_000_usize, 10_000] {
         let policies = generate_policies("orders", policy_count.saturating_sub(1));
         group.bench_with_input(
             BenchmarkId::from_parameter(policy_count),
             &policies,
             |bencher, policies| {
+                let catalog = benchmark_catalog(policies.len());
+                let registry = passant_core::aggregate_registry::AggregateRegistry::for_dialect(
+                    passant_core::sql::SqlDialect::DuckDb,
+                );
                 bencher.iter(|| {
                     let mut store = PolicyStore::default();
                     for policy in policies {
-                        store.register(policy.clone());
+                        store
+                            .register(policy.clone(), &catalog, &registry)
+                            .expect("benchmark policy should match declared fixture schema");
                     }
                     black_box(store);
                 });

@@ -6,8 +6,6 @@ use passant_core::{
 };
 use std::collections::HashMap;
 
-use crate::common::rewrite;
-
 fn quoted_catalog() -> TableCatalog {
     TableCatalog::from_snapshot(CatalogSnapshot {
         tables: HashMap::from([(
@@ -181,4 +179,17 @@ fn nested_cte_scan_applies_policy_filter() {
     );
     assert!(sql.contains("WITH inner_cte AS"));
     assert!(sql.contains("foo.id > 1") || sql.contains("id > 1"));
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("foo", &["id", "id_value", "secret"]),
+        ("items", &["order"]),
+        ("MySchema.MyTable", &["OrderID"]),
+    ])
+}
+
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

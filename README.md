@@ -26,8 +26,14 @@ application uses one.
 
 The **Rust core** owns policy semantics, rewrite planning, and SQL generation.
 **Python** wraps database connections, syncs catalog snapshots from adapters,
-and executes rewritten SQL. Resolutions are **`REMOVE`**, **`KILL`**, tuple-level **`ON FAIL UDF`**, and
+and executes rewritten SQL. Resolutions are **`REMOVE`**, **`KILL`**, **`RETRY('message')`** (see the engine matrix below), tuple-level **`ON FAIL UDF`**, and
 relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutions; see capability table).
+
+For opt-in, model-neutral tool-call recovery, see the
+[constraint-aware RETRY integration](developer-docs/tool-retry.md). It uses native PGN
+`ON FAIL RETRY('message')`, exact failed-policy lists, and a single submitted
+proposal per tool invocation—not a KILL wrapper or automatic retry loop. See the
+integration document for query-shape and verification limits.
 
 ## Workspace
 
@@ -36,15 +42,59 @@ relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutio
 - `passant-py`: PyO3 extension module used by the Python package.
 - `python/data_flow_control`: Python API (`dfc`, `Connection`, `Policy`, adapters).
 
-## Backend support
+## Supported features
 
-| Level | Meaning |
-| --- | --- |
-| **duckdb-full** | Primary target; broad `test_duckdb_rewrite.py` coverage |
-| **basic** | Adapter exists; REMOVE scan conformance passes |
-| **experimental** | Adapter exists; not in routine CI unless Docker integration is enabled |
+`X` means the adapter implements the feature within the scope below; `—` means
+unsupported. It is not a claim that every SQL shape or backend version is covered.
 
-`Dialect` lists dialects with a registered adapter.
+| Feature | DuckDB | SQLite | PostgreSQL | DataFusion | ClickHouse | Umbra |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: |
+| SELECT with REMOVE | X | X | X | X | X | X |
+| KILL | X | X | X | X | X | — |
+| RETRY: exact failing-policy feedback | X | X | X | X | — | — |
+| RETRY for INSERT ... SELECT | X | X | X | — | — | — |
+| Tuple resolution UDF | X | — | — | — | — | — |
+| Relation resolution UDF | X | — | — | — | — | — |
+| UI resolution | X | — | — | — | — | — |
+| Catalog-backed policy registration | X | X | X | X | X | X |
+
+- **Read/write scope:** DataFusion RETRY is SELECT-only, matching the existing
+  read-oriented KILL adapter. DuckDB, SQLite and PostgreSQL implement RETRY for
+  supported SELECT / INSERT SELECT rewrite shapes. Applicable RETRY on UPDATE,
+  MERGE, DELETE or literal VALUES is not implemented. DELETE is otherwise
+  passthrough, not a policy-enforced write.
+- **Failure handling:** RETRY submits one SQL statement, aborts it on violation,
+  and returns only the actual failing policy IDs and exact authored messages.
+  It does not run the candidate twice or automatically retry it. SQLite buffers
+  results before exposing a cursor so a late failure cannot leak partial rows;
+  DataFusion likewise collects the result before returning it.
+- **SQLite version:** RETRY requires SQLite 3.44 or newer ([`concat_ws` was added
+  in 3.44](https://sqlite.org/releaselog/3_44_0.html); [MATERIALIZED CTEs in
+  3.35](https://sqlite.org/releaselog/3_35_0.html)). Older runtimes reject RETRY registration
+  clearly; existing KILL/REMOVE support is unchanged. Runtime tests used 3.53.1;
+  this minimum is derived from required SQL features, not exhaustive version testing.
+- **PostgreSQL version:** the generated guard requires PostgreSQL 12 or newer
+  ([MATERIALIZED CTE syntax](https://www.postgresql.org/docs/12/release-12.html)).
+  Backend CI exercises live RETRY transport and atomic inserts on PostgreSQL 16.
+  This is a SQL-feature bound, not certification of older
+  or end-of-life server releases.
+- **Transactions:** use each engine's normal statement/transaction behavior;
+  there is no added savepoint-isolation guarantee. PostgreSQL retains the
+  existing KILL adapter's setup commits and rollback-on-error behavior, which
+  can roll back earlier uncommitted work. Construction is not transaction-neutral.
+  ClickHouse's KILL `X` does not imply transactional rollback for writes.
+- **Verification:** deterministic RETRY runtime tests exercise DuckDB, SQLite,
+  DataFusion and PostgreSQL. Live PostgreSQL CI covers structured feedback, all
+  failing policy identities, atomic inserts and connection reuse. Local service
+  tests remain opt-in; a skipped service test is not a live pass. ClickHouse/Umbra RETRY fail capability validation explicitly.
+- **Limits:** UI requires the supported DuckDB UI extension. Custom resolution
+  callbacks are currently exposed only by DuckDB. Shared query-shape limits,
+  including provenance boundaries and unsupported non-distributive PartialPush
+  policies using `_OUTPUT_`, are in [native RETRY](developer-docs/tool-retry.md).
+  All declared SOURCE/SINK tables need real catalog entries; see
+  [registration validation](developer-docs/policy-registration-catalog.md).
+
+`Dialect` lists dialects with a registered adapter, not blanket feature parity.
 
 ## Current capabilities
 
@@ -54,7 +104,7 @@ relation-level **`ON FAIL RELATION UDF`** (DuckDB-first for custom UDF resolutio
   `DIMENSION` (table+alias or subquery), `UNIQUE`/`NOT UNIQUE`, `_OUTPUT_`, `CONSTRAINT`, `ON FAIL`,
   and `DESCRIPTION`
 - `SELECT`, `INSERT ... SELECT`, `UPDATE`, and `MERGE` rewrites; **`DELETE` passthrough** (no rewrite)
-- `REMOVE`, `KILL` (`passant_kill` UDF), tuple UDF, and relation-level UDF resolutions
+- `REMOVE`, `KILL` (`passant_kill` UDF), native `RETRY`, tuple UDF, and relation-level UDF resolutions
 - recursive rewriting for CTEs, subqueries, and set operations
 - catalog validation via adapter snapshots (not DuckDB-only)
 - threshold dominance, source-set splitting, semiring join decomposition

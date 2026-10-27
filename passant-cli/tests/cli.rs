@@ -1,6 +1,10 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+fn catalog_path() -> String {
+    format!("{}/tests/fixtures/catalog.json", env!("CARGO_MANIFEST_DIR"))
+}
+
 fn passant_cmd() -> Command {
     Command::cargo_bin("passant").expect("passant binary should exist")
 }
@@ -14,6 +18,8 @@ fn rewrite_subcommand_prints_rewritten_sql() {
             "--policy",
             "SOURCE foo CONSTRAINT max(foo.id) > 1 ON FAIL REMOVE",
         ])
+        .arg("--catalog")
+        .arg(catalog_path())
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -30,6 +36,8 @@ fn explain_subcommand_prints_json_with_strategy() {
             "--policy",
             "SOURCE foo CONSTRAINT max(foo.id) > 1 ON FAIL REMOVE",
         ])
+        .arg("--catalog")
+        .arg(catalog_path())
         .assert()
         .success()
         .stdout(predicate::str::contains("\"strategy\""));
@@ -44,6 +52,8 @@ fn plan_subcommand_prints_chosen_strategy() {
             "--policy",
             "SOURCE foo CONSTRAINT max(foo.id) > 1 ON FAIL REMOVE",
         ])
+        .arg("--catalog")
+        .arg(catalog_path())
         .assert()
         .success()
         .stdout(predicate::str::contains("FullPush"));
@@ -88,6 +98,8 @@ fn rewrite_rejects_invalid_sql() {
             "--policy",
             "SOURCE foo CONSTRAINT max(foo.id) > 1 ON FAIL REMOVE",
         ])
+        .arg("--catalog")
+        .arg(catalog_path())
         .assert()
         .failure();
 }
@@ -103,7 +115,44 @@ fn rewrite_applies_multiple_policies() {
             "--policy",
             "SOURCE foo CONSTRAINT max(foo.id) < 100 ON FAIL REMOVE",
         ])
+        .arg("--catalog")
+        .arg(catalog_path())
         .assert()
         .success()
         .stdout(predicate::str::contains("foo.id > 1"));
+}
+
+#[test]
+fn policy_registration_requires_explicit_catalog() {
+    passant_cmd()
+        .args([
+            "rewrite",
+            "SELECT id FROM foo",
+            "--policy",
+            "SOURCE foo CONSTRAINT foo.id > 0 ON FAIL REMOVE",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("explicit catalog"));
+}
+
+#[test]
+fn catalog_validates_source_columns_and_sink_membership() {
+    for policy in [
+        "SOURCE foo CONSTRAINT foo.missing > 0 ON FAIL REMOVE",
+        "SOURCE foo SINK absent CONSTRAINT foo.id > 0 ON FAIL REMOVE",
+    ] {
+        passant_cmd()
+            .args([
+                "rewrite",
+                "SELECT id FROM foo",
+                "--policy",
+                policy,
+                "--catalog",
+                &catalog_path(),
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("failed to register policy"));
+    }
 }

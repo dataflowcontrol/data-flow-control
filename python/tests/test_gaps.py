@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlglot
 from data_flow_control import Policy, Resolution
 
 
@@ -24,11 +25,18 @@ class TestJoinTypes:
             constraint="max(foo.id) > 1",
             on_fail=Resolution.REMOVE,
         )
+        # Include repeated passing and rejected values. DISTINCT may lower to
+        # GROUP BY over public columns, but must not expose policy metadata or
+        # preserve duplicate public rows.
+        rewriter.raw_connection.execute(
+            "INSERT INTO foo (id, name) VALUES (1, 'rejected duplicate'), "
+            "(2, 'second Bob'), (2, 'third Bob'), (3, 'second Charlie')"
+        )
         rewriter.register_policy(policy)
         transformed = rewriter.transform_query("SELECT DISTINCT id FROM foo")
-        assert "DISTINCT" in transformed.upper()
-        assert "foo.id > 1" in transformed
-        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 2
+        cursor = rewriter.raw_connection.execute(transformed)
+        assert sorted(cursor.fetchall()) == [(2,), (3,)]
+        assert [(column[0], str(column[1])) for column in cursor.description] == [("id", "INTEGER")]
 
 
 class TestWindowFunctions:
@@ -157,8 +165,18 @@ class TestSubqueryWithMissingColumns:
         rewriter.register_policy(policy)
         query = "SELECT sub.name FROM (SELECT foo.name FROM foo) AS sub"
         transformed = rewriter.transform_query(query)
-        assert "foo.id" in transformed or "sub.id" in transformed
-        assert len(rewriter.raw_connection.execute(transformed).fetchall()) == 2
+        tree = sqlglot.parse_one(transformed, read="duckdb")
+        predicate = tree.args["where"].this
+        assert isinstance(predicate, sqlglot.exp.GT)
+        assert predicate.this.table == "sub"
+        assert predicate.expression.this == "1"
+        forwarded = tree.args["from_"].this.this.expressions[-1]
+        assert forwarded.alias == predicate.this.name
+        assert forwarded.this.table == "foo" and forwarded.this.name == "id"
+        # The source-only policy attribute is checked at the root, not leaked.
+        cursor = rewriter.raw_connection.execute(transformed)
+        assert cursor.fetchall() == [("Bob",), ("Charlie",)]
+        assert [column[0] for column in cursor.description] == ["name"]
 
 
 class TestMultipleCTEs:
@@ -175,8 +193,11 @@ class TestMultipleCTEs:
         SELECT * FROM cte2
         """
         transformed = rewriter.transform_query(query)
-        assert "foo.id > 1" in transformed
-        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
+        tree = sqlglot.parse_one(transformed, read="duckdb")
+        # The final CTE alias owns the filter after the original CTE chain.
+        assert tree.args["where"].this.sql() == "cte2.id > 1"
+        assert tree.args["with_"].expressions[0].this.args.get("where") is None
+        assert rewriter.raw_connection.execute(transformed).fetchall() == [(2,), (3,)]
 
     def test_multiple_ctes_with_joins(self, rewriter):
         policy = Policy(
@@ -191,8 +212,12 @@ class TestMultipleCTEs:
         SELECT cte1.id, cte2.x FROM cte1 JOIN cte2 ON cte1.id = cte2.x
         """
         transformed = rewriter.transform_query(query)
-        assert "foo.id > 1" in transformed
-        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
+        tree = sqlglot.parse_one(transformed, read="duckdb")
+        # Policy application remains outside the join, using its visible alias.
+        assert tree.args["where"].this.sql() == "cte1.id > 1"
+        assert len(tree.args["joins"]) == 1
+        assert tree.args["with_"].expressions[0].this.args.get("where") is None
+        assert rewriter.raw_connection.execute(transformed).fetchall() == []
 
 
 class TestInsertStatements:
@@ -279,6 +304,12 @@ class TestMultiSourceRewrites:
         rewriter.register_policy(policy)
         query = "SELECT foo.id, baz.x FROM foo LEFT JOIN baz ON foo.id = baz.x"
         transformed = rewriter.transform_query(query)
-        assert "foo.id >= 2" in transformed
-        assert "baz.x <= 20" in transformed
-        assert rewriter.raw_connection.execute(transformed).fetchall() is not None
+        assert 'foo."id" >= 2' in transformed
+        assert 'baz."x" <= 20' in transformed
+        # No baz tuple contributes to these output rows, so the complete policy
+        # is inapplicable, even for foo.id = 1.
+        assert sorted(rewriter.raw_connection.execute(transformed).fetchall()) == [
+            (1, None),
+            (2, None),
+            (3, None),
+        ]

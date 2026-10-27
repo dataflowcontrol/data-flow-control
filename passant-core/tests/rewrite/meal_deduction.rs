@@ -93,7 +93,7 @@ FROM rollups ORDER BY output_position";
 }
 
 #[test]
-fn meal_deduction_output_policy_rewrites_select_body_only() {
+fn meal_deduction_output_policy_preserves_insert_statement() {
     let mut rewriter = meal_rewriter();
     rewriter
         .register_validated_policy(
@@ -121,13 +121,13 @@ SELECT report_id * 1000 + output_position AS id, merchant, cost,
        '10_row_queries:q01' AS source_note
 FROM rollups ORDER BY output_position";
     let rewritten = rewriter.rewrite(sql).expect("rewrite");
-    let Statement::Query(_) =
+    let Statement::Insert(_) =
         sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::GenericDialect {}, &rewritten)
             .expect("parse rewritten")
             .pop()
             .expect("statement")
     else {
-        panic!("expected select body only, got: {rewritten}");
+        panic!("expected original INSERT wrapper, got: {rewritten}");
     };
     assert!(rewritten.contains("passant_kill"));
 }

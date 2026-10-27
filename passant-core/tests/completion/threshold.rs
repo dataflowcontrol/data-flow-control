@@ -40,7 +40,7 @@ fn mixed_comparison_operators_do_not_false_positive() {
 fn planner_applies_dominance_before_rewrite() {
     use passant_core::{PolicyIr, Resolution};
 
-    use crate::common::{plan_query, rewrite};
+    use crate::common::{fixture_catalog, plan_query_with_catalog, rewrite_with_catalog};
 
     let policies = vec![
         PolicyIr::Pgn {
@@ -70,9 +70,17 @@ fn planner_applies_dominance_before_rewrite() {
             description: None,
         },
     ];
-    let result = plan_query("SELECT id FROM foo", &policies);
+    let result = plan_query_with_catalog(
+        "SELECT id FROM foo",
+        &policies,
+        fixture_catalog(&[("foo", &["id"])]),
+    );
     assert_eq!(result.applicable_policies.len(), 1);
-    let sql = rewrite("SELECT id FROM foo", &policies);
+    let sql = rewrite_with_catalog(
+        "SELECT id FROM foo",
+        &policies,
+        fixture_catalog(&[("foo", &["id"])]),
+    );
     assert_eq!(
         sql,
         "SELECT id FROM foo WHERE (SELECT count(DISTINCT foo.id) = 1 FROM foo)"

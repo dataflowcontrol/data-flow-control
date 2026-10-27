@@ -2,8 +2,6 @@
 
 use passant_core::{PolicyIr, Resolution};
 
-use crate::common::{plan_query, rewrite};
-
 #[test]
 fn self_join_three_aliases_applies_policy_once_per_occurrence_not_factorial() {
     let policy = PolicyIr::Pgn {
@@ -107,4 +105,16 @@ fn self_join_sink_write_preserves_alias_symmetry() {
     );
     assert!(sql.contains("a.id > 1"));
     assert!(sql.contains("b.id > 1"));
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[("foo", &["id"]), ("reports", &["id"])])
+}
+
+fn plan_query(sql: &str, policies: &[passant_core::PolicyIr]) -> passant_core::PlanQueryResult {
+    crate::common::plan_query_with_catalog(sql, policies, family_catalog())
+}
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

@@ -3,15 +3,13 @@ use std::collections::HashSet;
 use sqlparser::ast::{Expr, SetExpr};
 
 use crate::identifiers::TableKey;
-use crate::policy::{PolicyIr, Resolution};
+use crate::policy::PolicyIr;
 use crate::policy_store::{BranchPolicyEntry, PolicyStore};
 
 use super::branch::branch_entry;
 
-use super::analysis::{policy_requires_set_split, policy_source_keys, set_expr_source_tables};
-use super::split::{
-    expr_referenced_policy_sources, join_conjuncts, parse_constraint_expr, split_conjuncts,
-};
+use super::analysis::{policy_requires_set_split, set_expr_source_tables};
+use super::split::parse_constraint_expr;
 
 pub fn cross_source_policies_for_branch_indexed(
     store: &PolicyStore,
@@ -22,12 +20,7 @@ pub fn cross_source_policies_for_branch_indexed(
         .into_iter()
         .filter_map(|index| {
             let policy = store.policy(index)?;
-            if policy.sources().len() > 1
-                && policy
-                    .sources()
-                    .iter()
-                    .any(|source| branch_tables.contains(&TableKey::new(source)))
-            {
+            if policy.sources().len() > 1 && branch_has_policy_scope(policy, branch_tables) {
                 Some(branch_entry(store, Some(index), policy.clone(), None))
             } else {
                 None
@@ -43,11 +36,7 @@ pub fn cross_source_policies_for_branch(
     policies
         .iter()
         .filter(|policy| {
-            policy.sources().len() > 1
-                && policy
-                    .sources()
-                    .iter()
-                    .any(|source| branch_tables.contains(&TableKey::new(source)))
+            policy.sources().len() > 1 && branch_has_policy_scope(policy, branch_tables)
         })
         .cloned()
         .collect()
@@ -117,20 +106,30 @@ fn split_set_operation_policy_entries(
             &left_tables,
             &right_tables,
         )?;
-        left_policies.extend(branch_entries_from_split_policies(left_split));
-        right_policies.extend(branch_entries_from_split_policies(right_split));
+        left_policies.extend(branch_entries_from_split_policies(
+            left_split,
+            store.original_policy_index(*index),
+        ));
+        right_policies.extend(branch_entries_from_split_policies(
+            right_split,
+            store.original_policy_index(*index),
+        ));
     }
 
     Some((left_policies, right_policies))
 }
 
-fn branch_entries_from_split_policies(policies: Vec<PolicyIr>) -> Vec<BranchPolicyEntry> {
+fn branch_entries_from_split_policies(
+    policies: Vec<PolicyIr>,
+    original_policy_index: Option<usize>,
+) -> Vec<BranchPolicyEntry> {
     policies
         .into_iter()
         .map(|policy| {
             let ast = parse_constraint_expr(policy.constraint())
                 .expect("split set-operation policy constraint must parse");
             BranchPolicyEntry {
+                original_policy_index,
                 policy,
                 constraint_ast: ast,
             }
@@ -163,101 +162,41 @@ fn multi_source_policy_needs_set_split(
             .any(|source| right_tables.contains(source))
 }
 
+/// Route whole ordinary policies; splitting a predicate must never narrow SOURCE scope.
+/// This branch-local helper does not merge provenance across duplicate-eliminating
+/// set operations; their caller must use a provenance-aware joint finalizer.
 pub fn split_policy_for_set_branches(
     policy: &PolicyIr,
-    constraint_ast: Option<&Expr>,
+    _constraint_ast: Option<&Expr>,
     left_tables: &HashSet<TableKey>,
     right_tables: &HashSet<TableKey>,
 ) -> Option<(Vec<PolicyIr>, Vec<PolicyIr>)> {
-    let PolicyIr::Pgn {
-        sources,
-        required_sources,
-        dimension_tables,
-        dimension_aliases,
-        dimension_queries,
-        sink,
-        sink_alias,
-        source_aliases,
-        constraint,
-        on_fail,
-        description,
-        ..
-    } = policy;
-    if sink.is_some() || !required_sources.is_empty() || !dimension_queries.is_empty() {
+    // Retain the established REQUIRED routing contract, not ordinary skip semantics.
+    if !policy.required_sources().is_empty() {
         return None;
     }
-    let _ = dimension_tables;
-    let _ = dimension_aliases;
-    if !matches!(on_fail, Resolution::Remove | Resolution::Kill) {
-        return None;
-    }
-
-    let policy_sources = policy_source_keys(sources);
-    let expr = constraint_ast
-        .cloned()
-        .or_else(|| parse_constraint_expr(constraint).ok())?;
-    let mut left_constraints = Vec::new();
-    let mut right_constraints = Vec::new();
-    for conjunct in split_conjuncts(expr) {
-        let refs = expr_referenced_policy_sources(&conjunct, &policy_sources);
-        if refs.is_empty() {
-            left_constraints.push(conjunct.clone());
-            right_constraints.push(conjunct);
-            continue;
-        }
-        if refs.iter().all(|source| left_tables.contains(source)) {
-            left_constraints.push(conjunct.clone());
-        }
-        if refs.iter().all(|source| right_tables.contains(source)) {
-            right_constraints.push(conjunct);
-        }
-        if refs
+    let branch_policy = |tables: &HashSet<TableKey>| {
+        policy
+            .sources()
             .iter()
-            .any(|source| !left_tables.contains(source) && !right_tables.contains(source))
-            || (!refs.iter().all(|source| left_tables.contains(source))
-                && !refs.iter().all(|source| right_tables.contains(source)))
-        {
-            return None;
-        }
-    }
-
-    let make_policy = |constraints: Vec<Expr>, tables: &HashSet<TableKey>| {
-        if constraints.is_empty() {
-            return None;
-        }
-        let branch_sources = sources
-            .iter()
-            .filter(|source| tables.contains(&TableKey::new(source)))
-            .cloned()
-            .collect::<Vec<_>>();
-        if branch_sources.is_empty() {
-            return None;
-        }
-        Some(PolicyIr::Pgn {
-            sources: branch_sources.clone(),
-            required_sources: Vec::new(),
-            dimension_tables: dimension_tables.clone(),
-            dimension_aliases: dimension_aliases.clone(),
-            dimension_queries: dimension_queries.clone(),
-            sink: None,
-            sink_alias: sink_alias.clone(),
-            source_aliases: source_aliases
-                .iter()
-                .filter(|(_, base)| branch_sources.iter().any(|s| s == *base))
-                .map(|(alias, base)| (alias.clone(), base.clone()))
-                .collect(),
-            constraint: join_conjuncts(constraints).to_string(),
-            on_fail: on_fail.clone(),
-            description: description.clone(),
-        })
+            .all(|source| tables.contains(&TableKey::new(source)))
+            .then(|| policy.clone())
+            .into_iter()
+            .collect()
     };
+    Some((branch_policy(left_tables), branch_policy(right_tables)))
+}
 
-    Some((
-        make_policy(left_constraints, left_tables)
-            .into_iter()
-            .collect(),
-        make_policy(right_constraints, right_tables)
-            .into_iter()
-            .collect(),
-    ))
+fn branch_has_policy_scope(policy: &PolicyIr, tables: &HashSet<TableKey>) -> bool {
+    if policy.required_sources().is_empty() {
+        policy
+            .sources()
+            .iter()
+            .all(|source| tables.contains(&TableKey::new(source)))
+    } else {
+        policy
+            .sources()
+            .iter()
+            .any(|source| tables.contains(&TableKey::new(source)))
+    }
 }

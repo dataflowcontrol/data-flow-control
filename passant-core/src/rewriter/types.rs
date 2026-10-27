@@ -77,6 +77,7 @@ pub struct PassantRewriter {
     pub(crate) store: PolicyStore,
     pub(crate) catalog: TableCatalog,
     pub(crate) aggregate_registry: AggregateRegistry,
+    pub(crate) resolution_registry: crate::resolution_registry::ResolutionRegistry,
     pub(crate) parse_dialect: crate::sql::SqlDialect,
     pub(crate) stats: RewriteStatsCell,
     pub(crate) statement_summary: StatementRewriteSummaryCell,
@@ -89,6 +90,7 @@ impl Default for PassantRewriter {
             store: PolicyStore::default(),
             catalog: TableCatalog::default(),
             aggregate_registry: AggregateRegistry::for_dialect(SqlDialect::default()),
+            resolution_registry: crate::resolution_registry::ResolutionRegistry::default(),
             parse_dialect: SqlDialect::default(),
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
@@ -103,6 +105,7 @@ impl Clone for PassantRewriter {
             store: self.store.clone(),
             catalog: self.catalog.clone(),
             aggregate_registry: self.aggregate_registry.clone(),
+            resolution_registry: self.resolution_registry.clone(),
             parse_dialect: self.parse_dialect,
             stats: RewriteStatsCell::default(),
             statement_summary: StatementRewriteSummaryCell::default(),
@@ -135,6 +138,21 @@ impl PassantRewriter {
             .register_user_aggregate(name, schema, classification);
     }
 
+    pub fn resolution_registry(&self) -> &crate::resolution_registry::ResolutionRegistry {
+        &self.resolution_registry
+    }
+
+    pub fn register_resolution_splittability(&mut self, name: &str, splittable: bool) -> usize {
+        self.resolution_registry.register(name, splittable)
+    }
+
+    pub fn resolution_properties(
+        &self,
+        resolution: &crate::policy::Resolution,
+    ) -> crate::resolution_registry::ResolutionProperties {
+        self.resolution_registry.properties(resolution)
+    }
+
     pub fn sql_dialect(&self) -> crate::sql::SqlDialect {
         self.parse_dialect
     }
@@ -147,7 +165,6 @@ pub(crate) struct InsertOutputPolicyPlan {
     pub policy_source_tables: HashSet<TableKey>,
     pub aggregate_aliases: HashMap<String, String>,
     pub aggregate_projections: Vec<(Expr, String)>,
-    pub render_select_body_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +175,17 @@ pub(crate) enum InsertRewriteSite {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RewriteContext {
+    pub(crate) require_output_labels: bool,
+    pub(crate) sink_output_columns: Vec<sqlparser::ast::Ident>,
+    pub(crate) joint_lineage: Option<super::joint_lineage::JointLineageContext>,
+    pub(crate) joint_lineage_legacy:
+        Option<std::rc::Rc<std::cell::RefCell<super::joint_lineage::TraversalState>>>,
+    pub(crate) joint_resolution_prepared: bool,
+    pub(crate) joint_resolution_endpoint: bool,
+    pub(crate) joint_resolution_sources: HashSet<TableKey>,
+
     pub(crate) aggregate_registry: AggregateRegistry,
+    pub(crate) resolution_registry: crate::resolution_registry::ResolutionRegistry,
     pub(crate) sink: Option<String>,
     pub(crate) sink_expr_by_column: HashMap<String, Expr>,
     pub(crate) ambiguous_output_columns: HashSet<String>,
@@ -182,7 +209,15 @@ pub(crate) struct RewriteContext {
 impl Default for RewriteContext {
     fn default() -> Self {
         Self {
+            require_output_labels: false,
+            sink_output_columns: Vec::new(),
+            joint_lineage: None,
+            joint_lineage_legacy: None,
+            joint_resolution_prepared: false,
+            joint_resolution_endpoint: false,
+            joint_resolution_sources: HashSet::new(),
             aggregate_registry: AggregateRegistry::for_dialect(SqlDialect::default()),
+            resolution_registry: crate::resolution_registry::ResolutionRegistry::default(),
             sink: None,
             sink_expr_by_column: HashMap::new(),
             ambiguous_output_columns: HashSet::new(),
@@ -203,4 +238,53 @@ impl Default for RewriteContext {
 pub(crate) enum PolicyApplicability {
     Normal,
     RequiredSourceMissing,
+}
+
+#[cfg(test)]
+mod resolution_metadata_tests {
+    use super::*;
+    use crate::{PolicyStore, Resolution};
+    #[test]
+    fn clone_and_branch_view_preserve_definition_order_and_splittability() {
+        let mut rewriter = PassantRewriter::default();
+        assert_eq!(
+            rewriter.register_resolution_splittability("second_policy_function", true),
+            0
+        );
+        assert_eq!(
+            rewriter.register_resolution_splittability("first_policy_function", false),
+            1
+        );
+        let cloned = rewriter.clone();
+        let branch = PassantRewriter::with_branch_view(
+            &PolicyStore::default(),
+            vec![],
+            TableCatalog::default(),
+            SqlDialect::default(),
+            rewriter.resolution_registry(),
+        );
+        for view in [&cloned, &branch] {
+            assert_eq!(
+                view.resolution_registry()
+                    .registration_order("first_policy_function"),
+                Some(1)
+            );
+            assert_eq!(
+                view.resolution_registry()
+                    .registration_order("second_policy_function"),
+                Some(0)
+            );
+            assert!(
+                view.resolution_properties(&Resolution::RelationUdf(
+                    "second_policy_function".into()
+                ))
+                .splittable
+            );
+            assert!(
+                !view
+                    .resolution_properties(&Resolution::Udf("first_policy_function".into()))
+                    .splittable
+            );
+        }
+    }
 }

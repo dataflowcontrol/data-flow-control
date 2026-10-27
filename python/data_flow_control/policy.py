@@ -18,6 +18,7 @@ from ._rust import (
 class Resolution(Enum):
     REMOVE = "REMOVE"
     KILL = "KILL"
+    RETRY = "RETRY"
     UDF = "UDF"
     RELATION_UDF = "RELATION UDF"
     UI = "UI"
@@ -29,6 +30,8 @@ class Resolution(Enum):
             return cls.REMOVE
         if upper == "KILL":
             return cls.KILL
+        if upper == "RETRY" or upper.startswith("RETRY("):
+            return cls.RETRY
         if upper == "UI":
             return cls.UI
         if upper.startswith("UDF "):
@@ -52,6 +55,7 @@ class Policy:
     dimension_aliases: dict[str, str] | None = None
     dimension_queries: dict[str, str] | None = None
     udf_name: str | None = None
+    retry_message: str | None = None
 
     def __post_init__(self) -> None:
         if self.sources is None:
@@ -86,6 +90,11 @@ class Policy:
             self.on_fail = Resolution.from_label(str(self.on_fail))
         if self.on_fail in (Resolution.UDF, Resolution.RELATION_UDF) and not self.udf_name:
             raise ValueError("udf_name is required for UDF resolutions")
+        if self.on_fail is Resolution.RETRY:
+            if not isinstance(self.retry_message, str):
+                raise ValueError("retry_message must be a string for RETRY")
+        elif self.retry_message is not None:
+            raise ValueError("retry_message is only valid for RETRY")
         if not self.sources and self.sink is None:
             raise ValueError("Either sources or sink must be provided")
         if self.sink_alias is not None and self.sink is None:
@@ -98,6 +107,9 @@ class Policy:
             return f"UDF {self.udf_name}"
         if self.on_fail == Resolution.RELATION_UDF and self.udf_name:
             return f"RELATION UDF {self.udf_name}"
+        if self.on_fail is Resolution.RETRY:
+            escaped = self.retry_message.replace("'", "''")
+            return f"RETRY('{escaped}')"
         return self.on_fail.value
 
     @classmethod
@@ -127,6 +139,9 @@ class Policy:
             dimension_aliases=spec.get("dimension_aliases", {}),
             dimension_queries=spec.get("dimension_queries", {}),
             udf_name=udf_name,
+            retry_message=spec["on_fail"].get("Retry")
+            if isinstance(spec["on_fail"], dict)
+            else None,
         )
 
 

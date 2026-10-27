@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
 fn remove_policy(source: &str) -> PolicyIr {
@@ -18,8 +21,11 @@ fn remove_policy(source: &str) -> PolicyIr {
 
 #[test]
 fn rewrite_stats_record_phase_timings() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(remove_policy("orders"));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
+    rewriter
+        .register_policy(remove_policy("orders"))
+        .expect("generated fixture policy must validate");
 
     let options = RewriteOptions {
         collect_stats: true,

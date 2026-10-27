@@ -1,9 +1,10 @@
 """End-to-end Python API tests: policy registration, rewrite, and DuckDB execution."""
 
-from data_flow_control import Policy, Resolution, dfc
 import json
+
 import duckdb
 import pytest
+from data_flow_control import PassantRewriteError, Policy, Resolution, dfc
 
 
 def test_rewriter_preserves_policy_registration():
@@ -332,10 +333,11 @@ def test_explain_rewrite_reports_unsupported_rewrite_error():
 
     explanation = rewriter.explain("SELECT id FROM bar EXCEPT SELECT id FROM foo")
     assert explanation["scope"]["requires_source_set_annotations"] is True
-    assert explanation["chosen"]["rewrite_error"] is None
-    assert explanation["chosen"]["rewritten_sql"] == (
-        "SELECT id FROM bar EXCEPT SELECT id FROM foo WHERE foo.id > 1"
-    )
+    error = explanation["chosen"]["rewrite_error"]
+    assert "policy 0 (max(foo.id) > 1)" in error
+    assert "negative-side SOURCE foo" in error
+    assert "negation provenance is not supported" in error
+    assert explanation["chosen"]["rewritten_sql"] == "SELECT id FROM bar EXCEPT SELECT id FROM foo"
 
 
 def test_explain_rewrite_reports_source_set_error():
@@ -355,7 +357,8 @@ def test_explain_rewrite_reports_source_set_error():
     assert explanation["chosen"]["rewrite_error"] is None
     rewritten = explanation["chosen"]["rewritten_sql"]
     assert "base_query" not in rewritten.lower()
-    assert "bar.id > foo.id" in rewritten
+    assert 'bar."id" > foo."id"' in rewritten
+    assert "CASE WHEN" in rewritten and "IS TRUE" in rewritten
 
 
 def test_execute_round_trips_through_duckdb():
@@ -864,9 +867,11 @@ def test_rewrites_outer_join_policy_with_source_sets():
         )
     )
 
-    assert rewriter.transform_query("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id") == (
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
-    )
+    rewritten = rewriter.transform_query("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
+    assert "LEFT JOIN" in rewritten
+    assert "CASE WHEN" in rewritten and "IS TRUE" in rewritten
+    assert 'bar."id" > foo."id"' in rewritten
+    assert rewriter.fetchall("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id") == []
 
 
 def test_splits_source_local_outer_join_policy_that_would_need_source_sets():
@@ -900,18 +905,20 @@ def test_cross_source_outer_join_policy_rewrites_with_source_sets():
         )
     )
 
-    assert rewriter.transform_query("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id") == (
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id"
-    )
+    rewritten = rewriter.transform_query("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id")
+    assert "LEFT JOIN" in rewritten
+    assert "CASE WHEN" in rewritten and "IS TRUE" in rewritten
+    assert 'bar."id" > foo."id"' in rewritten
+    assert rewriter.fetchall("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id") == []
     rewriter.execute("INSERT INTO foo VALUES (1), (2)")
     rewriter.execute("INSERT INTO bar VALUES (1), (2), (3)")
     assert (
         rewriter.fetchall("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id ORDER BY bar.id")
-        == []
+        == [(3,)]  # Missing foo contributor makes the complete policy inapplicable.
     )
 
 
-def test_splits_source_local_union_policy_that_would_need_source_sets():
+def test_combined_source_policy_does_not_apply_to_single_source_union_all_arms():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -925,7 +932,10 @@ def test_splits_source_local_union_policy_that_would_need_source_sets():
         )
     )
 
+    # Each UNION ALL row has only one listed source, so the whole policy is inapplicable.
     assert sorted(rewriter.fetchall("SELECT id FROM foo UNION ALL SELECT id FROM bar")) == [
+        (1,),
+        (1,),
         (2,),
         (3,),
     ]
@@ -1206,7 +1216,7 @@ def test_register_policy_validates_dimension_tables():
         )
 
 
-def test_rewrites_except_branch_when_policy_registered():
+def test_rejects_negative_except_policy_before_execution():
     rewriter = dfc(duckdb.connect())
     rewriter.execute("CREATE TABLE foo (id INTEGER)")
     rewriter.execute("CREATE TABLE bar (id INTEGER)")
@@ -1217,5 +1227,5 @@ def test_rewrites_except_branch_when_policy_registered():
             on_fail=Resolution.REMOVE,
         )
     )
-    rewriter.execute("SELECT id FROM bar EXCEPT SELECT id FROM foo")
-    assert rewriter.fetchall("SELECT id FROM bar EXCEPT SELECT id FROM foo") == []
+    with pytest.raises(PassantRewriteError, match=r"policy 0 .*negative-side SOURCE foo"):
+        rewriter.execute("SELECT id FROM bar EXCEPT SELECT id FROM foo")

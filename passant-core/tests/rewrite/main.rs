@@ -19,3 +19,19 @@ mod recursive;
 mod scan;
 #[path = "update.rs"]
 mod update;
+
+use crate::common::assert_same_rows;
+
+fn assert_id_fixture_equivalent(actual: &str, reference: &str) {
+    for data in [
+        "",
+        "INSERT INTO foo VALUES (NULL); INSERT INTO bar VALUES (NULL);",
+        "INSERT INTO foo VALUES (1),(2),(2),(4),(NULL); INSERT INTO bar VALUES (1),(2),(2),(3),(NULL);",
+    ] {
+        assert_same_rows(
+            actual,
+            reference,
+            &format!("CREATE TABLE foo(id INTEGER); CREATE TABLE bar(id INTEGER); {data}"),
+        );
+    }
+}

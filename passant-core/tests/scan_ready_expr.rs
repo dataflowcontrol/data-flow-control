@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 use passant_core::{PassantRewriter, PolicyIr, Resolution};
 
 fn remove_policy(source: &str, constraint: &str) -> PolicyIr {
@@ -18,13 +21,22 @@ fn remove_policy(source: &str, constraint: &str) -> PolicyIr {
 
 #[test]
 fn rewrite_with_large_registry_uses_scan_ready_without_reparsing() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(remove_policy("orders", "max(orders.amount) > 1"));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
+    rewriter
+        .register_policy(remove_policy("orders", "max(orders.amount) > 1"))
+        .expect("generated fixture policy must validate");
     for index in 0..5_000_usize {
-        rewriter.register_policy(remove_policy(
-            &format!("other_{index:05}"),
-            &format!("max(other_{index}.amount) > {index}"),
-        ));
+        rewriter.catalog_mut().register_table(
+            format!("other_{index:05}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(remove_policy(
+                &format!("other_{index:05}"),
+                &format!("max(other_{index:05}.amount) > {index}"),
+            ))
+            .expect("generated fixture policy must validate");
     }
 
     let options = passant_core::RewriteOptions {

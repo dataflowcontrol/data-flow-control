@@ -146,6 +146,11 @@ impl PolicyStore {
                 keep[slot] = false;
                 continue;
             };
+            // Parsed thresholds are reusable metadata, not permission to
+            // discard observable effects or policy-specific RETRY feedback.
+            if compiled.policy.resolution() != Resolution::Remove {
+                continue;
+            }
             let Some(candidate) = compiled.threshold.as_ref() else {
                 continue;
             };
@@ -445,5 +450,42 @@ impl PolicyStore {
         ids.iter()
             .copied()
             .filter(|&index| self.entries.get(index).is_some_and(|entry| entry.active))
+    }
+}
+
+#[cfg(test)]
+mod effect_dominance_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_pruning_preserves_retry_feedback_and_still_prunes_remove() {
+        let mut store = PolicyStore::default();
+        let mut retry_ids = Vec::new();
+        for bound in [10, 2, 3] {
+            let policy = crate::policy::parse_policy_text(&format!(
+                "SINK target CONSTRAINT target.x < {bound} ON FAIL RETRY('bound {bound}')"
+            ))
+            .unwrap();
+            retry_ids.push(store.register_unchecked(policy));
+        }
+        assert_eq!(
+            store.prune_dominated_candidates(&retry_ids),
+            (retry_ids.clone(), 0)
+        );
+        let mut remove_ids = Vec::new();
+        for bound in [10, 2, 3] {
+            remove_ids.push(
+                store.register_unchecked(
+                    crate::policy::parse_policy_text(&format!(
+                        "SINK target CONSTRAINT target.x < {bound} ON FAIL REMOVE"
+                    ))
+                    .unwrap(),
+                ),
+            );
+        }
+        assert_eq!(
+            store.prune_dominated_candidates(&remove_ids),
+            (vec![remove_ids[1]], 2)
+        );
     }
 }

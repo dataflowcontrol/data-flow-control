@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
 fn pgn_policy(source: &str, threshold: i64) -> PolicyIr {
@@ -34,13 +37,22 @@ fn sink_only_remove_policy(sink: &str) -> PolicyIr {
 
 #[test]
 fn rewrite_scales_with_indexed_candidates_not_total_registry() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(pgn_policy("orders", 1));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
+    rewriter
+        .register_policy(pgn_policy("orders", 1))
+        .expect("generated fixture policy must validate");
     for index in 0..5_000_usize {
-        rewriter.register_policy(pgn_policy(
-            &format!("other_{index:05}"),
-            i64::try_from(index).unwrap_or(0),
-        ));
+        rewriter.catalog_mut().register_table(
+            format!("other_{index:05}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(pgn_policy(
+                &format!("other_{index:05}"),
+                i64::try_from(index).unwrap_or(0),
+            ))
+            .expect("generated fixture policy must validate");
     }
 
     let options = RewriteOptions {
@@ -58,10 +70,21 @@ fn rewrite_scales_with_indexed_candidates_not_total_registry() {
 
 #[test]
 fn insert_sink_policy_lookup_uses_sink_index() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(sink_only_remove_policy("results"));
+    let mut rewriter = PassantRewriter::with_catalog(common::fixture_catalog(&[
+        ("results", &["id", "amount"]),
+        ("orders", &["id", "amount"]),
+    ]));
+    rewriter
+        .register_policy(sink_only_remove_policy("results"))
+        .expect("generated fixture policy must validate");
     for index in 0..2_000_usize {
-        rewriter.register_policy(sink_only_remove_policy(&format!("other_sink_{index:04}")));
+        rewriter.catalog_mut().register_table(
+            format!("other_sink_{index:04}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(sink_only_remove_policy(&format!("other_sink_{index:04}")))
+            .expect("generated fixture policy must validate");
     }
 
     let rewritten = rewriter
@@ -75,13 +98,22 @@ fn insert_sink_policy_lookup_uses_sink_index() {
 #[test]
 #[ignore = "manual: 1M-policy registry rewrite smoke test"]
 fn rewrite_1m_policies_smoke() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(pgn_policy("orders", 1));
+    let mut rewriter =
+        PassantRewriter::with_catalog(common::fixture_catalog(&[("orders", &["id", "amount"])]));
+    rewriter
+        .register_policy(pgn_policy("orders", 1))
+        .expect("generated fixture policy must validate");
     for index in 0..1_000_000_usize {
-        rewriter.register_policy(pgn_policy(
-            &format!("other_{index:07}"),
-            i64::try_from(index).unwrap_or(0),
-        ));
+        rewriter.catalog_mut().register_table(
+            format!("other_{index:07}"),
+            vec!["id".into(), "amount".into()],
+        );
+        rewriter
+            .register_policy(pgn_policy(
+                &format!("other_{index:07}"),
+                i64::try_from(index).unwrap_or(0),
+            ))
+            .expect("generated fixture policy must validate");
     }
 
     let options = RewriteOptions {

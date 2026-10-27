@@ -1,6 +1,6 @@
 use passant_core::{PassantRewriter, Resolution, TableCatalog};
 
-use crate::common::{pgn_policy, rewrite, rewrite_with_catalog};
+use crate::common::{pgn_policy, rewrite_with_catalog};
 
 #[test]
 fn positive_in_ungrouped_subquery_adds_group_by_for_metric() {
@@ -91,12 +91,17 @@ fn negated_in_is_not_converted_to_join() {
 
 #[test]
 fn limit_wrapper_applies_in_semijoin_metric_after_limit() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(crate::common::pgn_policy_with(
-        &["lineitem"],
-        "max(lineitem.l_quantity) >= 1",
-        Resolution::Remove,
-    ));
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[
+        ("orders", &["o_orderkey"]),
+        ("lineitem", &["l_orderkey", "l_quantity"]),
+    ]));
+    rewriter
+        .register_policy(crate::common::pgn_policy_with(
+            &["lineitem"],
+            "max(lineitem.l_quantity) >= 1",
+            Resolution::Remove,
+        ))
+        .expect("policy matches explicit fixture schema");
     let sql = rewriter
         .rewrite(
             "SELECT l_orderkey, SUM(l_quantity) AS s FROM lineitem \
@@ -108,4 +113,15 @@ fn limit_wrapper_applies_in_semijoin_metric_after_limit() {
         sql.contains("__passant_limited") && sql.contains("in_subquery"),
         "expected limit wrapper with IN semijoin: {sql}"
     );
+}
+
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(
+        sql,
+        policies,
+        crate::common::fixture_catalog(&[
+            ("orders", &["o_orderkey"]),
+            ("lineitem", &["l_orderkey", "l_quantity"]),
+        ]),
+    )
 }

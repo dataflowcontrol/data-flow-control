@@ -1,8 +1,8 @@
 //! Rewrite API parity tests ported from legacy `sql_rewriter` behaviors.
 
-use passant_core::{PolicyIr, Resolution, TableCatalog};
+use passant_core::{PolicyIr, Resolution};
 
-use crate::common::{assert_rewrite, pgn_policy, pgn_policy_kill, rewrite, rewrite_with_catalog};
+use crate::common::{pgn_policy, pgn_policy_kill, rewrite_with_catalog};
 
 #[test]
 fn scan_count_if_transforms_to_case_when() {
@@ -149,7 +149,7 @@ fn dimension_table_constraint_references_external_context() {
 
 #[test]
 fn insert_without_column_list_expands_from_catalog() {
-    let mut catalog = TableCatalog::new();
+    let mut catalog = family_catalog();
     catalog.register_table("reports", vec!["id".to_string(), "amount".to_string()]);
     let policy = PolicyIr::Pgn {
         sources: vec!["foo".to_string()],
@@ -183,4 +183,20 @@ fn merge_statement_rewrite_supported() {
     );
     assert!(sql.contains("MERGE INTO reports"));
     assert!(sql.contains("foo.id > 1"));
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("foo", &["id", "amount", "category", "region_id"]),
+        ("regions", &["id", "code"]),
+        ("reports", &["id", "amount"]),
+    ])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
+}
+fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
+    crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }

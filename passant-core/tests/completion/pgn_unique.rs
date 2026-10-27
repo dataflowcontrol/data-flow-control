@@ -2,10 +2,10 @@
 
 use passant_core::{PolicyIr, Resolution, TableCatalog};
 
-use crate::common::{assert_rewrite, rewrite_with_catalog};
+use crate::common::rewrite_with_catalog;
 
 fn users_unique_catalog() -> TableCatalog {
-    let mut catalog = TableCatalog::new();
+    let mut catalog = family_catalog();
     catalog.register_unique_column("users", "email");
     catalog
 }
@@ -165,4 +165,17 @@ fn unique_constraint_in_join_query_pushes_guard() {
         sql.contains("count(DISTINCT users.email)"),
         "join pushdown should still enforce uniqueness via scalar subqueries: {sql}"
     );
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("users", &["id", "email", "nickname"]),
+        ("orders", &["id", "user_id"]),
+        ("foo", &["id", "region"]),
+    ])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
 }

@@ -97,6 +97,16 @@ impl RewriteEngine for PartialPushEngine {
             return Ok(RewriteAttempt::Skipped);
         }
 
+        // This lowering separates policy_eval from the public result. It does
+        // not yet carry final output bindings into that aggregate scope.
+        if let Some((policy_id, constraint)) =
+            crate::rewriter::output_scope::applicable_output_policy(rewriter, request.statement)
+        {
+            return Err(RewriteError::unsupported_statement(format!(
+                "partial-push policy evaluation does not yet bind final _OUTPUT_ attributes for policy {policy_id} ({constraint}); no-SINK output policy requires a supported final-output endpoint",
+            )));
+        }
+
         let is_aggregation = request
             .analysis
             .select_scopes

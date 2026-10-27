@@ -1,11 +1,14 @@
 //! Explain output must reflect the executable rewrite strategy.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use passant_core::{PassantPlanner, PolicyIr, Resolution, RewriteStrategy, parse_query_to_ir};
 
 fn explain_strategy(sql: &str, policies: &[PolicyIr]) -> RewriteStrategy {
     let ir = parse_query_to_ir(sql).expect("query should parse");
     PassantPlanner::new()
-        .plan_query(&ir, policies)
+        .plan_query_with_rewriter(&ir, &fixture_rewriter(policies))
         .chosen
         .strategy
 }
@@ -89,7 +92,7 @@ fn explain_includes_strategy_reasons_for_distributive_scan() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
+    let result = PassantPlanner::new().plan_query_with_rewriter(&ir, &fixture_rewriter(&policies));
     assert_eq!(result.chosen.strategy, RewriteStrategy::FullPush);
     assert!(
         result
@@ -118,7 +121,13 @@ fn explain_partial_push_includes_non_distributive_reason() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    let result = PassantPlanner::new().plan_query(&ir, &policies);
+    let result = PassantPlanner::new().plan_query_with_rewriter(
+        &ir,
+        &common::rewriter_with_catalog(
+            &policies,
+            common::fixture_catalog(&[("foo", &["id", "name"])]),
+        ),
+    );
     assert_eq!(result.chosen.strategy, RewriteStrategy::PartialPush);
     assert!(
         result
@@ -147,7 +156,11 @@ fn explain_passthrough_delete_with_policies() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
+    let explanation = PassantPlanner::new().explain_rewrite_with_rewriter(
+        &ir,
+        &fixture_rewriter(&policies),
+        false,
+    );
     assert!(explanation.chosen.rewrite_error.is_none());
     assert_eq!(
         explanation.chosen.rewritten_sql.as_str(),
@@ -172,7 +185,18 @@ fn explain_records_source_set_scope_for_outer_join() {
         on_fail: Resolution::Remove,
         description: None,
     }];
-    let explanation = PassantPlanner::new().explain_rewrite(&ir, &policies);
+    let explanation = PassantPlanner::new().explain_rewrite_with_rewriter(
+        &ir,
+        &fixture_rewriter(&policies),
+        false,
+    );
     assert!(explanation.scope.requires_source_set_annotations);
     assert_eq!(explanation.chosen.strategy, RewriteStrategy::FullPush);
+}
+
+fn fixture_rewriter(policies: &[PolicyIr]) -> passant_core::PassantRewriter {
+    common::rewriter_with_catalog(
+        policies,
+        common::fixture_catalog(&[("foo", &["id"]), ("bar", &["id"])]),
+    )
 }

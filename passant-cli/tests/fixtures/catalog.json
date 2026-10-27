@@ -1,0 +1,1 @@
+{"dialect":"duckdb","tables":{"foo":{"columns":["id"],"types":{"id":"INTEGER"}},"reports":{"columns":["id"],"types":{"id":"INTEGER"}}}}

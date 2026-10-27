@@ -8,6 +8,7 @@ use crate::policy::PolicyIr;
 #[derive(Debug, Clone)]
 pub struct BranchPolicyEntry {
     pub policy: PolicyIr,
+    pub original_policy_index: Option<usize>,
     pub constraint_ast: Expr,
 }
 
@@ -34,7 +35,8 @@ impl PolicyStore {
 
     fn register_branch_entry(&mut self, entry: BranchPolicyEntry) -> usize {
         let index = self.entries.len();
-        let compiled = compile_branch_policy(self, index, entry.policy, entry.constraint_ast);
+        let mut compiled = compile_branch_policy(self, index, entry.policy, entry.constraint_ast);
+        compiled.original_policy_index = entry.original_policy_index.unwrap_or(index);
         self.index_entry(&compiled);
         self.entries.push(std::sync::Arc::new(compiled));
         self.active_policy_count += 1;
@@ -52,7 +54,7 @@ pub struct PolicyStoreView {
 }
 
 impl PolicyStoreView {
-    pub fn build(parent: &PolicyStore, entries: Vec<BranchPolicyEntry>) -> Self {
+    pub(crate) fn build(parent: &PolicyStore, entries: Vec<BranchPolicyEntry>) -> Self {
         let mut store = PolicyStore::with_shared_interners(parent);
         store.register_branch_entries(entries);
         Self { store }

@@ -42,7 +42,7 @@ pub(crate) fn wrap_limited_policy_query(
     let SetExpr::Select(select) = query.body.as_ref() else {
         return Ok(None);
     };
-    if !select_has_applicable_policy(rewriter, select) {
+    if !select_has_applicable_policy(rewriter, select, context) {
         return Ok(None);
     }
     if select_has_unsupported_limit_policy_shape(select) {
@@ -54,7 +54,9 @@ pub(crate) fn wrap_limited_policy_query(
     let mut inner = query.clone();
     let mut defer_ctx = context.clone();
     defer_ctx.defer_policy_for_outer_limit = true;
-    rewriter.rewrite_query_with_context(&mut inner, &mut defer_ctx)?;
+    if !context.joint_resolution_prepared {
+        rewriter.rewrite_query_with_context(&mut inner, &mut defer_ctx)?;
+    }
 
     let inner_select = match inner.body.as_ref() {
         SetExpr::Select(select) => select.as_ref().clone(),
@@ -83,7 +85,10 @@ pub(crate) fn build_limited_policy_wrapper(
     cte_name: &str,
     pending_in_semijoin_filters: &[crate::partial_push::ExtraDfcFilter],
 ) -> Result<Option<Query>, RewriteError> {
-    let table_scope = TableScope::from_select(inner_select);
+    let mut table_scope = TableScope::from_select(inner_select);
+    table_scope
+        .direct_base_tables
+        .extend(context.joint_resolution_sources.iter().cloned());
     let projected_names = projected_select_names(inner_select);
     let is_aggregation = select_is_aggregation(inner_select, &context.aggregate_registry);
 
@@ -182,7 +187,7 @@ pub(crate) fn try_render_limited_policy_wrapper(
     if !query_has_limit(query) {
         return Ok(None);
     }
-    if !select_has_applicable_policy(rewriter, select) {
+    if !select_has_applicable_policy(rewriter, select, &RewriteContext::default()) {
         return Ok(None);
     }
     if select_has_unsupported_limit_policy_shape(select) {
@@ -212,8 +217,13 @@ pub(crate) fn render_limited_policy_wrapper(
     })
 }
 
-fn select_has_applicable_policy(rewriter: &PassantRewriter, select: &Select) -> bool {
-    let tables = TableScope::from_select(select).direct_base_tables;
+fn select_has_applicable_policy(
+    rewriter: &PassantRewriter,
+    select: &Select,
+    context: &RewriteContext,
+) -> bool {
+    let mut tables = TableScope::from_select(select).direct_base_tables;
+    tables.extend(context.joint_resolution_sources.iter().cloned());
     rewriter
         .policy_store()
         .candidate_scope_lookup(&tables, None, crate::MultiSourceLookupMode::AnyOverlap)
@@ -266,6 +276,19 @@ fn rewrite_action_filter_for_outer(
     propagated: &mut HashMap<String, (Expr, String)>,
 ) -> PolicyResolutionAction {
     match action {
+        PolicyResolutionAction::Retry {
+            filter,
+            policy_index,
+        } => PolicyResolutionAction::Retry {
+            filter: rewrite_filter_for_outer(
+                filter,
+                projected_names,
+                is_aggregation,
+                registry,
+                propagated,
+            ),
+            policy_index,
+        },
         PolicyResolutionAction::Filter {
             filter,
             description,

@@ -1,11 +1,13 @@
 use passant_core::{PassantRewriter, PolicyIr, Resolution, TableCatalog};
 
-use crate::common::{assert_rewrite, pgn_policy, rewrite_with_catalog};
+use crate::common::{pgn_policy, rewrite_with_catalog};
 
 #[test]
 fn insert_values_statement_is_not_rewritten() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(pgn_policy(&["foo"], "max(foo.id) > 1"));
+    let mut rewriter = PassantRewriter::with_catalog(family_catalog());
+    rewriter
+        .register_policy(pgn_policy(&["foo"], "max(foo.id) > 1"))
+        .expect("policy matches declared family fixture");
     let sql = rewriter
         .rewrite("INSERT INTO foo VALUES (1), (2)")
         .expect("INSERT VALUES should pass through");
@@ -13,7 +15,7 @@ fn insert_values_statement_is_not_rewritten() {
 }
 
 fn reports_catalog() -> TableCatalog {
-    let mut catalog = TableCatalog::new();
+    let mut catalog = family_catalog();
     catalog.register_table("reports", vec!["id".into(), "status".into()]);
     catalog
 }
@@ -160,11 +162,12 @@ fn nested_cte_recurses_policy_into_inner_cte() {
         "WITH outer_cte AS (WITH inner_cte AS (SELECT id FROM foo) SELECT id FROM inner_cte) \
 SELECT id FROM outer_cte",
         &[pgn_policy(&["foo"], "max(foo.id) > 1")],
-        TableCatalog::new(),
+        family_catalog(),
     );
-    assert!(
-        sql.contains("foo.id > 1"),
-        "expected policy filter inside nested CTE: {sql}"
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT id FROM foo WHERE id > 1",
+        "CREATE TABLE foo(id INTEGER, status VARCHAR); INSERT INTO foo VALUES(1,NULL),(2,NULL),(2,NULL),(NULL,NULL);",
     );
 }
 
@@ -177,8 +180,26 @@ SELECT a.id, b.x FROM a JOIN b ON a.id = b.x",
             pgn_policy(&["foo"], "max(foo.id) > 1"),
             pgn_policy(&["baz"], "max(baz.x) > 5"),
         ],
-        TableCatalog::new(),
+        family_catalog(),
     );
-    assert!(sql.contains("foo.id > 1"));
-    assert!(sql.contains("baz.x > 5"));
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT foo.id,baz.x FROM foo JOIN baz ON foo.id=baz.x WHERE foo.id>1 AND baz.x>5",
+        "CREATE TABLE foo(id INTEGER,status VARCHAR); CREATE TABLE baz(x INTEGER); INSERT INTO foo VALUES(1,NULL),(6,NULL),(6,NULL),(NULL,NULL); INSERT INTO baz VALUES(1),(6),(6),(NULL);",
+    );
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[
+        ("foo", &["id", "status"]),
+        ("reports", &["id", "status"]),
+        ("receipts", &["id"]),
+        ("bar", &["id"]),
+        ("baz", &["x"]),
+    ])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
 }

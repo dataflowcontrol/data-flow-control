@@ -2,7 +2,7 @@
 
 use passant_core::{PolicyIr, parse_policy_text};
 
-use crate::common::{assert_rewrite, pgn_policy, pgn_policy_sink, rewriter_with_policies};
+use crate::common::{pgn_policy, pgn_policy_sink};
 
 fn sample_sink_policy() -> PolicyIr {
     pgn_policy_sink(&["foo"], "reports", "sum(foo.amount) <= 1000")
@@ -23,7 +23,7 @@ fn pgn_policy_rewrites_insert_select() {
     assert_rewrite(
         "INSERT INTO reports SELECT id, amount FROM foo",
         &[sample_sink_policy()],
-        "INSERT INTO reports SELECT id, amount FROM foo WHERE foo.amount <= 1000",
+        "INSERT INTO reports (id, amount) SELECT id, amount FROM foo WHERE foo.amount <= 1000",
     );
 }
 
@@ -36,7 +36,7 @@ fn pgn_combined_with_second_policy() {
     assert_rewrite(
         "INSERT INTO reports SELECT id, amount FROM foo",
         &policies,
-        "INSERT INTO reports SELECT id, amount FROM foo WHERE foo.amount <= 1000 AND foo.id > 0",
+        "INSERT INTO reports (id, amount) SELECT id, amount FROM foo WHERE foo.amount <= 1000 AND foo.id > 0",
     );
 }
 
@@ -46,7 +46,8 @@ fn explain_includes_pgn_policy_type() {
 
     let ir = passant_core::parse_query_to_ir("INSERT INTO reports SELECT id FROM foo")
         .expect("query should parse");
-    let explanation = PassantPlanner::new().explain_rewrite(&ir, &[sample_sink_policy()]);
+    let rewriter = rewriter_with_policies(&[sample_sink_policy()]);
+    let explanation = PassantPlanner::new().explain_rewrite_with_rewriter(&ir, &rewriter, false);
     assert!(
         explanation
             .applicable_policies
@@ -70,4 +71,16 @@ fn pgn_storage_roundtrip_via_policy_ir() {
     let rewriter = rewriter_with_policies(&[sample_sink_policy()]);
     assert_eq!(rewriter.policies().len(), 1);
     assert_eq!(rewriter.policies()[0].name(), "pgn");
+}
+
+// Explicit schema model for this test family (not inferred from policies).
+fn family_catalog() -> passant_core::TableCatalog {
+    crate::common::fixture_catalog(&[("foo", &["id", "amount"]), ("reports", &["id", "amount"])])
+}
+
+fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str) {
+    crate::common::assert_rewrite_with_catalog(sql, policies, expected, family_catalog());
+}
+fn rewriter_with_policies(policies: &[passant_core::PolicyIr]) -> passant_core::PassantRewriter {
+    crate::common::rewriter_with_catalog(policies, family_catalog())
 }

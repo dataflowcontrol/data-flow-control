@@ -11,46 +11,53 @@ fn catalog_with_reports() -> TableCatalog {
 
 #[test]
 fn rewriter_maps_output_marker_in_select_policy() {
-    let mut rewriter = PassantRewriter::with_catalog(TableCatalog::new());
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "_OUTPUT_.status = 'approved' AND max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[(
+        "foo",
+        &["id", "status"],
+    )]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "_OUTPUT_.status = 'approved' AND max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("SELECT foo.id, foo.status FROM foo")
         .expect("query should rewrite");
     assert_eq!(
         sql,
-        "SELECT foo.id, foo.status FROM foo WHERE foo.status = 'approved' AND foo.id > 1"
+        "SELECT foo.id, foo.status FROM foo WHERE foo.status = 'approved' AND foo.\"id\" > 1"
     );
 }
 
 #[test]
 fn rewriter_maps_output_marker_in_update_for_assigned_and_unassigned_columns() {
     let mut rewriter = PassantRewriter::with_catalog(catalog_with_reports());
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: Vec::new(),
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: Some("reports".to_string()),
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "_OUTPUT_.status = 'approved' AND _OUTPUT_.id > 0".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: Vec::new(),
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: Some("reports".to_string()),
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "_OUTPUT_.status = 'approved' AND _OUTPUT_.id > 0".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let sql = rewriter
         .rewrite("UPDATE reports SET status = 'approved'")
@@ -63,23 +70,43 @@ fn rewriter_maps_output_marker_in_update_for_assigned_and_unassigned_columns() {
 
 #[test]
 fn rewriter_rejects_ambiguous_output_marker_reference() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: None,
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "_OUTPUT_.id > 1 AND max(foo.id) > 0".to_string(),
-        on_fail: Resolution::Remove,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(crate::common::fixture_catalog(&[(
+        "foo",
+        &["id", "status"],
+    )]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: None,
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "_OUTPUT_.id > 1 AND max(foo.id) > 0".to_string(),
+            on_fail: Resolution::Remove,
+            description: None,
+        })
+        .expect("policy matches explicit fixture schema");
 
     let err = rewriter
         .rewrite("SELECT a.id, b.id FROM foo AS a JOIN foo AS b ON a.id = b.id")
         .expect_err("ambiguous _OUTPUT_ should fail");
     assert!(err.to_string().contains("ambiguous _OUTPUT_ column 'id'"));
+}
+
+#[test]
+fn direct_native_output_applicability_skips_missing_root_alias_without_mutating_registry() {
+    let mut rewriter = PassantRewriter::with_catalog(catalog_with_reports());
+    rewriter.register_policy(passant_core::parse_policy_text(
+        "SOURCE reports CONSTRAINT _OUTPUT_.id > 0 ON FAIL RETRY('exact native output failure')"
+    ).unwrap()).unwrap();
+    let absent = "WITH c AS (SELECT id FROM reports) SELECT id AS hidden FROM c";
+    assert_eq!(rewriter.rewrite(absent).unwrap(), absent);
+    assert_eq!(rewriter.policies().len(), 1);
+    let present = rewriter
+        .rewrite("WITH c AS (SELECT id AS hidden FROM reports) SELECT hidden AS id FROM c")
+        .unwrap();
+    assert!(present.contains("passant_retry_many"), "{present}");
 }

@@ -122,6 +122,10 @@ impl RewriteStatsCell {
         });
     }
 
+    pub(crate) fn replace(&self, snapshot: RewriteStats) {
+        self.with_stats(|stats| *stats = snapshot);
+    }
+
     pub fn snapshot(&self) -> RewriteStats {
         self.inner.lock().expect("rewrite stats lock").clone()
     }

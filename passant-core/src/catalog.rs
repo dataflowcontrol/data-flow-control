@@ -16,7 +16,7 @@ use crate::policy::{PolicyIr, Resolution};
 use crate::policy_compile::{
     ParsedPolicyConstraint, parse_policy_constraint, parse_policy_constraint_with_registry,
 };
-use crate::sql::collect_query_projection_column_names;
+mod dimension;
 
 /// Catalog facts supplied at policy registration time (from any adapter snapshot).
 #[derive(Debug, Default, Clone)]
@@ -178,9 +178,6 @@ impl TableCatalog {
         policy: &PolicyIr,
         registry: &AggregateRegistry,
     ) -> Result<(), RewriteError> {
-        if !self.loaded {
-            return Ok(());
-        }
         let PolicyIr::Pgn {
             sources,
             dimension_tables,
@@ -215,9 +212,6 @@ impl TableCatalog {
         parsed: &ParsedPolicyConstraint,
         registry: &AggregateRegistry,
     ) -> Result<(), RewriteError> {
-        if !self.loaded {
-            return Ok(());
-        }
         let PolicyIr::Pgn {
             sources,
             dimension_tables,
@@ -391,13 +385,11 @@ fn validate_pgn_policy_parsed(
         dimension_columns.insert(TableKey::new(base), columns);
     }
     for (alias, query_sql) in dimension_queries {
-        let columns = collect_query_projection_column_names(query_sql)
+        let columns = dimension::bound_projection(catalog, query_sql)
             .map_err(|err| {
                 RewriteError::catalog_with_context(
-                    ErrorKind::UnknownColumn,
-                    format!(
-                        "Dimension subquery '{alias}' has invalid projection for catalog validation: {err}"
-                    ),
+                    err.kind(),
+                    format!("Dimension subquery '{alias}' failed catalog binding: {err}"),
                     Some(alias.clone()),
                     None,
                     Some(constraint.to_string()),
@@ -1083,7 +1075,8 @@ mod tests {
 
     #[test]
     fn validates_constraint_columns_through_dimension_subquery_alias() {
-        let catalog = sample_catalog();
+        let mut catalog = sample_catalog();
+        catalog.register_table("session_user", vec!["user_id".into()]);
         let mut dimension_aliases = HashMap::new();
         dimension_aliases.insert("u".to_string(), "u".to_string());
         let mut dimension_queries = HashMap::new();
@@ -1111,7 +1104,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_dimension_subquery_column() {
-        let catalog = sample_catalog();
+        let mut catalog = sample_catalog();
+        catalog.register_table("session_user", vec!["user_id".into()]);
         let mut dimension_aliases = HashMap::new();
         dimension_aliases.insert("u".to_string(), "u".to_string());
         let mut dimension_queries = HashMap::new();

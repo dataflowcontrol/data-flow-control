@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 use passant_core::{PassantRewriter, PolicyIr, Resolution, RewriteOptions};
 
 fn ui_insert_policy() -> PolicyIr {
@@ -24,8 +27,19 @@ fn ui_resolution_parses_and_labels() {
 
 #[test]
 fn ui_insert_rewrite_emits_filter_udf_not_tuple_ctes() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(ui_insert_policy());
+    let mut rewriter = PassantRewriter::with_catalog(common::fixture_catalog(&[
+        (
+            "bank_txn",
+            &["txn_id", "amount", "category", "business_use_pct"],
+        ),
+        (
+            "irs_form",
+            &["txn_id", "amount", "category", "business_use_pct"],
+        ),
+    ]));
+    rewriter
+        .register_policy(ui_insert_policy())
+        .expect("UI fixture policy must validate");
     let options = RewriteOptions {
         ui_stream_endpoint: Some("/tmp/passant-ui-test.tsv".to_string()),
         ..RewriteOptions::default()
@@ -62,8 +76,19 @@ fn ui_select_policy() -> PolicyIr {
 
 #[test]
 fn ui_standalone_select_emits_filter_udf() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(ui_select_policy());
+    let mut rewriter = PassantRewriter::with_catalog(common::fixture_catalog(&[
+        (
+            "bank_txn",
+            &["txn_id", "amount", "category", "business_use_pct"],
+        ),
+        (
+            "irs_form",
+            &["txn_id", "amount", "category", "business_use_pct"],
+        ),
+    ]));
+    rewriter
+        .register_policy(ui_select_policy())
+        .expect("UI fixture policy must validate");
     let options = RewriteOptions {
         ui_stream_endpoint: Some("/tmp/passant-ui-select.tsv".to_string()),
         ..RewriteOptions::default()
@@ -96,7 +121,9 @@ fn ui_update_approval_emits_passant_ui_approve() {
     let mut catalog = passant_core::TableCatalog::new();
     catalog.register_table("irs_form", vec!["txn_id".into(), "business_use_pct".into()]);
     let mut rewriter = PassantRewriter::with_catalog(catalog);
-    rewriter.register_policy(ui_update_policy());
+    rewriter
+        .register_policy(ui_update_policy())
+        .expect("UI fixture policy must validate");
     let options = RewriteOptions {
         ui_update_mode: passant_core::UiUpdateMode::ApprovalOnly,
         ..RewriteOptions::default()
@@ -116,7 +143,9 @@ fn ui_update_edited_sets_followup_sql() {
     catalog.register_unique_column("irs_form", "txn_id");
     catalog.register_table("irs_form", vec!["txn_id".into(), "business_use_pct".into()]);
     let mut rewriter = PassantRewriter::with_catalog(catalog);
-    rewriter.register_policy(ui_update_policy());
+    rewriter
+        .register_policy(ui_update_policy())
+        .expect("UI fixture policy must validate");
     let options = RewriteOptions {
         ui_stream_endpoint: Some("/tmp/passant-ui-update.tsv".to_string()),
         ui_update_mode: passant_core::UiUpdateMode::EditedRows,
@@ -139,20 +168,25 @@ fn ui_update_edited_sets_followup_sql() {
 
 #[test]
 fn ui_partial_push_is_rejected() {
-    let mut rewriter = PassantRewriter::new();
-    rewriter.register_policy(PolicyIr::Pgn {
-        sources: vec!["foo".to_string()],
-        required_sources: Vec::new(),
-        dimension_tables: Vec::new(),
-        dimension_aliases: std::collections::HashMap::new(),
-        dimension_queries: std::collections::HashMap::new(),
-        sink: Some("bar".to_string()),
-        sink_alias: None,
-        source_aliases: std::collections::HashMap::new(),
-        constraint: "max(foo.id) > 1".to_string(),
-        on_fail: Resolution::Ui,
-        description: None,
-    });
+    let mut rewriter = PassantRewriter::with_catalog(common::fixture_catalog(&[
+        ("foo", &["id"]),
+        ("bar", &["id"]),
+    ]));
+    rewriter
+        .register_policy(PolicyIr::Pgn {
+            sources: vec!["foo".to_string()],
+            required_sources: Vec::new(),
+            dimension_tables: Vec::new(),
+            dimension_aliases: std::collections::HashMap::new(),
+            dimension_queries: std::collections::HashMap::new(),
+            sink: Some("bar".to_string()),
+            sink_alias: None,
+            source_aliases: std::collections::HashMap::new(),
+            constraint: "max(foo.id) > 1".to_string(),
+            on_fail: Resolution::Ui,
+            description: None,
+        })
+        .expect("UI fixture policy must validate");
     let options = RewriteOptions {
         use_partial_push: true,
         ..RewriteOptions::default()

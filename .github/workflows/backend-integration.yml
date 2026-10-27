@@ -31,7 +31,8 @@ jobs:
           python-version: '3.12'
       - run: uv sync --locked --extra dev --extra postgres --extra clickhouse
       - run: uv run maturin develop
-      - run: uv run pytest -q -m '${{ matrix.backend }}'
+      # Keep live test identities and skip reasons visible in release evidence.
+      - run: uv run pytest -v -ra -m '${{ matrix.backend }}'
       - name: Service logs
         if: failure()
         run: docker compose logs
@@ -50,4 +51,4 @@ jobs:
           python-version: '3.12'
       - run: uv sync --locked --extra dev --extra datafusion
       - run: uv run maturin develop
-      - run: uv run pytest -q python/tests/test_backend_basic_conformance.py python/tests/test_aggregate_registry.py -k datafusion
+      - run: uv run pytest -q python/tests/test_backend_basic_conformance.py python/tests/test_aggregate_registry.py python/tests/test_retry_portable_backends.py -k datafusion

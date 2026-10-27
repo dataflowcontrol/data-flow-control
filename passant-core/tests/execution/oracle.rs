@@ -77,7 +77,7 @@ fn partial_push_remove_filters_rows_when_aggregate_policy_fails() {
 }
 
 #[test]
-fn outer_join_cross_source_remove_execution_matches_naive_filter() {
+fn outer_join_cross_source_remove_requires_actual_contributors() {
     let mut db = TestDb::new();
     db.exec("CREATE TABLE bar (id INTEGER)");
     db.exec("CREATE TABLE foo (id INTEGER)");
@@ -100,16 +100,16 @@ fn outer_join_cross_source_remove_execution_matches_naive_filter() {
     let rewritten = db
         .rewrite("SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id ORDER BY bar.id")
         .expect("rewrite");
-    assert_eq!(
-        rewritten,
-        "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id ORDER BY bar.id"
-    );
-    assert_eq!(
-        db.fetchall_i64(&rewritten),
-        db.fetchall_i64(
-            "SELECT bar.id FROM bar LEFT JOIN foo ON bar.id = foo.id WHERE bar.id > foo.id ORDER BY bar.id",
-        ),
-    );
+    // No foo row matches. An ordinary SOURCE bar,foo policy is inapplicable,
+    // rather than evaluating its predicate against SQL's NULL padding.
+    assert_eq!(db.fetchall_i64(&rewritten), vec![1, 3]);
+
+    // A real NULL-valued contributor is different from an absent contributor.
+    db.exec("DELETE FROM foo; INSERT INTO foo VALUES (NULL)");
+    let with_real_null = db
+        .rewrite("SELECT bar.id FROM bar LEFT JOIN foo ON TRUE ORDER BY bar.id")
+        .expect("rewrite real NULL contributor");
+    assert_eq!(db.fetchall_i64(&with_real_null), Vec::<i64>::new());
 }
 
 #[test]
