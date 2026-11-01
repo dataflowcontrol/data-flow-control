@@ -97,14 +97,34 @@ impl Replacement<'_> {
                             _ => {}
                         }
                     }
+                    self.walk_queries(&mut args.clauses)?;
+                } else {
+                    self.walk_queries(&mut function.args)?;
                 }
+                let args = std::mem::replace(&mut function.args, FunctionArguments::None);
+                let result = self.walk_queries(function);
+                function.args = args;
+                result?;
             }
             Expr::Exists { .. } | Expr::Subquery(_) | Expr::InSubquery { .. } => {
                 self.walk(expr, &HashSet::new())?
             }
-            _ => {}
+            _ => self.walk_queries(expr)?,
         }
         Ok(())
+    }
+
+    fn walk_queries<T: VisitMut>(&self, expr: &mut T) -> Result<(), RewriteError> {
+        let mut visitor = ScopedExpressions {
+            replacement: self,
+            locals: &HashSet::new(),
+            query_depth: 0,
+            replace_expressions: false,
+        };
+        match expr.visit(&mut visitor) {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(error) => Err(error),
+        }
     }
 
     fn walk<T: VisitMut>(
@@ -116,6 +136,7 @@ impl Replacement<'_> {
             replacement: self,
             locals,
             query_depth: 0,
+            replace_expressions: true,
         };
         match node.visit(&mut visitor) {
             ControlFlow::Continue(()) => Ok(()),
@@ -324,6 +345,7 @@ struct ScopedExpressions<'a, 'b> {
     replacement: &'a Replacement<'b>,
     locals: &'a HashSet<String>,
     query_depth: usize,
+    replace_expressions: bool,
 }
 impl VisitorMut for ScopedExpressions<'_, '_> {
     type Break = RewriteError;
@@ -341,7 +363,8 @@ impl VisitorMut for ScopedExpressions<'_, '_> {
         ControlFlow::Continue(())
     }
     fn post_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
-        if self.query_depth == 0
+        if self.replace_expressions
+            && self.query_depth == 0
             && let Err(error) = self.replacement.expression(expr, self.locals)
         {
             return ControlFlow::Break(error);
