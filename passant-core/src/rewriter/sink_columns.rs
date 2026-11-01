@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
 use sqlparser::ast::{
-    Expr, Query, Select, SetExpr, TableFactor, TableWithJoins, Visit, VisitMut, Visitor, VisitorMut,
+    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Query, Select, SetExpr, TableFactor,
+    TableWithJoins, Visit, VisitMut, Visitor, VisitorMut,
 };
 
 use crate::diagnostics::{ErrorKind, RewriteError};
@@ -39,7 +40,7 @@ pub(super) fn replace(
     ) {
         return Ok(expr);
     }
-    replacement.walk(&mut expr, &HashSet::new())?;
+    replacement.outer_expression(&mut expr)?;
     Ok(expr)
 }
 
@@ -50,6 +51,62 @@ struct Replacement<'a> {
 }
 
 impl Replacement<'_> {
+    // Keep existing non-subquery substitution behavior. This repair expands
+    // traversal only where a constraint introduces a subquery, not unrelated
+    // policy expression forms (which have separate rewrite expectations).
+    fn outer_expression(&self, expr: &mut Expr) -> Result<(), RewriteError> {
+        match expr {
+            Expr::CompoundIdentifier(_) => self.expression(expr, &HashSet::new())?,
+            Expr::BinaryOp { left, right, .. } => {
+                self.outer_expression(left)?;
+                self.outer_expression(right)?;
+            }
+            Expr::Nested(expr)
+            | Expr::UnaryOp { expr, .. }
+            | Expr::IsNull(expr)
+            | Expr::IsNotNull(expr) => self.outer_expression(expr)?,
+            Expr::Case {
+                operand,
+                conditions,
+                results,
+                else_result,
+            } => {
+                if let Some(expr) = operand {
+                    self.outer_expression(expr)?;
+                }
+                for expr in conditions.iter_mut().chain(results.iter_mut()) {
+                    self.outer_expression(expr)?;
+                }
+                if let Some(expr) = else_result {
+                    self.outer_expression(expr)?;
+                }
+            }
+            Expr::Function(function) => {
+                if let FunctionArguments::List(args) = &mut function.args {
+                    for arg in &mut args.args {
+                        match arg {
+                            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                            | FunctionArg::Named {
+                                arg: FunctionArgExpr::Expr(expr),
+                                ..
+                            }
+                            | FunctionArg::ExprNamed {
+                                arg: FunctionArgExpr::Expr(expr),
+                                ..
+                            } => self.outer_expression(expr)?,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Expr::Exists { .. } | Expr::Subquery(_) | Expr::InSubquery { .. } => {
+                self.walk(expr, &HashSet::new())?
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn walk<T: VisitMut>(
         &self,
         node: &mut T,
@@ -271,10 +328,10 @@ struct ScopedExpressions<'a, 'b> {
 impl VisitorMut for ScopedExpressions<'_, '_> {
     type Break = RewriteError;
     fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<Self::Break> {
-        if self.query_depth == 0 {
-            if let Err(error) = self.replacement.query(query, self.locals) {
-                return ControlFlow::Break(error);
-            }
+        if self.query_depth == 0
+            && let Err(error) = self.replacement.query(query, self.locals)
+        {
+            return ControlFlow::Break(error);
         }
         self.query_depth += 1;
         ControlFlow::Continue(())
@@ -284,10 +341,10 @@ impl VisitorMut for ScopedExpressions<'_, '_> {
         ControlFlow::Continue(())
     }
     fn post_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
-        if self.query_depth == 0 {
-            if let Err(error) = self.replacement.expression(expr, self.locals) {
-                return ControlFlow::Break(error);
-            }
+        if self.query_depth == 0
+            && let Err(error) = self.replacement.expression(expr, self.locals)
+        {
+            return ControlFlow::Break(error);
         }
         ControlFlow::Continue(())
     }
