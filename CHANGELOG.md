@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
 - Bind sink and `_OUTPUT_` fields inside policy-constraint subqueries, including
   correlated EXISTS/NOT EXISTS and table-function arguments. Preserve local
