@@ -27,6 +27,7 @@ mod aggregates;
 pub(crate) use aggregates::decompose_composed_aggregates;
 mod columns;
 pub(crate) mod constraint_preprocess;
+mod sink_columns;
 pub(crate) use constraint_preprocess::preprocess_policy_constraint;
 mod derived_policy;
 pub(crate) mod dimensions;

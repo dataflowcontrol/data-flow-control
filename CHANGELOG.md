@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Bind sink and `_OUTPUT_` fields inside policy-constraint subqueries, including
+  correlated EXISTS/NOT EXISTS and table-function arguments. Preserve local
+  SELECT, CTE and set-branch aliases. Reject substitutions that could capture
+  projected columns instead of silently changing their meaning. This does not
+  extend provenance support for nonmonotonic action queries.
+
 ## 0.2.1
 
 - Preserve KILL aborts for constant-false candidate policies instead of allowing
