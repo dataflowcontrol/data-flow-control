@@ -12,6 +12,7 @@ from typing import Any
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.optimizer.qualify import qualify
 
 from .adapters.duckdb import DuckDBAdapter
 from .connection import Connection
@@ -96,9 +97,10 @@ class ToolProvenance:
         # not roll back a caller's existing transaction.
         raw.execute("BEGIN TRANSACTION")
         try:
+            model_sql = _expand_stars(raw, self.sql)
             key_projection = ", ".join(map(_quote, self.key_columns)) or "1"
             modeled = raw.execute(
-                f"SELECT {key_projection} FROM ({self.sql}) AS model", list(params)
+                f"SELECT {key_projection} FROM ({model_sql}) AS model", list(params)
             ).fetchall()
             modeled_keys = [tuple(row) if self.key_columns else () for row in modeled]
             _unique_keys(modeled_keys, "Modeled")
@@ -115,14 +117,20 @@ class ToolProvenance:
             aliases = key_names + value_names
             placeholders = "(" + ", ".join("?" for _ in aliases) + ")"
             actual = (
-                "(VALUES " + ", ".join(placeholders for _ in outputs) + ") AS actual("
-                + ", ".join(aliases) + ")"
+                "(VALUES "
+                + ", ".join(placeholders for _ in outputs)
+                + ") AS actual("
+                + ", ".join(aliases)
+                + ")"
             )
-            predicate = " AND ".join(
-                f"model.{_quote(column)} IS NOT DISTINCT FROM actual.{name}"
-                for column, name in zip(self.key_columns, key_names, strict=True)
-            ) or "TRUE"
-            source = f"({self.sql}) AS model JOIN {actual} ON {predicate}"
+            predicate = (
+                " AND ".join(
+                    f"model.{_quote(column)} IS NOT DISTINCT FROM actual.{name}"
+                    for column, name in zip(self.key_columns, key_names, strict=True)
+                )
+                or "TRUE"
+            )
+            source = f"({model_sql}) AS model JOIN {actual} ON {predicate}"
             bindings = list(params)
             for output in outputs:
                 bindings.extend(output.key)
@@ -154,3 +162,42 @@ def _unique_keys(keys: list[tuple[Any, ...]], kind: str) -> None:
         raise ValueError(f"{kind} output keys must be unique; distinguish duplicate occurrences")
     if any(value is None or value != value for key in keys for value in key):
         raise ValueError(f"{kind} output keys must not contain NULL or NaN")
+
+
+def _expand_stars(raw: Any, sql: str) -> str:
+    """Expand wildcards for the existing tuple-resolution rewriter.
+
+    Qualify with a full catalog for unambiguous schema lookup, then restore the
+    author's table qualification: adding catalog prefixes changes DFC source
+    names. This is normalization, not provenance transformation.
+    """
+    query = sqlglot.parse_one(sql, read="duckdb")
+    if not any(
+        item.is_star for select in query.find_all(exp.Select) for item in select.expressions
+    ):
+        return sql
+    schema: dict[str, Any] = {}
+    for catalog, namespace, table, column, dtype in raw.execute(
+        "SELECT table_catalog, table_schema, table_name, column_name, data_type "
+        "FROM information_schema.columns ORDER BY ordinal_position"
+    ).fetchall():
+        schema.setdefault(catalog, {}).setdefault(namespace, {}).setdefault(table, {})[column] = (
+            dtype
+        )
+    catalog, namespace = raw.execute("SELECT current_database(), current_schema()").fetchone()
+    original = [
+        (table, table.args.get("db"), table.args.get("catalog"))
+        for table in query.find_all(exp.Table)
+    ]
+    qualify(
+        query,
+        dialect="duckdb",
+        schema=schema,
+        db=namespace,
+        catalog=catalog,
+        validate_qualify_columns=False,
+    )
+    for table, db, catalog in original:
+        table.set("db", db)
+        table.set("catalog", catalog)
+    return query.sql(dialect="duckdb")

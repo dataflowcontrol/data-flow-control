@@ -22,7 +22,10 @@ def rows(db):
 
 def test_select_star_one_to_one(db):
     model = ToolProvenance("SELECT * FROM ToolInput WHERE id = ?")
-    assert model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "sent"})], params=[1]) == 1
+    assert (
+        model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "sent"})], params=[1])
+        == 1
+    )
     assert rows(db) == [("sent",)]
 
 
@@ -31,52 +34,79 @@ def test_one_to_many_expansion_with_duplicate_payloads_and_reordered_keys(db):
         "SELECT i.*, n.copy FROM ToolInput i, LATERAL generate_series(1, i.copies) n(copy)",
         ("id", "copy"),
     )
-    assert model.insert_outputs(db, "ToolOutput", [
-        ToolOutput((2, 1), {"message": "same"}),
-        ToolOutput((1, 2), {"message": "same"}),
-        ToolOutput((1, 1), {"message": "same"}),
-    ]) == 3
+    assert (
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((2, 1), {"message": "same"}),
+                ToolOutput((1, 2), {"message": "same"}),
+                ToolOutput((1, 1), {"message": "same"}),
+            ],
+        )
+        == 3
+    )
     assert rows(db) == [("same",)] * 3
 
 
-@pytest.mark.parametrize("sql,keys", [
-    ("SELECT a.id AS a, b.id AS b FROM ToolInput a JOIN ToolInput b ON a.id < b.id", [(1, 2)]),
-    ("SELECT category AS a, SUM(copies) AS b FROM ToolInput GROUP BY category",
-     [("public", 2), ("private", 1)]),
-    ("SELECT id AS a, SUM(copies) OVER (ORDER BY id) AS b FROM ToolInput", [(1, 2), (2, 3)]),
-    ("WITH picked AS (SELECT * FROM ToolInput WHERE id = 1) SELECT id AS a, copies AS b FROM picked",
-     [(1, 2)]),
-])
+@pytest.mark.parametrize(
+    "sql,keys",
+    [
+        ("SELECT a.id AS a, b.id AS b FROM ToolInput a JOIN ToolInput b ON a.id < b.id", [(1, 2)]),
+        (
+            "SELECT category AS a, SUM(copies) AS b FROM ToolInput GROUP BY category",
+            [("public", 2), ("private", 1)],
+        ),
+        ("SELECT id AS a, SUM(copies) OVER (ORDER BY id) AS b FROM ToolInput", [(1, 2), (2, 3)]),
+        (
+            "WITH picked AS (SELECT * FROM ToolInput WHERE id = 1) SELECT id AS a, copies AS b FROM picked",
+            [(1, 2)],
+        ),
+    ],
+)
 def test_relational_models(db, sql, keys):
     model = ToolProvenance(sql, ("a", "b"))
-    assert model.insert_outputs(db, "ToolOutput", [
-        ToolOutput(key, {"message": str(key)}) for key in keys
-    ]) == len(keys)
+    assert model.insert_outputs(
+        db, "ToolOutput", [ToolOutput(key, {"message": str(key)}) for key in keys]
+    ) == len(keys)
 
 
 def test_external_source_join(db):
     db.execute("CREATE TABLE ExternalSnapshot (id INTEGER, label VARCHAR)")
     db.execute("INSERT INTO ExternalSnapshot VALUES (1, 'restricted'), (2, 'public')")
-    db.register_policy(Policy(
-        sources=["ExternalSnapshot"], sink="ToolOutput",
-        constraint="ExternalSnapshot.label = 'public'", on_fail=Resolution.KILL,
-    ))
+    db.register_policy(
+        Policy(
+            sources=["ExternalSnapshot"],
+            sink="ToolOutput",
+            constraint="ExternalSnapshot.label = 'public'",
+            on_fail=Resolution.KILL,
+        )
+    )
     model = ToolProvenance(
         "SELECT i.id, e.label FROM ToolInput i JOIN ExternalSnapshot e ON i.id = e.id", ("id",)
     )
     with pytest.raises(Exception, match="KILLing"):
-        model.insert_outputs(db, "ToolOutput", [
-            ToolOutput((1,), {"message": "one"}), ToolOutput((2,), {"message": "two"}),
-        ])
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1,), {"message": "one"}),
+                ToolOutput((2,), {"message": "two"}),
+            ],
+        )
     assert rows(db) == []
 
 
 @pytest.mark.parametrize("resolution", [Resolution.KILL, Resolution.REMOVE])
 def test_model_reaches_policy_rewriter(db, resolution):
-    db.register_policy(Policy(
-        sources=["ToolInput"], sink="ToolOutput",
-        constraint="ToolInput.category = 'public'", on_fail=resolution,
-    ))
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=resolution,
+        )
+    )
     model = ToolProvenance("SELECT * FROM ToolInput", ("id",))
     outputs = [ToolOutput((2,), {"message": "private"}), ToolOutput((1,), {"message": "public"})]
     if resolution == Resolution.KILL:
@@ -88,13 +118,20 @@ def test_model_reaches_policy_rewriter(db, resolution):
         assert rows(db) == [("public",)]
 
 
-@pytest.mark.parametrize("sql,outputs,match", [
-    ("SELECT * FROM ToolInput", [ToolOutput((1,), {"message": "x"})], "match all"),
-    ("SELECT * FROM ToolInput WHERE id = 1", [ToolOutput((2,), {"message": "x"})], "match all"),
-    ("SELECT * FROM ToolInput WHERE id = 1", [ToolOutput((1,), {"message": "x"})] * 2, "unique"),
-    ("SELECT 1 AS id FROM ToolInput", [ToolOutput((1,), {"message": "x"})], "unique"),
-    ("SELECT NULL AS id", [ToolOutput((None,), {"message": "x"})], "NULL"),
-])
+@pytest.mark.parametrize(
+    "sql,outputs,match",
+    [
+        ("SELECT * FROM ToolInput", [ToolOutput((1,), {"message": "x"})], "match all"),
+        ("SELECT * FROM ToolInput WHERE id = 1", [ToolOutput((2,), {"message": "x"})], "match all"),
+        (
+            "SELECT * FROM ToolInput WHERE id = 1",
+            [ToolOutput((1,), {"message": "x"})] * 2,
+            "unique",
+        ),
+        ("SELECT 1 AS id FROM ToolInput", [ToolOutput((1,), {"message": "x"})], "unique"),
+        ("SELECT NULL AS id", [ToolOutput((None,), {"message": "x"})], "NULL"),
+    ],
+)
 def test_invalid_correspondence_does_not_publish(db, sql, outputs, match):
     with pytest.raises(ValueError, match=match):
         ToolProvenance(sql, ("id",)).insert_outputs(db, "ToolOutput", outputs)
@@ -102,7 +139,10 @@ def test_invalid_correspondence_does_not_publish(db, sql, outputs, match):
 
 
 def test_empty_model_and_outputs(db):
-    assert ToolProvenance("SELECT * FROM ToolInput WHERE FALSE").insert_outputs(db, "ToolOutput", []) == 0
+    assert (
+        ToolProvenance("SELECT * FROM ToolInput WHERE FALSE").insert_outputs(db, "ToolOutput", [])
+        == 0
+    )
     with pytest.raises(ValueError, match="match all"):
         ToolProvenance("SELECT * FROM ToolInput WHERE id = 1").insert_outputs(db, "ToolOutput", [])
 
@@ -135,7 +175,9 @@ def test_bad_actual_payload_rolls_back_and_connection_remains_usable(db):
     assert model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "ok"})]) == 1
 
 
-@pytest.mark.parametrize("sql", ["DELETE FROM ToolInput", "SELECT 1; SELECT 2", "SELECT random()", "SELECT uuid()"])
+@pytest.mark.parametrize(
+    "sql", ["DELETE FROM ToolInput", "SELECT 1; SELECT 2", "SELECT random()", "SELECT uuid()"]
+)
 def test_reject_nonqueries_and_known_volatile_functions(sql):
     with pytest.raises(ValueError):
         ToolProvenance(sql)
