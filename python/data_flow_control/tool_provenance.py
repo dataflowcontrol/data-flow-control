@@ -13,6 +13,8 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.merge_subqueries import merge_subqueries
+from sqlglot.tokens import TokenType
 
 from .adapters.duckdb import DuckDBAdapter
 from .connection import Connection
@@ -51,6 +53,11 @@ class ToolProvenance:
         query = statements[0]
         if any(isinstance(node, (exp.DML, exp.DDL)) for node in query.walk()):
             raise ValueError("Tool provenance requires a read-only query")
+        if any(
+            isinstance(node, exp.Parameter) or (isinstance(node, exp.Placeholder) and node.this)
+            for node in query.walk()
+        ):
+            raise ValueError("Tool models support positional ? parameters only")
         # This is an early diagnostic, not a sandbox or a proof of determinism.
         if any(isinstance(node, (exp.Rand, exp.Uuid)) for node in query.walk()):
             raise ValueError("Tool provenance must be deterministic; bind observed values instead")
@@ -145,6 +152,12 @@ class ToolProvenance:
                 f"INSERT INTO {target} ({', '.join(map(_quote, columns))}) "
                 f"SELECT {projection} FROM {source}"
             )
+            # Keep actual output values in scope for source/sink comparisons
+            # where SQLGlot can safely merge the model's derived table. Number
+            # parameters first: merging can move WHERE after the VALUES join.
+            sql = merge_subqueries(sqlglot.parse_one(_number_parameters(sql), read="duckdb")).sql(
+                dialect="duckdb"
+            )
             result = connection.execute(sql, params=bindings).fetchone()
             raw.execute("COMMIT")
             return int(result[0])
@@ -201,3 +214,14 @@ def _expand_stars(raw: Any, sql: str) -> str:
         table.set("db", db)
         table.set("catalog", catalog)
     return query.sql(dialect="duckdb")
+
+
+def _number_parameters(sql: str) -> str:
+    tokens = [
+        token
+        for token in sqlglot.Dialect.get_or_raise("duckdb").tokenize(sql)
+        if token.token_type == TokenType.PLACEHOLDER
+    ]
+    for index, token in reversed(list(enumerate(tokens, start=1))):
+        sql = sql[: token.start] + f"${index}" + sql[token.end + 1 :]
+    return sql

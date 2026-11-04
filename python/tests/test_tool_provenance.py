@@ -260,3 +260,35 @@ def test_sql_collation_cannot_duplicate_occurrences(db):
             ],
         )
     assert rows(db) == []
+
+
+@pytest.mark.parametrize("swapped", [False, True])
+def test_actual_output_values_remain_correlated_with_model_keys(db, swapped):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = ToolOutput.message",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance("SELECT * FROM ToolInput WHERE id >= ?", ("id",))
+    outputs = [
+        ToolOutput((2,), {"message": "public" if swapped else "private"}),
+        ToolOutput((1,), {"message": "private" if swapped else "public"}),
+    ]
+    if swapped:
+        with pytest.raises(Exception, match="KILLing"):
+            model.insert_outputs(db, "ToolOutput", outputs, params=[1])
+        assert rows(db) == []
+    else:
+        assert model.insert_outputs(db, "ToolOutput", outputs, params=[1]) == 2
+        assert rows(db) == [("private",), ("public",)]
+
+
+def test_question_mark_literals_do_not_shift_parameters(db):
+    model = ToolProvenance("SELECT * FROM ToolInput WHERE category != '?' AND id = ?")
+    assert (
+        model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "?"})], params=[1]) == 1
+    )
+    assert rows(db) == [("?",)]
