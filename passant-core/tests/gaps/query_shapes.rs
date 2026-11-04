@@ -119,3 +119,101 @@ fn assert_rewrite(sql: &str, policies: &[passant_core::PolicyIr], expected: &str
 fn rewrite(sql: &str, policies: &[passant_core::PolicyIr]) -> String {
     crate::common::rewrite_with_catalog(sql, policies, family_catalog())
 }
+
+#[test]
+fn window_policy_kill_uses_frame_without_changing_window_results() {
+    for frame in [
+        "ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW",
+        "PARTITION BY amount ORDER BY id",
+        "ORDER BY id ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING",
+    ] {
+        let query = format!("SELECT id, SUM(amount) OVER ({frame}) AS running FROM foo");
+        let sql = rewrite(
+            &query,
+            &[crate::common::pgn_policy_kill(
+                &["foo"],
+                "COUNT(foo.id) <= 2",
+            )],
+        );
+        assert!(
+            sql.contains(&format!("count(foo.id) OVER ({frame})")),
+            "{sql}"
+        );
+        crate::common::assert_same_rows(
+            &sql,
+            &query,
+            "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+             INSERT INTO foo VALUES(1,2),(2,3),(3,4); \
+             CREATE MACRO passant_kill() AS error('policy violation');",
+        );
+    }
+}
+
+#[test]
+fn window_policy_kill_rejects_contributor_aggregate_failure() {
+    let sql = rewrite(
+        "SELECT id, SUM(amount) OVER (ORDER BY id) AS running FROM foo",
+        &[crate::common::pgn_policy_kill(
+            &["foo"],
+            "COUNT(foo.id) <= 1",
+        )],
+    );
+    let db = duckdb::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,2),(2,3); \
+         CREATE MACRO passant_kill() AS error('policy violation');",
+    )
+    .unwrap();
+    let mut statement = db.prepare(&sql).unwrap();
+    assert!(statement.query([]).is_err(), "{sql}");
+}
+
+#[test]
+fn window_policy_rejects_unsupported_contributor_shapes_before_filtering() {
+    for (projection, resolution, message) in [
+        (
+            "LEAD(amount) OVER (ORDER BY id)",
+            Resolution::Remove,
+            "value/navigation windows",
+        ),
+        (
+            "FIRST_VALUE(amount) OVER (ORDER BY id DESC)",
+            Resolution::Remove,
+            "value/navigation windows",
+        ),
+        (
+            "LAG(amount) OVER (ORDER BY id)",
+            Resolution::Kill,
+            "value/navigation windows",
+        ),
+        (
+            "SUM(amount) OVER (ORDER BY id)",
+            Resolution::Remove,
+            "requires KILL",
+        ),
+        (
+            "SUM(amount) OVER (ORDER BY id ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING)",
+            Resolution::Kill,
+            "including the current row",
+        ),
+        (
+            "SUM(amount) OVER (ORDER BY id), MAX(amount) OVER ()",
+            Resolution::Kill,
+            "one common contributor frame",
+        ),
+    ] {
+        let mut rewriter = passant_core::PassantRewriter::with_catalog(family_catalog());
+        rewriter
+            .register_policy(crate::common::pgn_policy_with(
+                &["foo"],
+                "MIN(foo.amount) > 0",
+                resolution,
+            ))
+            .unwrap();
+        let error = rewriter
+            .rewrite(&format!("SELECT id, {projection} FROM foo"))
+            .unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+    }
+}
