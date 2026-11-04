@@ -230,3 +230,105 @@ fn window_policy_rejects_unsupported_contributor_shapes_before_filtering() {
         assert!(error.to_string().contains(message), "{error}");
     }
 }
+
+fn whole_output_policy(constraint: &str) -> PolicyIr {
+    let mut policy = pgn_policy(&["foo"], constraint);
+    let PolicyIr::Pgn { on_fail, .. } = &mut policy;
+    *on_fail = Resolution::Udf("__passant_remove_output".to_string());
+    policy
+}
+
+#[test]
+fn whole_output_remove_discards_group_without_recomputing_payload() {
+    let sql = rewrite(
+        "SELECT amount, SUM(id) AS total FROM foo GROUP BY amount",
+        &[whole_output_policy("BOOL_AND(foo.id > 0)")],
+    );
+    assert!(!sql.contains("__passant_remove_output("), "{sql}");
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT 20 AS amount, 3::HUGEINT AS total",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,10),(-1,10),(3,20);",
+    );
+}
+
+#[test]
+fn whole_output_remove_checks_original_window_frame() {
+    let sql = rewrite(
+        "SELECT id, SUM(amount) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS total FROM foo",
+        &[whole_output_policy("BOOL_AND(foo.amount > 0)")],
+    );
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT 1 AS id, 10::HUGEINT AS total UNION ALL SELECT 4, 70::HUGEINT",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,10),(2,-20),(3,30),(4,40);",
+    );
+}
+
+#[test]
+fn whole_output_remove_multiple_policies_share_original_candidates() {
+    let sql = rewrite(
+        "SELECT id, SUM(amount) OVER (ORDER BY id) AS total FROM foo",
+        &[
+            whole_output_policy("BOOL_AND(foo.amount > 0)"),
+            whole_output_policy("COUNT(foo.id) = 2"),
+        ],
+    );
+    // Removing id=2 must not make id=3 appear to have a two-row frame.
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT id, amount AS total FROM foo WHERE false",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,10),(2,-20),(3,30);",
+    );
+}
+
+#[test]
+fn whole_output_remove_checks_both_self_join_contributors() {
+    let sql = rewrite(
+        "SELECT l.id, r.amount FROM foo l JOIN foo r ON l.amount = r.amount",
+        &[whole_output_policy("BOOL_AND(foo.id > 0)")],
+    );
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT 1 AS id, 10 AS amount UNION ALL SELECT 3,20",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,10),(-1,10),(3,20);",
+    );
+}
+
+#[test]
+fn whole_output_remove_does_not_hide_kill_failure() {
+    let sql = rewrite(
+        "SELECT id, SUM(amount) OVER (ORDER BY id) AS total FROM foo",
+        &[
+            whole_output_policy("BOOL_AND(foo.amount > 0)"),
+            crate::common::pgn_policy_kill(&["foo"], "COUNT(foo.id) <= 1"),
+        ],
+    );
+    let db = duckdb::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,10),(2,-20); \
+         CREATE MACRO passant_kill() AS error('policy violation');",
+    )
+    .unwrap();
+    let mut statement = db.prepare(&sql).unwrap();
+    assert!(statement.query([]).is_err(), "{sql}");
+}
+
+#[test]
+fn whole_output_remove_drops_unknown_policy_result() {
+    let sql = rewrite(
+        "SELECT amount, SUM(id) AS total FROM foo GROUP BY amount",
+        &[whole_output_policy("BOOL_AND(foo.id > 0)")],
+    );
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT 20 AS amount, 3::HUGEINT AS total",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(NULL,10),(3,20);",
+    );
+}

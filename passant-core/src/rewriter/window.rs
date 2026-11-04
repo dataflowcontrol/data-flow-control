@@ -12,7 +12,7 @@ use crate::aggregate_registry::{AggregateFunctionSource, AggregateRegistry};
 use crate::diagnostics::RewriteError;
 
 use super::plan::{PolicyResolutionAction, SelectRewritePlan};
-use super::resolution::PASSANT_KILL_UDF;
+use super::resolution::{PASSANT_KILL_UDF, PASSANT_REMOVE_OUTPUT};
 
 pub(crate) fn policy_window(
     select: &Select,
@@ -149,7 +149,8 @@ pub(crate) fn apply_policy_window(
         }
     }
     // Filtering before evaluation changes the frame and can expose data from
-    // rejected contributors. Only the existing terminal KILL wrapper is used.
+    // rejected contributors. Terminal KILL and whole-output REMOVE wrappers
+    // evaluate the unchanged frame before deciding which outputs survive.
     if !plan.table_factor_filters.is_empty()
         || !plan.join_on_filters.is_empty()
         || !plan.selection_filters.is_empty()
@@ -168,7 +169,9 @@ pub(crate) fn apply_policy_window(
                 "policy window aggregation currently requires KILL resolution",
             ));
         };
-        if !udf_name.eq_ignore_ascii_case(PASSANT_KILL_UDF) {
+        if !udf_name.eq_ignore_ascii_case(PASSANT_KILL_UDF)
+            && !udf_name.eq_ignore_ascii_case(PASSANT_REMOVE_OUTPUT)
+        {
             return Err(RewriteError::unsupported_statement(
                 "policy window aggregation currently requires KILL resolution",
             ));

@@ -33,6 +33,9 @@ pub(crate) const RELATION_INPUT_CTE: &str = "__passant_relation_input";
 pub(crate) const RELATION_AGG_CTE: &str = "__passant_relation_agg";
 pub(crate) const RELATION_BATCH_VIOLATION_COLUMN: &str = "__passant_batch_violation";
 pub(crate) const PASSANT_KILL_UDF: &str = "passant_kill";
+/// Trusted tool-publication marker: plan without contributor pushdown, then
+/// discard whole modeled outputs. This is not an executable repair UDF.
+pub(crate) const PASSANT_REMOVE_OUTPUT: &str = "__passant_remove_output";
 pub(crate) const PASSANT_KILL_WRAPPER: &str = "__passant_kill";
 pub(crate) const UI_ADDRESS_VIOLATING_ROWS_UDF: &str = "address_violating_rows";
 pub(crate) const PASSANT_UI_APPROVE_UDF: &str = "passant_ui_approve";
@@ -274,6 +277,9 @@ pub(crate) fn wrap_select_with_resolution_stages(
     for action in actions {
         let (filter, kind) = match action {
             A::Filter { filter, .. } => (filter, 0),
+            A::TupleUdf {
+                filter, udf_name, ..
+            } if udf_name.eq_ignore_ascii_case(PASSANT_REMOVE_OUTPUT) => (filter, 0),
             A::TupleUdf {
                 filter, udf_name, ..
             } if udf_name.eq_ignore_ascii_case(PASSANT_KILL_UDF) => (filter, 1),
