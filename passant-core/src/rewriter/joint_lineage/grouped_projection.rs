@@ -14,14 +14,14 @@ pub(super) fn flatten(query: &mut Query, registry: &AggregateRegistry) -> bool {
     {
         return false;
     }
-    query.body = Box::new(SetExpr::Select(select));
+    *query.body = SetExpr::Select(select);
     true
 }
 
 fn grouped_projection(query: &Query, registry: &AggregateRegistry) -> Option<Box<Select>> {
     // Moving ORDER/LIMIT or CTE boundaries can change the contributing rows.
     let mut shape = query.clone();
-    shape.body = Box::new(SetExpr::Select(Box::new(crate::sql::empty_select())));
+    *shape.body = SetExpr::Select(Box::new(crate::sql::empty_select()));
     if shape != crate::sql::query_from_select(crate::sql::empty_select()) {
         return None;
     }

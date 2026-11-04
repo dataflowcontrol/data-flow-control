@@ -96,14 +96,15 @@ pub(crate) fn rewrite_joint_root(
     if applicable.is_empty() {
         return Ok(false);
     }
-    if context.sink.is_some() && grouped_projection::flatten(query, &rewriter.aggregate_registry) {
-        if let SetExpr::Select(select) = query.body.as_ref() {
-            for (column, item) in context.sink_output_columns.iter().zip(&select.projection) {
-                if let Some((expr, _)) = super::expr::projection_expr_and_name(item) {
-                    context
-                        .sink_expr_by_column
-                        .insert(column.value.to_ascii_lowercase(), expr.clone());
-                }
+    if context.sink.is_some()
+        && grouped_projection::flatten(query, &rewriter.aggregate_registry)
+        && let SetExpr::Select(select) = query.body.as_ref()
+    {
+        for (column, item) in context.sink_output_columns.iter().zip(&select.projection) {
+            if let Some((expr, _)) = super::expr::projection_expr_and_name(item) {
+                context
+                    .sink_expr_by_column
+                    .insert(column.value.to_ascii_lowercase(), expr.clone());
             }
         }
     }
