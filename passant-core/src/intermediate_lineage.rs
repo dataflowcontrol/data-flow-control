@@ -8,8 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
 use sqlparser::ast::{
-    Expr, GroupByExpr, Ident, JoinConstraint, JoinOperator, Query, SelectItem, SetExpr, Statement,
-    TableAliasColumnDef, TableFactor, Value, WindowType, visit_expressions, visit_expressions_mut,
+    Expr, FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, Query, SelectItem,
+    SetExpr, Statement, TableAliasColumnDef, TableFactor, Value, WindowType, visit_expressions,
+    visit_expressions_mut,
 };
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
@@ -114,6 +115,19 @@ impl Lineage<'_> {
                 "locking and nonrelational query clauses are unsupported",
             ));
         }
+        for expr in query
+            .limit
+            .iter()
+            .chain(query.offset.iter().map(|offset| &offset.value))
+            .chain(
+                query
+                    .fetch
+                    .iter()
+                    .filter_map(|fetch| fetch.quantity.as_ref()),
+            )
+        {
+            self.validate(expr, false)?;
+        }
         let mut ctes = inherited.clone();
         if let Some(with) = &mut query.with {
             if with.recursive {
@@ -188,6 +202,48 @@ impl Lineage<'_> {
             .any(|b| !aliases.insert(b.alias.to_ascii_lowercase()))
         {
             return Err(error("ambiguous relation aliases"));
+        }
+        // Whole-row expressions can inspect hidden state even in predicates,
+        // grouping and ordering; check each user expression in this scope only.
+        let mut scoped = select
+            .selection
+            .iter()
+            .chain(select.having.iter())
+            .collect::<Vec<_>>();
+        if let GroupByExpr::Expressions(exprs, _) = &select.group_by {
+            scoped.extend(exprs.iter());
+        }
+        if let Some(order) = &query.order_by {
+            scoped.extend(order.exprs.iter().map(|item| &item.expr));
+        }
+        scoped.extend(query.limit.iter());
+        scoped.extend(query.offset.iter().map(|offset| &offset.value));
+        scoped.extend(
+            query
+                .fetch
+                .iter()
+                .filter_map(|fetch| fetch.quantity.as_ref()),
+        );
+        for from in &select.from {
+            for join in &from.joins {
+                if let JoinOperator::Inner(JoinConstraint::On(expr)) = &join.join_operator {
+                    scoped.push(expr);
+                }
+            }
+        }
+        for expr in scoped {
+            if visit_expressions(expr, |node| {
+                if let Expr::Identifier(i) = node
+                    && aliases.contains(&i.value.to_ascii_lowercase())
+                {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            })
+            .is_break()
+            {
+                return Err(error("whole-row relation references are unsupported"));
+            }
         }
         let mut projections = Vec::new();
         for projection in std::mem::take(&mut select.projection) {
@@ -282,7 +338,11 @@ impl Lineage<'_> {
             }
         };
         let mut windows = Vec::new();
-        let mut aggregate = grouped;
+        let mut aggregate = grouped
+            || select
+                .having
+                .as_ref()
+                .is_some_and(|expr| self.registry.expr_contains_aggregate(expr));
         let check = visit_expressions(&projections, |node| {
             if let Expr::Function(function) = node {
                 if let Some(window) = &function.over {
@@ -369,8 +429,18 @@ impl Lineage<'_> {
                 {
                     return ControlFlow::Break(error("reserved intermediate metadata name"));
                 }
+                Expr::Function(f)
+                    if matches!(f.args, FunctionArguments::Subquery(_))
+                        || matches!(f.parameters, FunctionArguments::Subquery(_)) =>
+                {
+                    return ControlFlow::Break(error(
+                        "expression subqueries require their own lineage boundary",
+                    ));
+                }
                 Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns") => {
-                    return ControlFlow::Break(error("dynamic COLUMNS projections are unsupported"));
+                    return ControlFlow::Break(error(
+                        "dynamic COLUMNS projections are unsupported",
+                    ));
                 }
                 Expr::Function(f) if f.over.is_some() && !window => {
                     return ControlFlow::Break(error(

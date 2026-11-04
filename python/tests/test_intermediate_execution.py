@@ -459,3 +459,60 @@ def test_retry_remove_and_kill_precedence():
             else:
                 assert c.fetchall("INSERT INTO target SELECT id FROM source") == [(0,)]
             assert c.raw_connection.execute("SELECT * FROM target").fetchall() == []
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "LIMIT (SELECT amount FROM cases LIMIT 1)",
+        "OFFSET (SELECT amount FROM cases LIMIT 1)",
+    ],
+)
+def test_limit_offset_subqueries_cannot_read_untracked_sources(conn, tail):
+    with pytest.raises(IntermediateError, match="expression subqueries"):
+        conn.execute(f"INSERT INTO updates SELECT 'B', TRUE {tail}")
+    assert conn.raw_connection.execute("SELECT * FROM updates").fetchall() == []
+
+
+def test_having_only_aggregate_captures_group_contributors(conn):
+    conn.execute("CREATE TABLE sent AS SELECT 'B' AS id FROM cases WHERE id='B' HAVING COUNT(*)>0")
+    assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM sent") == [(1,)]
+    conn.execute("CREATE TABLE conflict AS SELECT 'B' AS id FROM cases HAVING COUNT(*)>0")
+    assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM conflict") == [(0,)]
+
+
+def test_delete_and_reregister_identical_policy_invalidates_session(conn):
+    policy = conn.policies()[0]
+    assert conn.delete_policy(
+        sources=policy.sources, sink=policy.sink, constraint=policy.constraint
+    )
+    conn.register_policy(policy)
+    with pytest.raises(IntermediateError, match="Policy changes"):
+        conn.execute("SELECT id FROM cases")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT list_extract(ARRAY(SELECT amount FROM cases),1) AS amount",
+        "SELECT 1 AS x WHERE list_count(ARRAY(SELECT amount FROM cases))>0",
+        "SELECT 1 AS x FROM cases a JOIN cases b ON list_count(ARRAY(SELECT id FROM cases))>0",
+    ],
+)
+def test_array_subquery_cannot_bypass_source_capture(conn, sql):
+    with pytest.raises(IntermediateError, match="expression subqueries"):
+        conn.execute(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 1 AS x FROM sent s WHERE CAST(s AS VARCHAR) LIKE '%1%'",
+        "SELECT 1 AS x FROM sent s JOIN sent t ON struct_extract(s, '_dfc_intermediate_state')=struct_extract(t, '_dfc_intermediate_state')",
+        "SELECT 1 AS x FROM sent s ORDER BY CAST(s AS VARCHAR)",
+    ],
+)
+def test_whole_row_metadata_is_hidden_in_all_expression_scopes(conn, sql):
+    conn.execute("CREATE TABLE sent AS SELECT id FROM cases WHERE id='B'")
+    with pytest.raises(IntermediateError, match="whole-row"):
+        conn.execute(sql)

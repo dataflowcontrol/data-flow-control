@@ -245,7 +245,10 @@ class IntermediateExecution:
             isinstance(n, exp.Identifier) and n.name.lower() in _RESERVED for n in statement.walk()
         ):
             raise IntermediateError("Intermediate metadata columns are reserved")
-        if tuple(self.owner.policies()) != self.policies:
+        if (
+            tuple(self.owner.policies()) != self.policies
+            or tuple(self.owner.planner.inner.registered_policy_indices()) != self.policy_indices
+        ):
             raise IntermediateError("Policy changes require a new intermediate execution session")
         # Own the transaction so source capture, sink filtering and writes use
         # one snapshot. An existing external transaction fails BEGIN before work.
