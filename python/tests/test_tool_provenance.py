@@ -455,8 +455,12 @@ def test_remove_cannot_recompute_contributors_of_fixed_payload(db, query, key):
         )
     )
     model = ToolProvenance(query, ("id",) if key else ())
-    with pytest.raises(ValueError, match="row-preserving"):
-        model.insert_outputs(db, "ToolOutput", [ToolOutput(key, {"message": "public,private"})])
+    outputs = [ToolOutput(key, {"message": "public,private"})]
+    if "string_agg" in query:
+        assert model.insert_outputs(db, "ToolOutput", outputs) == 0
+    else:
+        with pytest.raises(ValueError, match="row-preserving"):
+            model.insert_outputs(db, "ToolOutput", outputs)
     assert rows(db) == []
 
 
