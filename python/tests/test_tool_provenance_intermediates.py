@@ -140,3 +140,132 @@ def test_projected_join_partners_merge_whole_input_states(harness):
     )
     assert count == 1
     assert compiled.evaluate(states[(7, 9)], sink={"sent": True, "contributors": 3}) is True
+
+
+@pytest.fixture
+def automatic_harness():
+    """Latest PR #8 route: no manual capture or source-state lookup."""
+    connection = dfc(duckdb.connect())
+    if not hasattr(connection, "enable_intermediate_propagation"):
+        connection.close()
+        pytest.skip("Requires PR #8's automatic execution adapter")
+    connection.execute(
+        "CREATE TABLE Cases(id INTEGER, case_id INTEGER, category VARCHAR, priority VARCHAR)"
+    )
+    connection.execute(
+        "INSERT INTO Cases VALUES (1, 7, 'Discrimination', 'High'), (2, 7, 'Benefits', 'Low')"
+    )
+    # This declared input relation represents external delivery configuration;
+    # its rows multiply outputs but are not a fabricated provenance-pair table.
+    connection.execute("CREATE TABLE Channels(channel VARCHAR)")
+    connection.execute("INSERT INTO Channels VALUES ('email'), ('archive')")
+    connection.execute(
+        "CREATE TABLE ToolOutput(message VARCHAR, sent BOOLEAN, contributors INTEGER)"
+    )
+    connection.execute("CREATE TABLE Final(contributors INTEGER, sent BOOLEAN)")
+    connection.register_policy(
+        Policy(
+            sources=["Cases"],
+            sink="Final",
+            constraint=(
+                "BOOL_AND(Cases.category <> 'Discrimination' OR Cases.priority = 'High') "
+                "AND COUNT(Cases.id) = Final.contributors AND Final.sent"
+            ),
+            on_fail=Resolution.KILL,
+        )
+    )
+    connection.enable_intermediate_propagation()
+    connection.execute(
+        "CREATE TABLE ToolInput AS SELECT case_id AS id, COUNT(*) AS contributors "
+        "FROM Cases GROUP BY case_id"
+    )
+    yield connection
+    connection.close()
+
+
+def publish_with_automatic_harness(connection, model, outputs):
+    """Minimal host bridge for SQL forms supported by automatic propagation.
+
+    Unlike publish_with_explicit_harness, this uses the normal execution result's
+    automatically derived states and needs no declaration of input-ID columns.
+    It records successful observations; downstream ordinary SQL enforces sinks.
+    """
+    modeled = connection.execute(model.sql)
+    names = [column[0] for column in modeled.description]
+    states = {}
+    for row, state in zip(modeled.fetchall(), modeled.intermediates, strict=True):
+        values = dict(zip(names, row, strict=True))
+        key = tuple(values[column] for column in model.key_columns)
+        if key in states:
+            raise ValueError("Duplicate modeled output occurrence")
+        states[key] = connection.merge_intermediate_inputs(state)
+    keys = [output.key for output in outputs]
+    if len(set(keys)) != len(keys) or set(keys) != set(states):
+        raise ValueError("Actual outputs do not match modeled occurrences")
+    output_columns = [
+        column[0]
+        for column in connection.execute("SELECT * FROM ToolOutput WHERE FALSE").description
+    ]
+    connection.store_intermediate_outputs(
+        "ToolOutput",
+        [tuple(output.values[column] for column in output_columns) for output in outputs],
+        [states[output.key] for output in outputs],
+    )
+    return states
+
+
+def automatic_model(fanout):
+    if fanout:
+        return ToolProvenance(
+            "SELECT i.id, i.contributors, c.channel FROM ToolInput i CROSS JOIN Channels c",
+            ("id", "channel"),
+        ), [(7, "email"), (7, "archive")]
+    return ToolProvenance("SELECT * FROM ToolInput", ("id",)), [(7,)]
+
+
+@pytest.mark.parametrize("fanout", [False, True])
+def test_normal_execution_tool_bridge_and_downstream_policy(automatic_harness, fanout):
+    connection = automatic_harness
+    model, keys = automatic_model(fanout)
+    outputs = [
+        ToolOutput(key, {"message": "same", "sent": True, "contributors": 2})
+        for key in reversed(keys)
+    ]
+    states = publish_with_automatic_harness(connection, model, outputs)
+    assert set(states) == set(keys)
+    # Two modeled occurrences copy the same indivisible aggregate state. The
+    # downstream GROUP BY/global aggregate must keep COUNT at two, not four.
+    assert connection.fetchall(
+        "INSERT INTO Final SELECT MAX(contributors), BOOL_AND(sent) FROM ToolOutput"
+    ) == [(1,)]
+    assert connection.fetchall("SELECT * FROM Final") == [(2, True)]
+
+
+@pytest.mark.parametrize("contributors,sent", [(1, True), (2, False)])
+def test_normal_execution_rejects_bad_actual_sink(automatic_harness, contributors, sent):
+    connection = automatic_harness
+    model, keys = automatic_model(True)
+    outputs = [
+        ToolOutput(key, {"message": "observed", "sent": sent, "contributors": contributors})
+        for key in reversed(keys)
+    ]
+    publish_with_automatic_harness(connection, model, outputs)
+    # Observations are recorded, but they cannot authorize a later sink whose
+    # values fail the policy inherited from the original Cases contributors.
+    with pytest.raises(Exception, match="KILL|kill"):
+        connection.execute(
+            "INSERT INTO Final SELECT MAX(contributors), BOOL_AND(sent) FROM ToolOutput"
+        )
+    assert connection.fetchall("SELECT * FROM Final") == []
+
+
+def test_normal_execution_rejects_missing_output_before_storage(automatic_harness):
+    connection = automatic_harness
+    model, keys = automatic_model(True)
+    with pytest.raises(ValueError, match="match modeled"):
+        publish_with_automatic_harness(
+            connection,
+            model,
+            [ToolOutput(keys[0], {"message": "partial", "sent": True, "contributors": 2})],
+        )
+    assert connection.fetchall("SELECT * FROM ToolOutput") == []
