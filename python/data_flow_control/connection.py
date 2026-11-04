@@ -125,6 +125,14 @@ class Connection:
         else:
             snapshot = self.adapter.introspect_catalog()
         snapshot = self._merge_aggregate_functions(snapshot)
+        if self._intermediate_execution is not None:
+            from .intermediate_execution import _RESERVED
+
+            for table in snapshot.get("tables", {}).values():
+                table["columns"] = [c for c in table.get("columns", []) if c.lower() not in _RESERVED]
+                for key in ("types", "nullable"):
+                    if isinstance(table.get(key), dict):
+                        table[key] = {c: v for c, v in table[key].items() if c.lower() not in _RESERVED}
         return snapshot
 
     def _merge_aggregate_functions(self, snapshot: dict) -> dict:

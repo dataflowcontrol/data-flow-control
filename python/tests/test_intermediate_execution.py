@@ -148,3 +148,39 @@ def test_automatic_materialization_rejects_lossy_public_timestamp(conn):
 def test_nested_exists_is_not_misinterpreted_as_direct_join(conn):
     with pytest.raises(IntermediateError, match="Nested"):
         conn.execute("SELECT id FROM cases WHERE EXISTS (SELECT 1 FROM cases other)")
+
+
+def test_nested_materialized_aggregates_and_duplicate_paths_count_once():
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE source(id INT, batch INT, amount INT)")
+        c.execute("INSERT INTO source VALUES (1,1,10),(2,1,20),(3,2,30)")
+        c.execute("CREATE TABLE copies(id INT)")
+        c.execute("INSERT INTO copies VALUES (1),(2)")
+        c.execute("CREATE TABLE target(total INT, mean DOUBLE)")
+        c.register_policy(
+            Policy.from_pgn("""SOURCE REQUIRED source SINK target
+            CONSTRAINT SUM(source.amount) = target.total AND AVG(source.amount) = target.mean
+            ON FAIL REMOVE""")
+        )
+        c.enable_intermediate_propagation()
+        c.execute(
+            "CREATE TABLE batches AS SELECT batch, SUM(amount) AS total FROM source GROUP BY batch"
+        )
+        c.execute("CREATE TABLE combined AS SELECT SUM(total) AS total FROM batches")
+        assert c.fetchall("INSERT INTO target SELECT total, 20.0 FROM combined") == [(1,)]
+        # Fan-out repeats the same whole state, and must not double its SUM.
+        c.execute("CREATE TABLE repeated AS SELECT total FROM combined CROSS JOIN copies")
+        assert c.fetchall("INSERT INTO target SELECT SUM(total), 20.0 FROM repeated") == [(0,)]
+        assert c.fetchall("INSERT INTO target SELECT MAX(total), 20.0 FROM repeated") == [(1,)]
+
+
+def test_connection_catalog_hides_persisted_state(conn):
+    conn.execute("CREATE TABLE saved AS SELECT id FROM cases WHERE id='B'")
+    snapshot = conn._introspect_catalog()
+    assert all(
+        not column.startswith("_dfc_intermediate_")
+        for table in snapshot["tables"].values()
+        for column in table["columns"]
+    )
+    with pytest.raises(ValueError, match="owning connection"):
+        conn.transform_query("SELECT * FROM saved")

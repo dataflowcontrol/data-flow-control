@@ -105,6 +105,8 @@ class IntermediateExecution:
             raise IntermediateError(
                 "Nested queries, CTEs, windows and set operations are unsupported"
             )
+        if query.args.get("into") or query.args.get("locks"):
+            raise IntermediateError("SELECT INTO and locking clauses are unsupported")
         if query.args.get("distinct") or query.args.get("qualify"):
             raise IntermediateError("DISTINCT and QUALIFY require an intermediate merge rewrite")
         if query.args.get("having"):
@@ -269,6 +271,9 @@ class IntermediateExecution:
                 self.db.execute(statement.sql(dialect="duckdb"), params)
                 return IntermediateResult([], None, ())
             name = self._table(target)
+            properties = (statement.args.get("properties") or exp.Properties()).expressions
+            if any(not isinstance(p, exp.TemporaryProperty) for p in properties):
+                raise IntermediateError("CTAS supports only the TEMPORARY table property")
             result = self._select(statement.expression, sink=name, params=params)
             columns = ", ".join(f"{_quote(c[0])} {c[1]}" for c in result.description)
             temporary = any(
