@@ -1,6 +1,7 @@
 //! Inherited policy demands and synthesized lineage for the joint endpoint.
 //! Each original query is entered once and synthesized once. CTE references bind
 //! memoized schemas; generated policy wrappers never enter this traversal.
+mod grouped_projection;
 mod terminal_distinct;
 mod terminal_except;
 mod terminal_intersect;
@@ -70,6 +71,17 @@ pub(crate) fn rewrite_joint_root(
 ) -> Result<bool, RewriteError> {
     if context.joint_resolution_prepared || context.joint_lineage_legacy.is_some() {
         return Ok(false);
+    }
+    if context.sink.is_some() && grouped_projection::flatten(query, &rewriter.aggregate_registry) {
+        if let SetExpr::Select(select) = query.body.as_ref() {
+            for (column, item) in context.sink_output_columns.iter().zip(&select.projection) {
+                if let Some((expr, _)) = super::expr::projection_expr_and_name(item) {
+                    context
+                        .sink_expr_by_column
+                        .insert(column.value.to_ascii_lowercase(), expr.clone());
+                }
+            }
+        }
     }
     // Binding/applicability discovery is separate from policy placement visits.
     let original_tables = crate::statement_tables::statement_table_keys(
