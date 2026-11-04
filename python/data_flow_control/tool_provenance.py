@@ -293,6 +293,14 @@ def _execute_whole_output_remove(connection: Connection, sql: str, bindings: lis
     original = connection.planner
     planner = Planner(dialect=original.dialect)
     planner.sync_catalog(connection._introspect_catalog(include_row_counts=True))
+    # The validated flat model is followed only by a bijective output binding.
+    # No downstream aggregate can combine surviving and removed model outputs.
+    # This scoped declaration permits the core's existing derived-table route;
+    # the terminal marker is not generally splittable for arbitrary SQL.
+    planner.register_resolution_splittability("__passant_remove_output", splittable=True)
+    # SQLGlot emits DuckDB's LISTAGG alias for STRING_AGG; DuckDB catalog
+    # introspection lists only STRING_AGG. Preserve its aggregate identity.
+    planner.register_aggregate_function_name("listagg", classification="unknown_custom")
     aggregate_names = {
         row[0].lower()
         for row in connection.raw_connection.execute(

@@ -439,7 +439,7 @@ def test_scalar_subquery_payload_dependencies_cannot_disappear(db, source, resol
     "query,key",
     [
         ("SELECT string_agg(category) AS message FROM ToolInput", ()),
-        ("SELECT 1 AS id, string_agg(category) AS message FROM ToolInput GROUP BY id", (1,)),
+        ("SELECT 1 AS id, string_agg(category) AS message FROM ToolInput GROUP BY 1", (1,)),
         ("SELECT DISTINCT 1 AS id FROM ToolInput", (1,)),
         ("SELECT 1 AS id FROM ToolInput UNION SELECT 1 AS id FROM ToolInput", (1,)),
         ("SELECT a.id FROM ToolInput a LEFT JOIN ToolInput b ON a.id < b.id WHERE a.id=1", (1,)),
