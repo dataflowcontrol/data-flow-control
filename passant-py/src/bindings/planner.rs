@@ -166,6 +166,14 @@ impl PyPlanner {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    fn registered_policy_indices(&self) -> Vec<usize> {
+        self.rewriter.registered_policy_indices()
+    }
+
+    fn transform_intermediate_query(&self, query: String) -> PyResult<String> {
+        self.rewriter.rewrite_intermediate_query(&query).map_err(map_rewrite_error)
+    }
+
     fn policies_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.rewriter.policies())
             .map_err(|err| PyValueError::new_err(err.to_string()))

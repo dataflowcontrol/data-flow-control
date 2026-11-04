@@ -5,6 +5,7 @@ pub mod explain;
 pub mod full_push;
 pub mod identifiers;
 pub mod intern;
+pub mod intermediate_lineage;
 pub mod ir;
 pub mod optimizer;
 pub mod parser;
