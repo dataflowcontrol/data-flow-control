@@ -511,3 +511,28 @@ def test_array_subquery_payload_dependency_is_not_discarded(db):
             ],
         )
     assert rows(db) == []
+
+
+def test_interpolation_window_is_rejected_even_when_current_rows_pass(db):
+    db.raw_connection.execute("UPDATE ToolInput SET category='public'")
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT id, FILL(copies) OVER (ORDER BY id) AS value FROM ToolInput", ("id",)
+    )
+    with pytest.raises(Exception, match="window"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1,), {"message": "one"}),
+                ToolOutput((2,), {"message": "two"}),
+            ],
+        )
+    assert rows(db) == []
