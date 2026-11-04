@@ -700,3 +700,27 @@ def test_whole_output_remove_rejects_nested_aggregation(db):
             db, "ToolOutput", [ToolOutput((), {"message": "contains private group"})]
         )
     assert rows(db) == []
+
+
+def test_aggregate_input_output_comparison_fails_closed_until_deferred_binding(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = ToolOutput.message",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT category, COUNT(*) AS n FROM ToolInput GROUP BY category", ("category",)
+    )
+    with pytest.raises(Exception, match="ToolOutput|unsupported"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput(("public",), {"message": "private"}),
+                ToolOutput(("private",), {"message": "public"}),
+            ],
+        )
+    assert rows(db) == []
