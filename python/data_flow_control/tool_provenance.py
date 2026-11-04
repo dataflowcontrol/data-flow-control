@@ -210,7 +210,7 @@ class ToolProvenance:
                     join.args.get(part) for part in ("on", "using", "side", "kind", "method")
                 ):
                     join.set("kind", "CROSS")
-            sql = query.sql(dialect="duckdb")
+            sql = _normalize_aggregate_aliases(query.sql(dialect="duckdb"))
             if whole_output_remove:
                 result = _execute_whole_output_remove(connection, sql, bindings)
             else:
@@ -283,6 +283,23 @@ def _number_parameters(sql: str) -> str:
     return sql
 
 
+def _normalize_aggregate_aliases(sql: str) -> str:
+    # SQLGlot emits LISTAGG, which sqlparser represents as a special expression
+    # outside the core's Function aggregate traversal. DuckDB's equivalent
+    # STRING_AGG spelling preserves the existing aggregate rewrite path. Work
+    # on tokens so string literals, quoted identifiers and payloads stay intact.
+    tokens = sqlglot.Tokenizer(dialect="duckdb").tokenize(sql)
+    for index in range(len(tokens) - 2, -1, -1):
+        token = tokens[index]
+        if (
+            token.text.upper() == "LISTAGG"
+            and token.token_type is not TokenType.IDENTIFIER
+            and tokens[index + 1].token_type is TokenType.L_PAREN
+        ):
+            sql = sql[: token.start] + "STRING_AGG" + sql[token.end + 1 :]
+    return sql
+
+
 def _execute_whole_output_remove(connection: Connection, sql: str, bindings: list[Any]):
     """Use DFC's terminal tuple predicates without changing registered policies.
 
@@ -298,9 +315,6 @@ def _execute_whole_output_remove(connection: Connection, sql: str, bindings: lis
     # This scoped declaration permits the core's existing derived-table route;
     # the terminal marker is not generally splittable for arbitrary SQL.
     planner.register_resolution_splittability("__passant_remove_output", splittable=True)
-    # SQLGlot emits DuckDB's LISTAGG alias for STRING_AGG; DuckDB catalog
-    # introspection lists only STRING_AGG. Preserve its aggregate identity.
-    planner.register_aggregate_function_name("listagg", classification="unknown_custom")
     aggregate_names = {
         row[0].lower()
         for row in connection.raw_connection.execute(
