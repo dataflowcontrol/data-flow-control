@@ -69,6 +69,40 @@ class ToolProvenance:
         object.__setattr__(self, "sql", query.sql(dialect="duckdb"))
         object.__setattr__(self, "key_columns", tuple(self.key_columns))
 
+    def bind_intermediates(
+        self, result: Any, outputs: Sequence[ToolOutput]
+    ) -> tuple[tuple[Any, ...], ...]:
+        """Match a fresh automatic-propagation model result to actual outputs.
+
+        Execute this declaration with ``connection.execute(model.sql)`` first.
+        This trusted bridge only binds states; it neither stores output rows nor
+        evaluates policies against actual payloads. The caller may record tool
+        observations with ``connection.store_intermediate_outputs`` and enforce
+        subsequent sink operations through normal automatic execution.
+        """
+        states = getattr(result, "intermediates", None)
+        if states is None or result.description is None:
+            raise ValueError("Model result must carry automatic intermediate states")
+        columns = [column[0].casefold() for column in result.description]
+        positions = []
+        for key in self.key_columns:
+            if columns.count(key.casefold()) != 1:
+                raise ValueError("Modeled key columns must identify unique result columns")
+            positions.append(columns.index(key.casefold()))
+        rows = result.fetchall()
+        if len(rows) != len(states):
+            raise ValueError("Model result must be fresh and have one intermediate tuple per row")
+        modeled_keys = [tuple(row[index] for index in positions) for row in rows]
+        actual_keys = [tuple(output.key) for output in outputs]
+        if any(len(key) != len(self.key_columns) for key in actual_keys):
+            raise ValueError("Output key arity does not match key_columns")
+        _unique_keys(modeled_keys, "Modeled")
+        _unique_keys(actual_keys, "Actual")
+        if set(modeled_keys) != set(actual_keys):
+            raise ValueError("Actual outputs do not match all modeled output keys")
+        by_key = dict(zip(modeled_keys, states, strict=True))
+        return tuple(by_key[key] for key in actual_keys)
+
     def insert_outputs(
         self,
         connection: Connection,
@@ -84,6 +118,11 @@ class ToolProvenance:
         responsibility and is never retried here. The model must be stable
         across validation and insertion within this transaction.
         """
+        if getattr(connection, "_intermediate_execution", None) is not None:
+            raise ValueError(
+                "insert_outputs uses the legacy SQL rewriter; in automatic intermediate mode "
+                "use bind_intermediates and the trusted store_intermediate_outputs bridge"
+            )
         if not isinstance(connection.adapter, DuckDBAdapter):
             raise NotImplementedError("Tool provenance publication currently requires DuckDB")
         target = _quote(sink)
