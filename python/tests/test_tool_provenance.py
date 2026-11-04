@@ -544,3 +544,68 @@ def test_intermediate_binding_requires_propagated_states(db):
     with pytest.raises(ValueError, match="automatic intermediate states"):
         model.bind_intermediates(result, [ToolOutput((1,), {"message": "x"})])
     assert rows(db) == []
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_remove_discards_complete_original_aggregate(db, grouped):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT "
+        + ("copies, " if grouped else "")
+        + "string_agg(category) AS contents FROM ToolInput"
+        + (" GROUP BY copies" if grouped else ""),
+        ("copies",) if grouped else (),
+    )
+    outputs = (
+        [ToolOutput((2,), {"message": "public"}), ToolOutput((1,), {"message": "private"})]
+        if grouped
+        else [ToolOutput((), {"message": "public,private"})]
+    )
+    assert model.insert_outputs(db, "ToolOutput", outputs) == int(grouped)
+    assert rows(db) == ([("public",)] if grouped else [])
+    assert db.policies()[0].on_fail is Resolution.REMOVE
+
+
+def test_remove_window_discards_complete_original_frames(db):
+    db.execute("INSERT INTO ToolInput VALUES (3, 'public', 4), (4, 'public', 8)")
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT id, SUM(copies) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS total FROM ToolInput",
+        ("id",),
+    )
+    outputs = [
+        ToolOutput((i,), {"message": str(total)}) for i, total in [(1, 2), (2, 3), (3, 5), (4, 12)]
+    ]
+    assert model.insert_outputs(db, "ToolOutput", outputs) == 2
+    assert rows(db) == [("12",), ("2",)]
+
+
+def test_remove_self_join_checks_both_contributors(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT a.id AS a, b.id AS b FROM ToolInput a CROSS JOIN ToolInput b", ("a", "b")
+    )
+    outputs = [ToolOutput((a, b), {"message": f"{a},{b}"}) for a in (1, 2) for b in (1, 2)]
+    assert model.insert_outputs(db, "ToolOutput", outputs) == 1
+    assert rows(db) == [("1,1",)]
