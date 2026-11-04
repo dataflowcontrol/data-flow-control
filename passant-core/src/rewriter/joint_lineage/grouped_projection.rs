@@ -29,18 +29,38 @@ fn grouped_projection(query: &Query, registry: &AggregateRegistry) -> Option<Box
         return None;
     };
     if select_is_aggregation(select, registry) {
-        // The scoped path is a global aggregate. GROUP BY ordinals/aliases and
-        // HAVING output aliases need binding-aware remapping before projection
-        // substitution; keep those on the established lineage path for now.
-        let sqlparser::ast::GroupByExpr::Expressions(groups, modifiers) = &select.group_by else {
+        // Keep only a global aggregate's FROM/WHERE. Output aliases in a
+        // retained clause can change binding when its projection is replaced.
+        let mut shape = select.as_ref().clone();
+        shape.select_token = crate::sql::empty_select().select_token;
+        shape.projection.clear();
+        shape.from.clear();
+        shape.selection = None;
+        if shape != crate::sql::empty_select() || !safe_projection(&select.projection) {
             return None;
-        };
-        return (groups.is_empty()
-            && modifiers.is_empty()
-            && select.having.is_none()
-            && select.distinct.is_none()
-            && safe_projection(&select.projection))
-        .then(|| select.clone());
+        }
+        let aliases: HashSet<_> = select
+            .projection
+            .iter()
+            .filter_map(|item| {
+                if let SelectItem::ExprWithAlias { alias, .. } = item {
+                    Some(alias.value.to_ascii_lowercase())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut retained = select.as_ref().clone();
+        retained.projection.clear();
+        let alias_reference = visit_expressions(&retained, |expr| {
+            if let Expr::Identifier(id) = expr
+                && aliases.contains(&id.value.to_ascii_lowercase())
+            {
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        });
+        return alias_reference.is_continue().then(|| select.clone());
     }
     let mut shape = select.as_ref().clone();
     shape.select_token = crate::sql::empty_select().select_token;
@@ -80,10 +100,14 @@ fn grouped_projection(query: &Query, registry: &AggregateRegistry) -> Option<Box
     for item in &mut projection {
         // Preserve public names before substituting their defining expressions.
         if let SelectItem::UnnamedExpr(expr) = item {
-            let name = super::super::expr::projected_column_name(expr)?;
+            let alias = match expr {
+                Expr::Identifier(id) => id.clone(),
+                Expr::CompoundIdentifier(parts) => parts.last()?.clone(),
+                _ => return None,
+            };
             *item = SelectItem::ExprWithAlias {
                 expr: expr.clone(),
-                alias: Ident::new(name),
+                alias,
             };
         }
         let result = visit_expressions_mut(item, |expr| {
@@ -183,6 +207,21 @@ mod tests {
     }
 
     #[test]
+    fn preserve_quoted_output_alias() {
+        let mut q = query(
+            "SELECT v.\"to\" FROM (SELECT CAST(list(id) AS VARCHAR) AS \"to\" FROM cases) AS v",
+        );
+        assert!(flatten(
+            &mut q,
+            &AggregateRegistry::for_dialect(SqlDialect::DuckDb)
+        ));
+        assert_eq!(
+            q.to_string(),
+            "SELECT CAST(list(id) AS VARCHAR) AS \"to\" FROM cases"
+        );
+    }
+
+    #[test]
     fn preserve_cardinality_and_unsupported_boundaries() {
         for sql in [
             "SELECT 1 AS x FROM (SELECT count(*) AS n FROM cases) AS v",
@@ -191,6 +230,8 @@ mod tests {
             "SELECT v.body AS body FROM (SELECT category, CAST(list(id) AS VARCHAR) AS body FROM cases GROUP BY 1) AS v",
             "SELECT v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases HAVING body IS NOT NULL) AS v",
             "SELECT v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases LIMIT 1) AS v",
+            "SELECT v.body AS body FROM (SELECT 'Discrimination' AS selected_category, CAST(list(id) AS VARCHAR) AS body FROM cases WHERE category=selected_category) AS v",
+            "SELECT v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases QUALIFY row_number() OVER () = 1) AS v",
         ] {
             let mut q = query(sql);
             let original = q.clone();
