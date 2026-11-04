@@ -186,3 +186,65 @@ def test_expression_and_query_rejections(db):
         plan.evaluate(capture(plan), "TRUE", sink={"id": "fake"})
     with pytest.raises(IntermediateError, match="scalar"):
         plan.evaluate(capture(plan), "EXISTS(SELECT 1)")
+
+
+def test_compile_policy_carries_multiple_expressions_to_later_sink(db):
+    from data_flow_control import Policy
+    from data_flow_control.intermediate_policy import compile_policy_intermediates
+
+    policy = Policy.from_pgn("""SOURCE REQUIRED cases AS c SINK updates AS u
+        CONSTRAINT c.id = u.case_id AND
+        BOOL_AND(c.category <> 'Discrimination' OR c.priority = 'High') AND u.success
+        ON FAIL REMOVE""")
+    compiled = compile_policy_intermediates(db, policy)
+    state = capture(compiled.plan, "id='B'")
+    assert compiled.evaluate(
+        compiled.plan.merge(state, state), sink={"case_id": "B", "success": True}
+    )
+    assert not compiled.evaluate(state, sink={"case_id": "A", "success": True})
+    assert not compiled.evaluate(compiled.plan.empty(), sink={"case_id": "B", "success": True})
+
+
+def test_compile_joint_unique_expression_and_aggregate_arithmetic(db):
+    from data_flow_control import Policy
+    from data_flow_control.intermediate_policy import compile_policy_intermediates
+
+    policy = Policy.from_pgn("""SOURCE cases SINK target CONSTRAINT
+        cases.amount - cases.amount = 0 AND AVG(cases.amount) = target.expected
+        AND SUM(cases.amount) = 60 ON FAIL REMOVE""")
+    compiled = compile_policy_intermediates(db, policy)
+    state = compiled.plan.merge(
+        capture(compiled.plan, "id='A'"), capture(compiled.plan, "id IN ('B','C','D')")
+    )
+    assert compiled.evaluate(state, sink={"expected": 20})
+
+
+@pytest.mark.parametrize(
+    "text, expected", [("UNIQUE cases.category", False), ("NOT UNIQUE cases.category", True)]
+)
+def test_compile_unique_cardinality(db, text, expected):
+    from data_flow_control import Policy
+    from data_flow_control.intermediate_policy import compile_policy_intermediates
+
+    compiled = compile_policy_intermediates(
+        db, Policy.from_pgn(f"SOURCE cases CONSTRAINT {text} ON FAIL REMOVE")
+    )
+    assert compiled.evaluate(capture(compiled.plan)) is expected
+
+
+def test_compile_rejects_noncompact_or_cross_source_aggregates(db):
+    from data_flow_control import Policy, Resolution
+    from data_flow_control.intermediate_policy import compile_policy_intermediates
+
+    for constraint in (
+        "COUNT(DISTINCT cases.category) > 4",
+        "ARBITRARY(cases.category) = 'x'",
+        "SUM(cases.amount + other.amount) > 0",
+    ):
+        with pytest.raises(IntermediateError):
+            compile_policy_intermediates(
+                db,
+                Policy(
+                    constraint=constraint, sources=["cases", "other"], on_fail=Resolution.REMOVE
+                ),
+            )
