@@ -177,6 +177,22 @@ impl PassantRewriter {
         let mut policy_tables = super::TableScope::from_select(select).direct_base_tables;
         policy_tables.extend(context.joint_resolution_sources.iter().cloned());
         let sink = context.sink.as_deref().map(TableKey::new);
+        let applicable_policy = self.store.policy_indices().into_iter().any(|index| {
+            self.store.compiled(index).is_some_and(|compiled| {
+                super::policy_expr::compiled_policy_applicability(
+                    compiled,
+                    &policy_tables,
+                    sink.as_ref(),
+                    context.allow_partial_source_visibility,
+                )
+                .is_some()
+            })
+        });
+        let policy_window = if applicable_policy {
+            super::window::policy_window(select, &self.aggregate_registry)?
+        } else {
+            None
+        };
         let applicable_retry = self.store.policy_indices().into_iter().any(|index| {
             self.store.compiled(index).is_some_and(|compiled| {
                 matches!(
@@ -274,7 +290,7 @@ impl PassantRewriter {
             local_context
         };
         let plan_start = Instant::now();
-        let plan = plan_select_rewrite(
+        let mut plan = plan_select_rewrite(
             &self.store,
             &self.catalog,
             stats,
@@ -283,6 +299,9 @@ impl PassantRewriter {
             &plan_context,
             &handled,
         )?;
+        if let Some(window) = &policy_window {
+            super::window::apply_policy_window(&mut plan, window, &self.aggregate_registry)?;
+        }
         if context.collect_stats {
             self.stats.add_elapsed_planning(plan_start.elapsed());
         }
