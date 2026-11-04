@@ -332,3 +332,93 @@ fn whole_output_remove_drops_unknown_policy_result() {
          INSERT INTO foo VALUES(NULL,10),(3,20);",
     );
 }
+
+#[test]
+fn whole_output_remove_publisher_uses_scoped_legacy_boundary() {
+    for (model, key, payloads) in [
+        (
+            "SELECT amount, SUM(id) AS total FROM foo GROUP BY amount",
+            "amount",
+            "(10,666),(20,777)",
+        ),
+        (
+            "SELECT id, SUM(amount) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS total FROM foo",
+            "id",
+            "(-1,666),(1,666),(3,777)",
+        ),
+    ] {
+        let mut rewriter = passant_core::PassantRewriter::with_catalog(family_catalog());
+        let mut policy = whole_output_policy("BOOL_AND((foo.id > 1) IS TRUE)");
+        let PolicyIr::Pgn { sink, .. } = &mut policy;
+        *sink = Some("baz".to_string());
+        rewriter.register_policy(policy).unwrap();
+        let query = format!(
+            "INSERT INTO baz(x) SELECT actual.payload FROM ({model}) AS model \
+             JOIN (VALUES {payloads}) actual(k,payload) ON model.{key}=actual.k"
+        );
+        // This is not a generally splittable resolution. The trusted adapter
+        // proves one flat model plus a bijective binding before setting this
+        // property on its temporary planner.
+        assert!(rewriter.rewrite(&query).is_err());
+        rewriter.register_resolution_splittability("__passant_remove_output", true);
+        let sql = rewriter.rewrite(&query).unwrap();
+        assert!(!sql.contains("__passant_remove_output("), "{sql}");
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE foo(id INTEGER,amount INTEGER); CREATE TABLE baz(x INTEGER); \
+             INSERT INTO foo VALUES(1,10),(-1,10),(3,20);",
+        )
+        .unwrap();
+        db.execute_batch(&sql)
+            .unwrap_or_else(|e| panic!("{e}: {sql}"));
+        let values: Vec<i32> = db
+            .prepare("SELECT x FROM baz")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(values, vec![777], "{sql}");
+    }
+}
+
+#[test]
+fn whole_output_publisher_checks_sink_only_policy_at_actual_payload_scope() {
+    for payload in [777, 666] {
+        let mut rewriter = passant_core::PassantRewriter::with_catalog(family_catalog());
+        rewriter
+            .register_policy(whole_output_policy("COUNT(foo.id) = 3"))
+            .unwrap();
+        let mut sink_policy = crate::common::pgn_policy_kill(&[], "baz.x = 777");
+        let PolicyIr::Pgn { sink, .. } = &mut sink_policy;
+        *sink = Some("baz".to_string());
+        rewriter.register_policy(sink_policy).unwrap();
+        rewriter.register_resolution_splittability("__passant_remove_output", true);
+        let sql = rewriter
+            .rewrite(&format!(
+                "INSERT INTO baz(x) SELECT actual.v0 FROM \
+                 (SELECT SUM(amount) AS total FROM foo) model \
+                 JOIN (VALUES ({payload})) actual(v0) ON true"
+            ))
+            .unwrap();
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE foo(id INTEGER,amount INTEGER); CREATE TABLE baz(x INTEGER); \
+             INSERT INTO foo VALUES(1,10),(-1,10),(3,20); \
+             CREATE MACRO passant_kill() AS error('policy violation');",
+        )
+        .unwrap();
+        let result = db.execute_batch(&sql);
+        if payload == 777 {
+            result.unwrap_or_else(|e| panic!("{e}: {sql}"));
+            assert_eq!(
+                db.query_row("SELECT x FROM baz", [], |row| row.get::<_, i32>(0))
+                    .unwrap(),
+                777
+            );
+        } else {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("policy violation"), "{error}: {sql}");
+        }
+    }
+}
