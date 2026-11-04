@@ -106,8 +106,11 @@ class PolicyIntermediates:
         if any(i.source not in self.sources for i in self.intermediates):
             raise IntermediateError("Every intermediate must belong to a declared source")
         names = [i.name for i in self.intermediates]
-        if len(names) != len(set(names)):
-            raise IntermediateError("Intermediate names must be unique")
+        exposed = names + [
+            i.name + "__cardinality" for i in self.intermediates if i.aggregate == "unique"
+        ]
+        if len(exposed) != len(set(exposed)):
+            raise IntermediateError("Intermediate names and cardinality columns must be unique")
         self._owner = object()
 
     def empty(self) -> PolicyIntermediateState:
@@ -135,6 +138,7 @@ class PolicyIntermediates:
         statements = sqlglot.parse(query, read="duckdb")
         if len(statements) != 1 or not isinstance(statements[0], exp.Query):
             raise IntermediateError("Capture requires one SELECT query")
+        query = statements[0].sql(dialect="duckdb")
         keys = tuple(identity_columns)
         if not keys or len(keys) != len(set(keys)):
             raise IntermediateError("Provide distinct contributor identity columns")
@@ -204,6 +208,11 @@ class PolicyIntermediates:
             # This also handles a diamond whose two paths carry the same input.
             kept: list[_SourceState] = []
             for part in sorted(parts, key=lambda p: len(p.identities), reverse=True):
+                if any(
+                    part.identities == other.identities and part.values != other.values
+                    for other in kept
+                ):
+                    raise IntermediateError("Contributor snapshot changed between captures")
                 if any(part.identities <= other.identities for other in kept):
                     continue
                 kept.append(part)
@@ -233,7 +242,8 @@ class PolicyIntermediates:
             aggregation = "SUM(v0), SUM(v1)"
         else:
             function = "sum" if spec.aggregate == "count" else spec.aggregate
-            aggregation = f"{function}(v0)"
+            value = "CAST(v0 AS BOOLEAN)" if function in {"bool_and", "bool_or"} else "v0"
+            aggregation = f"{function}({value})"
         return tuple(
             self.connection.execute(
                 f"SELECT {aggregation} FROM (VALUES {rows}) AS states({aliases})",

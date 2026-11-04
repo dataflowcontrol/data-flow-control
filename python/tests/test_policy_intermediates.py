@@ -2,7 +2,6 @@
 
 import duckdb
 import pytest
-
 from data_flow_control.intermediates import Intermediate, IntermediateError, PolicyIntermediates
 
 
@@ -248,3 +247,39 @@ def test_compile_rejects_noncompact_or_cross_source_aggregates(db):
                     constraint=constraint, sources=["cases", "other"], on_fail=Resolution.REMOVE
                 ),
             )
+
+
+@pytest.mark.parametrize("aggregate", ["bool_and", "bool_or"])
+def test_null_only_boolean_state_merge(db, aggregate):
+    plan = PolicyIntermediates(db, [Intermediate("b", "cases", "priority = 'High'", aggregate)])
+    state = capture(plan, "id='D'")
+    assert plan.values(plan.merge(state, state)) == {"b": None}
+
+
+def test_intermediate_names_cannot_shadow_cardinality(db):
+    with pytest.raises(IntermediateError, match="cardinality"):
+        PolicyIntermediates(
+            db,
+            [
+                Intermediate("id", "cases", "id"),
+                Intermediate("id__cardinality", "cases", "amount", "sum"),
+            ],
+        )
+
+
+def test_same_identity_set_changed_snapshot_rejected(db):
+    plan = PolicyIntermediates(db, [Intermediate("total", "cases", "amount", "sum")])
+    before = capture(plan, "id='A'")
+    db.execute("UPDATE cases SET amount=100 WHERE id='A'")
+    with pytest.raises(IntermediateError, match="snapshot"):
+        plan.merge(before, capture(plan, "id='A'"))
+
+
+def test_negated_implicit_uniqueness_rejected(db):
+    from data_flow_control import Policy
+    from data_flow_control.intermediate_policy import compile_policy_intermediates
+
+    with pytest.raises(IntermediateError, match="Negated"):
+        compile_policy_intermediates(
+            db, Policy.from_pgn("SOURCE cases CONSTRAINT NOT (cases.amount > 1) ON FAIL REMOVE")
+        )

@@ -2,8 +2,18 @@
 
 `data_flow_control.intermediates` provides a trusted Python/DuckDB boundary for
 carrying aggregate state between relational operations and tool calls. It is an
-explicit adapter API: it does not yet compile PGN constraints or automatically
-instrument `Connection.execute`. The existing Rust rewriter is unchanged.
+explicit adapter API: it does not automatically instrument `Connection.execute`.
+The existing Rust rewriter is unchanged.
+
+`compile_policy_intermediates(raw_connection, policy)` in
+`data_flow_control.intermediate_policy` derives a plan and final predicate from
+an existing `Policy`. Its `.plan` supplies `capture` and `merge`;
+`.evaluate(state, sink={...})` binds the real sink column values. Compilation
+supports source-local expressions, implicit unique source comparisons,
+MIN/MAX/SUM/COUNT/AVG/BOOL_AND/BOOL_OR, and the parser's UNIQUE/NOT UNIQUE
+expansions. It rejects DIMENSION, subqueries, windows, filtered aggregates,
+unknown aggregates, cross-source expression demands and negated implicit
+uniqueness. These explicit errors must not fall back to untracked execution.
 
 A `PolicyIntermediates` plan declares multiple source-local `Intermediate`s.
 `capture(source, query, identity_columns=...)` evaluates each full contributor
@@ -60,7 +70,7 @@ an intersection's contribution. There is no hidden reconstruction of individual
 contributors. All captures in a plan must use the same immutable snapshot.
 
 Limitations: explicit trusted integration only; DuckDB scalar values and SQL
-types; no persistence/serialization contract, automatic PGN decomposition,
+types; no persistence/serialization contract, full PGN coverage,
 DISTINCT additive aggregates, arbitrary aggregate/UDF state, cross-source joint
 expressions, source mutation, or reconstruction/splitting of input states.
 Source-local expressions must be deterministic and use ordinary SQL equality;

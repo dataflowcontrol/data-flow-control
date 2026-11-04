@@ -105,6 +105,17 @@ def compile_policy_intermediates(connection: Any, policy: Policy) -> CompiledInt
     }
 
     def visit(node: exp.Expression) -> tuple[exp.Expression, list[exp.Expression]]:
+        if isinstance(node, exp.Not):
+            for column in node.find_all(exp.Column):
+                ancestor = column.parent
+                within_aggregate = False
+                while ancestor is not node and ancestor is not None:
+                    within_aggregate |= isinstance(ancestor, exp.AggFunc)
+                    ancestor = ancestor.parent
+                if source_of(column) is not None and not within_aggregate:
+                    raise IntermediateError(
+                        "Negated implicit source uniqueness is unsupported; use explicit aggregates"
+                    )
         if isinstance(node, exp.AggFunc):
             kind = aggregate_names.get(node.sql_name())
             if kind is None or node.expressions:
