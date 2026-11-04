@@ -31,8 +31,9 @@ among that row's previously contributing source data.
 ```python
 model = ToolProvenance(
     """SELECT i.*, n.copy_number
-       FROM ToolInput i,
-       LATERAL generate_series(1, i.number_of_copies) n(copy_number)""",
+       FROM ToolInput i
+       CROSS JOIN (VALUES (1), (2)) n(copy_number)
+       WHERE n.copy_number <= i.number_of_copies""",
     key_columns=("id", "copy_number"),
 )
 model.insert_outputs(connection, "ToolOutput", [
@@ -40,6 +41,9 @@ model.insert_outputs(connection, "ToolOutput", [
     ToolOutput((7, 1), {"message": "copy"}),
 ])
 ```
+
+This example expands each input to up to two copies. A larger expansion can
+join an appropriate relation of occurrences.
 
 The harness supplies an out-of-band occurrence key with each actual row. Keys
 are model result columns, not business output columns: no additional business
@@ -68,7 +72,12 @@ Unsupported combinations may raise the existing rewrite or backend binding error
 In particular, the tested `SUM(...) OVER (ORDER BY ...)` model binds outputs
 without policies, but a source comparison enforced with KILL currently produces
 a GROUP BY binding error. Publication rolls back; complete window-policy
-propagation is not delivered by this PR.
+propagation is not delivered by this PR. Lateral `generate_series` also binds
+without policies, but the tested policy rewrite rejects LATERAL syntax; use the
+ordinary relational expansion above for the tested policy-bearing 1:many path.
+Source-to-output comparisons are tested for 1:1 and that 1:many path. Safe model
+subqueries are flattened with SQLGlot so actual outputs remain in policy scope;
+this does not fix every nested/grouped sink-reference limitation of the engine.
 
 Every external data source read by the tool must be represented in its model,
 using a trusted relation/snapshot with the appropriate DFC source policies and
@@ -85,7 +94,8 @@ deterministic** across those evaluations: volatile functions, stateful UDFs,
 mutable file/network scans and nondeterministic LIMIT/tie ordering are outside
 the contract. Known `random()`/`uuid()` uses are rejected early, but that check is
 not a determinism proof or an SQL sandbox. Materialize external observations
-before publication. Use parameters for call-scoping values. Do not call within
+before publication. Use positional `?` parameters for call-scoping values. They are numbered before
+normalization so moving predicates cannot change parameter binding. Do not call within
 an existing transaction; DuckDB's nested-BEGIN error can abort that transaction.
 
 Call this API only for successful, complete external results. Failed calls or

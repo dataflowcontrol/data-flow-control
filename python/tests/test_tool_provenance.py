@@ -292,3 +292,57 @@ def test_question_mark_literals_do_not_shift_parameters(db):
         model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "?"})], params=[1]) == 1
     )
     assert rows(db) == [("?",)]
+
+
+@pytest.mark.parametrize("swapped", [False, True])
+def test_one_to_many_input_output_policy(db, swapped):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = ToolOutput.message",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT i.*, n.copy FROM ToolInput i CROSS JOIN (VALUES (1), (2)) n(copy) "
+        "WHERE n.copy <= i.copies",
+        ("id", "copy"),
+    )
+    outputs = [
+        ToolOutput((2, 1), {"message": "public" if swapped else "private"}),
+        ToolOutput((1, 2), {"message": "public"}),
+        ToolOutput((1, 1), {"message": "public"}),
+    ]
+    if swapped:
+        with pytest.raises(Exception, match="KILLing"):
+            model.insert_outputs(db, "ToolOutput", outputs)
+        assert rows(db) == []
+    else:
+        assert model.insert_outputs(db, "ToolOutput", outputs) == 3
+
+
+def test_lateral_policy_rewrite_limitation_rolls_back(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT i.*, n.copy FROM ToolInput i, LATERAL generate_series(1, i.copies) n(copy)",
+        ("id", "copy"),
+    )
+    with pytest.raises(Exception, match="LATERAL"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((2, 1), {"message": "private"}),
+                ToolOutput((1, 2), {"message": "public"}),
+                ToolOutput((1, 1), {"message": "public"}),
+            ],
+        )
+    assert rows(db) == []
