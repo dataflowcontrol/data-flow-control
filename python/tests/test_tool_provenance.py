@@ -222,7 +222,7 @@ def test_self_join_model_enforces_policy(db):
     assert rows(db) == []
 
 
-def test_window_policy_rewrite_limitation_rolls_back(db):
+def test_window_policy_checks_contributor_frame_and_rolls_back(db):
     db.register_policy(
         Policy(
             sources=["ToolInput"],
@@ -232,9 +232,8 @@ def test_window_policy_rewrite_limitation_rolls_back(db):
         )
     )
     model = ToolProvenance("SELECT id, SUM(copies) OVER (ORDER BY id) AS n FROM ToolInput", ("id",))
-    # The current SQL rewriter treats this aggregate window as grouping when
-    # injecting the source constraint. Do not silently bypass the DFC error.
-    with pytest.raises(Exception, match="GROUP BY"):
+    # The second cumulative frame contains a private contributor.
+    with pytest.raises(Exception, match="KILLing"):
         model.insert_outputs(
             db,
             "ToolOutput",
@@ -458,3 +457,32 @@ def test_remove_cannot_recompute_contributors_of_fixed_payload(db, query, key):
     with pytest.raises(ValueError, match="row-preserving"):
         model.insert_outputs(db, "ToolOutput", [ToolOutput(key, {"message": "public,private"})])
     assert rows(db) == []
+
+
+def test_window_model_preserves_original_frame_values_when_allowed(db):
+    db.raw_connection.execute("UPDATE ToolInput SET category='public'")
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT id, SUM(copies) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING "
+        "AND CURRENT ROW) AS total FROM ToolInput",
+        ("id", "total"),
+    )
+    assert (
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((2, 3), {"message": "three"}),
+                ToolOutput((1, 2), {"message": "two"}),
+            ],
+        )
+        == 2
+    )
+    assert rows(db) == [("three",), ("two",)]
