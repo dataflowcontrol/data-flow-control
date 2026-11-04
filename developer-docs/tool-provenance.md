@@ -70,12 +70,12 @@ comma-lateral spelling is normalized before the Rust parser. Source-to-output
 comparisons are tested for 1:1 and 1:many. Safe model subqueries are flattened
 with SQLGlot so actual outputs remain in policy scope.
 
-Aggregate windows now support KILL policies over one common inline contributor
+Aggregate windows support KILL and whole-output REMOVE policies over one common inline contributor
 frame that includes the current row. Policy aggregates receive that same OVER
 clause, preserving the original window values. For example, a cumulative SUM
 with a source-category constraint checks every contributor to each cumulative
 frame, rather than only its current row. Mixed/different frames, named windows,
-grouped/HAVING/QUALIFY window inputs and non-KILL aggregate-window resolutions
+grouped/HAVING/QUALIFY window inputs and repair aggregate-window resolutions
 are explicitly unsupported. Value/navigation windows such as LEAD, LAG and
 FIRST_VALUE are rejected when a policy applies; they are not silently treated
 as row-local provenance. The core retains its established ROW_NUMBER behavior.
@@ -89,17 +89,36 @@ that its original contributors passed policy checks.
 
 Publication therefore fails closed, before normalization, when registered
 policies coexist with scalar/expression subqueries (including ARRAY queries).
-REMOVE is supported only on row-preserving models: aggregates, windows, DISTINCT,
-set operations and outer joins are rejected with REMOVE. These checks currently
-consider all registered policies conservatively, even if a particular policy
-might be inapplicable to this call. Repair/UI/UDF resolutions are also rejected;
+REMOVE uses ordinary filtering for row-preserving models, including self-joins.
+For a single flat aggregate or supported aggregate-window SELECT, it instead
+checks the original complete group/frame and discards the entire modeled output
+if that check fails. A scalar REMOVE constraint is evaluated for each original
+contributor using `BOOL_AND((constraint) IS TRUE)`; NULL contributors cannot be
+silently ignored. Explicit aggregate constraints keep their authored meaning.
+Multiple predicates are evaluated together before any output is discarded.
+For example, a group containing public and private rows produces no external
+output under `category = 'public'`, rather than publishing the original payload
+after removing the private contributor. A sliding window loses just outputs
+whose original frames fail, without recomputing surviving frames.
+
+This uses DFC's existing tuple-resolution stage with an internal terminal-remove
+marker in a temporary planner; registered user policies remain unchanged.
+Nested relational stages, DISTINCT, set operations and outer joins still fail
+closed with non-row-preserving REMOVE: resolving an inner stage could change a
+later output's contributor set. Value/navigation windows still need their own
+contributor derivation. These are current core integration boundaries, not a
+claim that such SQL cannot express provenance. Checks currently consider all
+registered policies conservatively, even if a particular policy might be
+inapplicable to this call. Repair/UI/UDF resolutions are also rejected;
 the publisher cannot recompute or repair an external payload. KILL and RETRY
 retain their abort behavior within the ordinary rewriter's supported SQL scope.
 
 Regression tests cover the otherwise unsafe public-row/private-LEAD payload,
 same-source and distinct-source scalar subqueries, and unchanged secret-bearing
-string aggregates after REMOVE. Rejection rolls back all publication. This
-boundary is narrower than accepting arbitrary SQL that happens to execute.
+string aggregates after REMOVE. Aggregate regression cases now discard the
+whole output; unsupported expression-subquery and navigation cases still reject
+and roll back publication. This boundary is narrower than accepting arbitrary
+SQL that happens to execute.
 
 Every external data source read by the tool must be represented in its model,
 using a trusted relation/snapshot with the appropriate DFC source policies and
