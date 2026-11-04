@@ -191,6 +191,11 @@ fn window_policy_rejects_unsupported_contributor_shapes_before_filtering() {
             "value/navigation windows",
         ),
         (
+            "FILL(amount) OVER (ORDER BY id)",
+            Resolution::Kill,
+            "value/navigation windows",
+        ),
+        (
             "LAG(amount) OVER (ORDER BY id)",
             Resolution::Kill,
             "value/navigation windows",

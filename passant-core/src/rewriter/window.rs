@@ -8,7 +8,7 @@ use sqlparser::ast::{
     Expr, GroupByExpr, Select, Visit, VisitMut, Visitor, VisitorMut, WindowFrameBound, WindowType,
 };
 
-use crate::aggregate_registry::AggregateRegistry;
+use crate::aggregate_registry::{AggregateFunctionSource, AggregateRegistry};
 use crate::diagnostics::RewriteError;
 
 use super::plan::{PolicyResolutionAction, SelectRewritePlan};
@@ -49,7 +49,10 @@ pub(crate) fn policy_window(
                             | "percent_rank"
                             | "cume_dist"
                             | "ntile"
-                    ) || !self.registry.is_aggregate_call(function)
+                    ) || self
+                        .registry
+                        .lookup(&function.name.to_string())
+                        .is_none_or(|entry| entry.source == AggregateFunctionSource::Introspected)
                     {
                         // DuckDB introspection also lists navigation/ranking
                         // functions in the aggregate registry. Their dependency
