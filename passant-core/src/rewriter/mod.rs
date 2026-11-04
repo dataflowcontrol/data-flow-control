@@ -230,6 +230,16 @@ impl PassantRewriter {
         self.store.policy_by_original_index(index)
     }
 
+    /// Stable original IDs of active policies, in policy enumeration order.
+    /// Deleted IDs remain absent rather than renumbering surviving policies.
+    pub fn policy_indices(&self) -> Vec<usize> {
+        self.store
+            .policy_indices()
+            .into_iter()
+            .filter_map(|index| self.store.original_policy_index(index))
+            .collect()
+    }
+
     pub fn policies(&self) -> Vec<PolicyIr> {
         self.store.policies_vec()
     }

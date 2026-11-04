@@ -117,3 +117,24 @@ fn family_catalog() -> passant_core::TableCatalog {
 fn rewriter_with_policies(policies: &[passant_core::PolicyIr]) -> passant_core::PassantRewriter {
     crate::common::rewriter_with_catalog(policies, family_catalog())
 }
+
+#[test]
+fn active_policy_indices_preserve_deleted_gaps_and_lookup_identity() {
+    let first = pgn_policy(&["foo"], "max(foo.id) > 1");
+    let second = pgn_policy(&["bar"], "max(bar.id) > 1");
+    let mut rewriter = rewriter_with_policies(&[first.clone(), second.clone()]);
+    assert_eq!(rewriter.policy_indices(), vec![0, 1]);
+    assert!(rewriter.delete_policy(Some(&["foo".to_string()]), None, None, None, None));
+    assert_eq!(rewriter.policy_indices(), vec![1]);
+    assert_eq!(rewriter.policy_by_index(0), None);
+    assert_eq!(rewriter.policy_by_index(1), Some(&second));
+    rewriter.register_policy(first.clone()).unwrap();
+    assert_eq!(rewriter.policy_indices(), vec![1, 2]);
+    for (index, policy) in rewriter
+        .policy_indices()
+        .into_iter()
+        .zip(rewriter.policies())
+    {
+        assert_eq!(rewriter.policy_by_index(index), Some(&policy));
+    }
+}

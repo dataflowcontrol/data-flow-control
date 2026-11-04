@@ -166,6 +166,10 @@ impl PyPlanner {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    fn policy_indices(&self) -> Vec<usize> {
+        self.rewriter.policy_indices()
+    }
+
     fn policies_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.rewriter.policies())
             .map_err(|err| PyValueError::new_err(err.to_string()))
