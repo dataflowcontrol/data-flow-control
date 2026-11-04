@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+- Recognize CAST-wrapped aggregates when placing grouped source policies.
+- Support source-only aggregate predicates with separate sink checks through
+  deterministic projection wrappers over a grouped input. Unsupported wrappers
+  retain explicit errors; this does not promise arbitrary nested SQL coverage.
+
 ## 0.2.2
 
 - Bind sink and `_OUTPUT_` fields inside policy-constraint subqueries, including
