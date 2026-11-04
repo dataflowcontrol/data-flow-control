@@ -200,10 +200,7 @@ class IntermediateExecution:
         rows = cursor.fetchall()
         target_casts = None
         if sink_columns is not None:
-            types = dict(
-                self.db.execute(f"DESCRIBE {_quote(sink)}").fetchall()[n][:2]
-                for n in range(len(self._columns(sink)))
-            )
+            types = {r[0]: r[1] for r in self.db.execute(f"DESCRIBE {_quote(sink)}").fetchall()}
             for name in sink_columns:
                 validate_transfer_type(types[name])
             target_casts = "SELECT " + ", ".join(f"CAST(? AS {types[n]})" for n in sink_columns)
@@ -290,6 +287,9 @@ class IntermediateExecution:
                 statement.args.get("returning")
                 or statement.args.get("conflict")
                 or statement.args.get("overwrite")
+                or statement.args.get("by_name")
+                or statement.args.get("alternative")
+                or statement.args.get("partition")
             ):
                 raise IntermediateError("INSERT RETURNING/conflict/overwrite is unsupported")
             target = statement.this

@@ -74,3 +74,77 @@ def test_unsupported_queries_fail_without_effects(conn):
             conn.execute(sql)
     assert conn.fetchall("SELECT COUNT(*) AS n FROM cases") == [(3,)]
     assert conn.fetchall("SELECT * FROM updates") == []
+
+
+def test_trusted_tool_bridge_uses_normal_query_states(conn):
+    conn.execute("CREATE TABLE observations(message_id VARCHAR, success BOOLEAN)")
+    inputs = conn.execute("SELECT id FROM cases WHERE id='B'")
+    assert inputs.fetchall() == [("B",)]
+    # The SQL tool model selects these input rows. Both outputs inherit the
+    # entire input; neither claims a subset of its original contributors.
+    state = conn.merge_intermediate_inputs(inputs.intermediates[0])
+    conn.store_intermediate_outputs("observations", [("m1", True), ("m2", True)], [state, state])
+    assert conn.fetchall("INSERT INTO updates SELECT 'A', BOOL_AND(success) FROM observations") == [
+        (0,)
+    ]
+    assert conn.fetchall("INSERT INTO updates SELECT 'B', BOOL_AND(success) FROM observations") == [
+        (1,)
+    ]
+
+
+def test_insertion_coerces_sink_before_policy_check():
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE source(id INT, value DOUBLE)")
+        c.execute("INSERT INTO source VALUES (1, 1.5)")
+        c.execute("CREATE TABLE target(value INTEGER)")
+        c.register_policy(
+            Policy.from_pgn(
+                "SOURCE REQUIRED source SINK target CONSTRAINT source.value = target.value ON FAIL REMOVE"
+            )
+        )
+        c.enable_intermediate_propagation()
+        c.execute("CREATE TABLE saved AS SELECT value FROM source")
+        # 1.5 is coerced to 2 at the sink; checking the pre-cast 1.5 would allow it.
+        assert c.fetchall("INSERT INTO target SELECT value FROM saved") == [(0,)]
+        assert c.fetchall("SELECT * FROM target") == []
+
+
+def test_kill_rejects_the_entire_statement_before_persistence():
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE source(id INT)")
+        c.execute("INSERT INTO source VALUES (1),(2)")
+        c.execute("CREATE TABLE target(id INT)")
+        c.register_policy(
+            Policy.from_pgn(
+                "SOURCE REQUIRED source SINK target CONSTRAINT source.id = target.id ON FAIL KILL"
+            )
+        )
+        c.enable_intermediate_propagation()
+        c.execute("CREATE TABLE saved AS SELECT id FROM source")
+        with pytest.raises(duckdb.Error, match="KILL|kill"):
+            c.execute("INSERT INTO target SELECT 1 FROM saved")
+        assert c.fetchall("SELECT * FROM target") == []
+
+
+def test_database_error_rolls_back_rows_and_state(conn):
+    conn.execute("CREATE TABLE unique_target(id VARCHAR PRIMARY KEY)")
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute("INSERT INTO unique_target SELECT 'same' FROM cases")
+    assert conn.last_intermediate_result() is None
+    assert conn.fetchall("SELECT * FROM unique_target") == []
+    assert conn.fetchall("INSERT INTO unique_target SELECT id FROM cases") == [(3,)]
+    assert conn.fetchall("SELECT * FROM unique_target ORDER BY id") == [("A",), ("B",), ("C",)]
+
+
+def test_automatic_materialization_rejects_lossy_public_timestamp(conn):
+    with pytest.raises(IntermediateError, match="TIMESTAMP_NS"):
+        conn.execute(
+            "CREATE TABLE precise AS SELECT '2026-01-01 00:00:00.000000001'::TIMESTAMP_NS AS ts"
+        )
+    with pytest.raises(duckdb.CatalogException):
+        conn.execute("SELECT * FROM precise")
+
+
+def test_nested_exists_is_not_misinterpreted_as_direct_join(conn):
+    with pytest.raises(IntermediateError, match="Nested"):
+        conn.execute("SELECT id FROM cases WHERE EXISTS (SELECT 1 FROM cases other)")
