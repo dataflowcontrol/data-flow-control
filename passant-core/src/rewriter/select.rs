@@ -372,18 +372,27 @@ impl PassantRewriter {
             // reference a sibling binding (for example an external payload).
             // Keep source policies active here and enforce sink-only policies
             // when the outer SELECT has all output expressions in scope.
-            let saved_deferred = context.deferred_policy_indices.clone();
-            if context.sink.is_some() {
-                context.deferred_policy_indices.extend(
-                    self.store.policy_indices().into_iter().filter(|index| {
-                        self.store.policy(*index).is_some_and(|policy| {
-                            policy.sources().is_empty() && policy.sink().is_some()
-                        })
-                    }),
-                );
-            }
+            let temporarily_deferred: Vec<_> = if context.sink.is_some() {
+                self.store
+                    .policy_indices()
+                    .into_iter()
+                    .filter(|index| {
+                        !context.deferred_policy_indices.contains(index)
+                            && self.store.policy(*index).is_some_and(|policy| {
+                                policy.sources().is_empty() && policy.sink().is_some()
+                            })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            context
+                .deferred_policy_indices
+                .extend(temporarily_deferred.iter().copied());
             let result = self.rewrite_query_with_context(subquery, context);
-            context.deferred_policy_indices = saved_deferred;
+            for index in temporarily_deferred {
+                context.deferred_policy_indices.remove(&index);
+            }
             result?;
         }
         Ok(())
