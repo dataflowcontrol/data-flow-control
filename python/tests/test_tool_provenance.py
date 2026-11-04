@@ -322,7 +322,7 @@ def test_one_to_many_input_output_policy(db, swapped):
         assert model.insert_outputs(db, "ToolOutput", outputs) == 3
 
 
-def test_lateral_policy_rewrite_limitation_rolls_back(db):
+def test_lateral_expansion_enforces_policy_and_rolls_back(db):
     db.register_policy(
         Policy(
             sources=["ToolInput"],
@@ -335,7 +335,7 @@ def test_lateral_policy_rewrite_limitation_rolls_back(db):
         "SELECT i.*, n.copy FROM ToolInput i, LATERAL generate_series(1, i.copies) n(copy)",
         ("id", "copy"),
     )
-    with pytest.raises(Exception, match="LATERAL"):
+    with pytest.raises(Exception, match="KILLing"):
         model.insert_outputs(
             db,
             "ToolOutput",
@@ -346,3 +346,31 @@ def test_lateral_policy_rewrite_limitation_rolls_back(db):
             ],
         )
     assert rows(db) == []
+
+
+def test_lateral_expansion_with_passing_input_output_policy(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = ToolOutput.message",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT i.*, n.copy FROM ToolInput i, LATERAL generate_series(1, i.copies) n(copy) "
+        "WHERE i.id = ?",
+        ("id", "copy"),
+    )
+    assert (
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1, 2), {"message": "public"}),
+                ToolOutput((1, 1), {"message": "public"}),
+            ],
+            params=[1],
+        )
+        == 2
+    )
