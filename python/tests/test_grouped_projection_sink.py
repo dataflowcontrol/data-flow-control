@@ -8,12 +8,18 @@ from data_flow_control import Policy, dfc
     (False, "legal@example.com", True),
     (True, "legal@example.com", False),
     (False, "other@example.com", False),
+    ("empty", "legal@example.com", False),
+    ("null", "legal@example.com", False),
 ])
 def test_grouped_json_projection_sink(mixed, recipient, allowed):
     raw = duckdb.connect()
     raw.execute("CREATE TABLE cases (id VARCHAR, category VARCHAR)")
     raw.execute("INSERT INTO cases VALUES ('1','Discrimination'),('2','Discrimination')")
-    if mixed:
+    if mixed == "empty":
+        raw.execute("DELETE FROM cases")
+    elif mixed == "null":
+        raw.execute("UPDATE cases SET category = NULL")
+    elif mixed:
         raw.execute("INSERT INTO cases VALUES ('3','Other')")
     raw.execute('CREATE TABLE emails (arguments JSON, "to" VARCHAR, body VARCHAR)')
     db = dfc(raw)
