@@ -24,10 +24,10 @@ def test_grouped_json_projection_sink(mixed, recipient, allowed):
         ON FAIL RETRY('Wrong recipient or category.')
     '''))
     sql = f'''INSERT INTO emails (arguments, "to", body)
-        SELECT p.args,
+        SELECT p.args AS arguments,
           CASE WHEN json_type(p.args -> '/to') = 'VARCHAR'
-            THEN TRY_CAST((p.args -> '/to') ->> '$' AS VARCHAR) END,
-          p.args ->> '/body'
+            THEN TRY_CAST((p.args -> '/to') ->> '$' AS VARCHAR) END AS "to",
+          p.args ->> '/body' AS body
         FROM (SELECT json_object('to', v.recipient, 'body', v.body) AS args
           FROM (SELECT '{recipient}' AS recipient, CAST(list(id) AS VARCHAR) AS body
             FROM cases) AS v) AS p'''
