@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+import re
 from typing import Any
 
 import sqlglot
@@ -148,6 +149,43 @@ class PolicyIntermediates:
             f"{'1' if i.expression.strip() == '*' else i.expression} AS v{n}"
             for n, i in enumerate(specs)
         ]
+        # Python datetime truncates TIMESTAMP_NS, and ENUM/container/domain
+        # values can lose SQL equality/ordering when rebound as parameters.
+        # Until a typed codec exists, reject these before fetching either IDs
+        # or metric values. Checking only aggregate outputs misses COUNT inputs.
+        transfer_sql = f"SELECT {', '.join(key_sql + expr_sql)} FROM ({query}) AS {_quote(source)}"
+        scalar_types = {
+            "BOOLEAN",
+            "TINYINT",
+            "SMALLINT",
+            "INTEGER",
+            "BIGINT",
+            "HUGEINT",
+            "UTINYINT",
+            "USMALLINT",
+            "UINTEGER",
+            "UBIGINT",
+            "UHUGEINT",
+            "FLOAT",
+            "REAL",
+            "DOUBLE",
+            "VARCHAR",
+            "BLOB",
+        }
+        for n, column in enumerate(
+            self.connection.execute(f"DESCRIBE ({transfer_sql})").fetchall()
+        ):
+            sql_type = column[1].upper()
+            if (
+                sql_type not in scalar_types
+                and not re.fullmatch(r"DECIMAL\(\d+,\d+\)", sql_type)
+                or n < len(keys)
+                and sql_type in {"FLOAT", "REAL", "DOUBLE"}
+            ):
+                raise IntermediateError(
+                    f"Lossless intermediate transfer is not established for {sql_type}; "
+                    "use a lossless SQL scalar encoding or an integer contributor identity"
+                )
         row_key = "ROW(" + ", ".join(f"k{n}" for n in range(len(keys))) + ")"
         null_key = " OR ".join(f"k{n} IS NULL" for n in range(len(keys)))
         columns = [

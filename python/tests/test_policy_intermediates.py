@@ -283,3 +283,49 @@ def test_negated_implicit_uniqueness_rejected(db):
         compile_policy_intermediates(
             db, Policy.from_pgn("SOURCE cases CONSTRAINT NOT (cases.amount > 1) ON FAIL REMOVE")
         )
+
+
+def test_nanosecond_timestamp_identity_fails_before_python_truncation(db):
+    db.execute("CREATE TABLE precise(ts TIMESTAMP_NS, amount INTEGER)")
+    db.execute("""INSERT INTO precise VALUES
+        ('2026-01-01 00:00:00.000000001',10), ('2026-01-01 00:00:00.000000002',10)""")
+    plan = PolicyIntermediates(db, [Intermediate("total", "precise", "amount", "sum")])
+    for suffix in (
+        "",
+        " WHERE ts='2026-01-01 00:00:00.000000001'::TIMESTAMP_NS",
+        " WHERE ts='2026-01-01 00:00:00.000000002'::TIMESTAMP_NS",
+    ):
+        with pytest.raises(IntermediateError, match="TIMESTAMP_NS"):
+            plan.capture("precise", "SELECT * FROM precise" + suffix, identity_columns=["ts"])
+
+
+def test_nanosecond_timestamp_unique_values_fail_before_python_truncation(db):
+    db.execute("CREATE TABLE precise(id INTEGER, ts TIMESTAMP_NS)")
+    db.execute("""INSERT INTO precise VALUES
+        (1,'2026-01-01 00:00:00.000000001'), (2,'2026-01-01 00:00:00.000000002')""")
+    plan = PolicyIntermediates(db, [Intermediate("stamp", "precise", "ts")])
+    for suffix in ("", " WHERE id=1", " WHERE id=2"):
+        with pytest.raises(IntermediateError, match="TIMESTAMP_NS"):
+            plan.capture("precise", "SELECT * FROM precise" + suffix, identity_columns=["id"])
+
+
+def test_explicit_lossless_sql_timestamp_encoding_keeps_distinct_contributors(db):
+    db.execute("CREATE TABLE precise(ts TIMESTAMP_NS, amount INTEGER)")
+    db.execute("""INSERT INTO precise VALUES
+        ('2026-01-01 00:00:00.000000001',10), ('2026-01-01 00:00:00.000000002',10)""")
+    plan = PolicyIntermediates(
+        db,
+        [
+            Intermediate("total", "precise", "amount", "sum"),
+            Intermediate("stamp", "precise", "CAST(ts AS VARCHAR)"),
+        ],
+    )
+    query = "SELECT *, CAST(ts AS VARCHAR) AS identity FROM precise"
+    states = [
+        plan.capture(
+            "precise", query + f" ORDER BY ts LIMIT 1 OFFSET {n}", identity_columns=["identity"]
+        )
+        for n in range(2)
+    ]
+    assert plan.values(plan.merge(*states)) == {"total": 20, "stamp": (2, None)}
+    assert not plan.evaluate(plan.merge(*states), "total <= 10")

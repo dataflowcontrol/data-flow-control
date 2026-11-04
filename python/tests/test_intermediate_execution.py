@@ -45,9 +45,8 @@ def test_grouped_joint_expression_and_conflicting_case_identity(conn):
 def test_fanout_self_join_preserves_whole_input_state(conn):
     conn.execute("CREATE TABLE sent AS SELECT id FROM cases WHERE id='B'")
     conn.execute("CREATE TABLE fanout AS SELECT a.id FROM sent a CROSS JOIN cases b")
-    # Additional source contributors correctly conflict even though the public
-    # projected value remains B.
-    assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM fanout") == [(0,)]
+    # A/B and C/B conflict. The B/B pair still has only contributor B.
+    assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM fanout") == [(1,)]
     conn.execute("CREATE TABLE diamond AS SELECT a.id FROM sent a JOIN sent b ON a.id=b.id")
     assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM diamond") == [(1,)]
 

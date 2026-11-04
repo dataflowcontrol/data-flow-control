@@ -63,6 +63,9 @@ class IntermediateExecution:
         self.states: dict[int, tuple[PolicyIntermediateState, ...]] = {}
         self.next_token = 1
         self.last_result: IntermediateResult | None = None
+        for source in self.sources.values():
+            if "rowid" in {c.lower() for c in self._columns(source)}:
+                raise IntermediateError("A source column shadows DuckDB's contributor rowid")
         # Refuse a pre-existing physical schema which could spoof state columns.
         for (name,) in self.db.execute(
             "SELECT column_name FROM information_schema.columns"
