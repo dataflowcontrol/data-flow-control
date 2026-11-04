@@ -184,3 +184,14 @@ def test_connection_catalog_hides_persisted_state(conn):
     )
     with pytest.raises(ValueError, match="owning connection"):
         conn.transform_query("SELECT * FROM saved")
+
+
+def test_dynamic_and_whole_row_projection_cannot_expose_state(conn):
+    conn.execute("CREATE TABLE saved AS SELECT id FROM cases WHERE id='B'")
+    for query in [
+        "SELECT to_json(saved) AS value FROM saved",
+        "SELECT COLUMNS('.*') FROM saved",
+        "SELECT saved.* EXCLUDE(id) FROM saved",
+    ]:
+        with pytest.raises(IntermediateError):
+            conn.execute(query)

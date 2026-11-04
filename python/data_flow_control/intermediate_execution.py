@@ -124,6 +124,9 @@ class IntermediateExecution:
                 )
             if name.lower() in self.tracked:
                 dependencies.append(f"[{{'t': 'state', 'r': {_quote(alias)}.{_quote(_STATE)}}}]")
+        aliases = {a.lower() for a, _ in bindings}
+        if any(not c.table and c.name.lower() in aliases for c in query.find_all(exp.Column)):
+            raise IntermediateError("Whole-row table references are unsupported with hidden state")
         for join in query.args.get("joins") or []:
             if join.args.get("side") or join.args.get("method") or join.args.get("using"):
                 raise IntermediateError(
@@ -136,7 +139,8 @@ class IntermediateExecution:
         projection = []
         for item in query.expressions:
             if isinstance(item, exp.Star) or (isinstance(item, exp.Column) and item.is_star):
-                if any(item.args.get(k) for k in ("except_", "replace", "rename")):
+                star = item.this if isinstance(item, exp.Column) else item
+                if any(star.args.get(k) for k in ("except_", "replace", "rename")):
                     raise IntermediateError("Modified stars are unsupported")
                 qualifier = item.table if isinstance(item, exp.Column) else None
                 matched = [(a, cols) for a, cols in bindings if qualifier is None or a == qualifier]
@@ -198,6 +202,8 @@ class IntermediateExecution:
         cursor = self.db.execute(sql, params)
         description = cursor.description[:-1]
         for column in description:
+            if column[0].lower() in _RESERVED:
+                raise IntermediateError("Dynamic projection exposed reserved intermediate metadata")
             validate_transfer_type(column[1])
         rows = cursor.fetchall()
         target_casts = None

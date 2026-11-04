@@ -2,8 +2,8 @@
 
 `data_flow_control.intermediates` provides a trusted Python/DuckDB boundary for
 carrying aggregate state between relational operations and tool calls. It is an
-explicit adapter API: it does not automatically instrument `Connection.execute`.
-The existing Rust rewriter is unchanged.
+explicit state API, plus the opt-in automatic `Connection.execute` path described
+below. The existing Rust rewriter is unchanged.
 
 `compile_policy_intermediates(raw_connection, policy)` in
 `data_flow_control.intermediate_policy` derives a plan and final predicate from
@@ -69,11 +69,85 @@ overlap. SUM/COUNT/AVG reject partial overlap: aggregate totals cannot recover
 an intersection's contribution. There is no hidden reconstruction of individual
 contributors. All captures in a plan must use the same immutable snapshot.
 
-Limitations: explicit trusted integration only; DuckDB scalar values and SQL
-types; no persistence/serialization contract, full PGN coverage,
+Low-level limitations: trusted integration; DuckDB scalar values and SQL
+types with checked lossless Python transfer; no persistence/serialization contract, full PGN coverage,
 DISTINCT additive aggregates, arbitrary aggregate/UDF state, cross-source joint
 expressions, source mutation, or reconstruction/splitting of input states.
 Source-local expressions must be deterministic and use ordinary SQL equality;
 custom collations and volatile functions are outside this contract. Tool SQL
 model registration, actual-output correspondence and automatic capture belong
 to the separate tool-provenance work.
+
+## Automatic execution (opt-in)
+
+The Python DuckDB connection now supports automatic capture and propagation for
+a bounded relational subset. Load initial rows and register policies, then call
+`connection.enable_intermediate_propagation()`. Ordinary `execute`, `fetchall`
+and `fetchone` then propagate states through direct SELECT, projection/filter,
+inner/cross joins, GROUP BY/global aggregates, CREATE TABLE AS SELECT (including
+TEMP), and INSERT SELECT. REMOVE filters sink rows; KILL aborts before writing.
+For example, after registering a policy connecting `cases.id` to `updates.case_id`:
+
+```python
+connection.enable_intermediate_propagation()
+connection.execute("CREATE TEMP TABLE input AS SELECT id FROM cases WHERE id = 'B'")
+connection.execute("CREATE TABLE sent AS SELECT id, TRUE AS success FROM input")
+connection.execute("INSERT INTO updates SELECT id, success FROM sent")
+```
+
+There is no manual state construction in this path. Each statement runs in a
+transaction: data reads, state capture, sink checks and writes share a snapshot;
+failures roll back data and token allocation. INSERT sink checks see values
+coerced to the actual target types. State tokens are stored in a reserved physical
+column, excluded from logical stars and the connection's catalog. Explicit
+metadata access, dynamic metadata projections and whole-row table expressions
+are rejected. Duplicate-valued output rows retain distinct tokens, so matching
+states does not depend on output ordering or equality of public values.
+
+This is an opt-in Python execution adapter, not a replacement for the general
+Rust rewriter. The Rust catalog currently has no persisted-state schema, and
+its lineage finalizer handles query-local predicates rather than export/import
+of intermediate state. Automatic execution therefore rejects unsupported SQL
+instead of sending it through the legacy path and silently losing provenance.
+It currently rejects CTEs/subqueries/windows/set operations, DISTINCT/HAVING,
+nullable/NATURAL/USING joins, UPDATE/DELETE, explicit transactions, INSERT VALUES,
+partial-column INSERTs and custom resolutions/RETRY. Schema-qualified tables
+are not yet supported. Policy changes require a fresh session; source mutation
+and raw writes outside this connection are outside the trusted contract.
+Queries must be deterministic and use ordinary SQL equality/collation. Fetch
+results are materialized and support `description`, `fetchone`, `fetchmany` and
+`fetchall`; this is not a streaming or full DuckDB cursor API. The serialized
+SQL from `transform_query` cannot carry process-local states and is disabled in
+this mode. Persisted tables must not be reopened in another session: the
+constructor rejects the reserved metadata column rather than accepting orphan
+states. There is no disk persistence or cross-process state codec yet.
+
+The public table values are materialized through Python in this mode. To avoid
+lossy conversions, both public values and captured identities/expressions are
+restricted to Boolean, integer, floating-point (values only), VARCHAR, BLOB and
+DECIMAL SQL types. Temporal, ENUM and container types are rejected before fetch;
+notably TIMESTAMP_NS is **not** silently truncated to Python microseconds.
+Floating-point identities are rejected. An explicitly chosen lossless SQL scalar
+encoding can be used where appropriate; e.g. TIMESTAMP_NS::VARCHAR retains
+nanoseconds. No automatic type-changing encoding is imposed on a policy.
+
+## Bridge for the separate SQL tool-provenance adapter
+
+The tool declaration and its SQL lineage rewrite remain in the other PR. The
+concrete trusted bridge is:
+
+1. Execute the tool-input query normally. `result.intermediates` aligns with the
+   result's original row order (independent of subsequent fetch position).
+2. For each modeled output row, use `connection.merge_intermediate_inputs(*rows)`
+   on the policy-state tuples of its contributing inputs. An empty input set
+   produces empty states. A 1:1 result can reuse the tuple directly.
+3. After the actual tool succeeds and its output correspondence is verified,
+   call `connection.store_intermediate_outputs(table, output_rows, states)` to
+   record observations in a declared output table. State ownership and row
+   alignment are validated; storage is transactional. This trusted bridge does
+   not invoke tools or authorize their effects: input policy checks must occur
+   before the tool call. A later ordinary SELECT/INSERT sees the inherited state.
+
+External observations remain new sources only where declared as such. Tool
+mapping must account for real external dependencies; the bridge cannot infer
+unmentioned reads. The bridge functions are harness APIs, never model tools.
