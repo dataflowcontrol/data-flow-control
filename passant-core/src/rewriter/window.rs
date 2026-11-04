@@ -29,13 +29,29 @@ pub(crate) fn policy_window(
         fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
             if let Expr::Function(function) = expr {
                 if let Some(window) = &function.over {
-                    if self.registry.is_aggregate_call(function) {
-                        self.windows.push(window.clone());
-                    } else if !function.name.to_string().eq_ignore_ascii_case("row_number") {
-                        // ROW_NUMBER retains its existing row-wise DFC semantics.
-                        // Navigation/value functions can read another row even
-                        // when filtering leaves the current row allowed.
+                    let name = function.name.to_string().to_ascii_lowercase();
+                    if name == "row_number" {
+                        // Preserve the established row-wise ROW_NUMBER case.
+                    } else if matches!(
+                        name.as_str(),
+                        "lead"
+                            | "lag"
+                            | "first_value"
+                            | "last_value"
+                            | "nth_value"
+                            | "rank"
+                            | "dense_rank"
+                            | "percent_rank"
+                            | "cume_dist"
+                            | "ntile"
+                    ) || !self.registry.is_aggregate_call(function)
+                    {
+                        // DuckDB introspection also lists navigation/ranking
+                        // functions in the aggregate registry. Their dependency
+                        // sets are not ordinary aggregate frames.
                         self.unsupported_value_window = true;
+                    } else {
+                        self.windows.push(window.clone());
                     }
                 } else if self.registry.is_aggregate_call(function) {
                     self.grouped = true;
