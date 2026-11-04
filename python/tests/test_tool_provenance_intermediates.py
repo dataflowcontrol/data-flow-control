@@ -1,4 +1,4 @@
-"""Optional PR #7 / PR #8 integration through an explicit trusted harness.
+"""Optional PR #7 / PR #8 integration through trusted harness boundaries.
 
 Run with PR #8's intermediates.py and intermediate_policy.py available alongside
 PR #7. The standalone branch skips this module. This example derives occurrence
@@ -191,17 +191,7 @@ def publish_with_automatic_harness(connection, model, outputs):
     It records successful observations; downstream ordinary SQL enforces sinks.
     """
     modeled = connection.execute(model.sql)
-    names = [column[0] for column in modeled.description]
-    states = {}
-    for row, state in zip(modeled.fetchall(), modeled.intermediates, strict=True):
-        values = dict(zip(names, row, strict=True))
-        key = tuple(values[column] for column in model.key_columns)
-        if key in states:
-            raise ValueError("Duplicate modeled output occurrence")
-        states[key] = connection.merge_intermediate_inputs(state)
-    keys = [output.key for output in outputs]
-    if len(set(keys)) != len(keys) or set(keys) != set(states):
-        raise ValueError("Actual outputs do not match modeled occurrences")
+    aligned_states = model.bind_intermediates(modeled, outputs)
     output_columns = [
         column[0]
         for column in connection.execute("SELECT * FROM ToolOutput WHERE FALSE").description
@@ -209,9 +199,9 @@ def publish_with_automatic_harness(connection, model, outputs):
     connection.store_intermediate_outputs(
         "ToolOutput",
         [tuple(output.values[column] for column in output_columns) for output in outputs],
-        [states[output.key] for output in outputs],
+        aligned_states,
     )
-    return states
+    return dict(zip((output.key for output in outputs), aligned_states, strict=True))
 
 
 def automatic_model(fanout):
@@ -262,10 +252,45 @@ def test_normal_execution_rejects_bad_actual_sink(automatic_harness, contributor
 def test_normal_execution_rejects_missing_output_before_storage(automatic_harness):
     connection = automatic_harness
     model, keys = automatic_model(True)
-    with pytest.raises(ValueError, match="match modeled"):
+    with pytest.raises(ValueError, match="match all modeled"):
         publish_with_automatic_harness(
             connection,
             model,
             [ToolOutput(keys[0], {"message": "partial", "sent": True, "contributors": 2})],
         )
     assert connection.fetchall("SELECT * FROM ToolOutput") == []
+
+
+def test_automatic_binding_rejects_duplicate_actual_occurrences(automatic_harness):
+    connection = automatic_harness
+    model, keys = automatic_model(False)
+    output = ToolOutput(keys[0], {"message": "duplicate", "sent": True, "contributors": 2})
+    with pytest.raises(ValueError, match="unique"):
+        publish_with_automatic_harness(connection, model, [output, output])
+    assert connection.fetchall("SELECT * FROM ToolOutput") == []
+
+
+def test_automatic_binding_rejects_duplicate_modeled_occurrences(automatic_harness):
+    connection = automatic_harness
+    model = ToolProvenance("SELECT i.id FROM ToolInput i CROSS JOIN Channels c", ("id",))
+    with pytest.raises(ValueError, match="unique"):
+        publish_with_automatic_harness(
+            connection,
+            model,
+            [ToolOutput((7,), {"message": "ambiguous", "sent": True, "contributors": 2})],
+        )
+    assert connection.fetchall("SELECT * FROM ToolOutput") == []
+
+
+def test_legacy_publication_rejection_leaves_automatic_connection_usable(automatic_harness):
+    connection = automatic_harness
+    model, keys = automatic_model(False)
+    outputs = [ToolOutput(keys[0], {"message": "ok", "sent": True, "contributors": 2})]
+    with pytest.raises(ValueError, match="bind_intermediates"):
+        model.insert_outputs(connection, "ToolOutput", outputs)
+    assert connection.fetchall("SELECT * FROM ToolOutput") == []
+    publish_with_automatic_harness(connection, model, outputs)
+    assert connection.fetchall(
+        "INSERT INTO Final SELECT MAX(contributors), BOOL_AND(sent) FROM ToolOutput"
+    ) == [(1,)]
+    assert connection.fetchall("SELECT * FROM Final") == [(2, True)]
