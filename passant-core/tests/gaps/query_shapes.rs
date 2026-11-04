@@ -136,7 +136,10 @@ fn window_policy_kill_uses_frame_without_changing_window_results() {
             )],
         );
         assert!(
-            sql.contains(&format!("count(foo.id) OVER ({frame})")),
+            sql.to_ascii_lowercase().contains(&format!(
+                "count(foo.id) over ({})",
+                frame.to_ascii_lowercase()
+            )),
             "{sql}"
         );
         crate::common::assert_same_rows(
