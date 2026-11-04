@@ -315,7 +315,7 @@ def _preflight_sink_aborts(
     planner.register_policies(policies)
     candidates = " UNION ALL ".join("SELECT " + ", ".join("?" for _ in columns) for _ in outputs)
     sql = f"INSERT INTO {_quote(sink)} ({', '.join(map(_quote, columns))}) {candidates}"
-    rewritten = sqlglot.parse_one(planner.rewrite(sql), read="duckdb")
+    rewritten = sqlglot.parse_one(planner.rewrite(_number_parameters(sql)), read="duckdb")
     if not isinstance(rewritten, exp.Insert) or rewritten.expression is None:
         raise ValueError("Tool sink preflight requires a rewritten INSERT source")
     bindings = [output.values[column] for output in outputs for column in columns]
