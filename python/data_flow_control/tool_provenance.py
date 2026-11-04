@@ -213,8 +213,18 @@ class ToolProvenance:
                     join.set("kind", "CROSS")
             sql = _normalize_aggregate_aliases(query.sql(dialect="duckdb"))
             if whole_output_remove:
-                _preflight_sink_aborts(connection, sink, columns, outputs)
-                result = _execute_whole_output_remove(connection, sql, bindings)
+                sink_retry = None
+                try:
+                    _preflight_sink_aborts(connection, sink, columns, outputs)
+                except RetryViolation as exc:
+                    sink_retry = exc
+                try:
+                    result = _execute_whole_output_remove(connection, sql, bindings)
+                except RetryViolation as exc:
+                    failures = [*exc.failures, *(sink_retry.failures if sink_retry else ())]
+                    raise RetryViolation(failures) from exc
+                if sink_retry is not None:
+                    raise sink_retry
             else:
                 result = connection.execute(sql, params=bindings).fetchone()
             raw.execute("COMMIT")
@@ -303,12 +313,8 @@ def _preflight_sink_aborts(
     planner = Planner(dialect=connection.planner.dialect)
     planner.sync_catalog(connection._introspect_catalog(include_row_counts=True))
     planner.register_policies(policies)
-    names = [f"v{i}" for i in range(len(columns))]
-    values = ", ".join("(" + ", ".join("?" for _ in columns) + ")" for _ in outputs)
-    sql = (
-        f"INSERT INTO {_quote(sink)} ({', '.join(map(_quote, columns))}) "
-        f"SELECT {', '.join(names)} FROM (VALUES {values}) actual({', '.join(names)})"
-    )
+    candidates = " UNION ALL ".join("SELECT " + ", ".join("?" for _ in columns) for _ in outputs)
+    sql = f"INSERT INTO {_quote(sink)} ({', '.join(map(_quote, columns))}) {candidates}"
     rewritten = sqlglot.parse_one(planner.rewrite(sql), read="duckdb")
     if not isinstance(rewritten, exp.Insert) or rewritten.expression is None:
         raise ValueError("Tool sink preflight requires a rewritten INSERT source")
@@ -322,7 +328,21 @@ def _preflight_sink_aborts(
             if policy is None or policy.on_fail is not Resolution.RETRY:
                 raise RuntimeError("Tool sink preflight returned an unknown RETRY policy") from exc
             failures.append(RetryFailure(index, policy.retry_message, policy))
-        raise RetryViolation(failures) from exc
+        raise _original_retry_indices(connection.planner, RetryViolation(failures)) from exc
+
+
+def _original_retry_indices(original: Planner, violation: RetryViolation) -> RetryViolation:
+    policies = list(zip(original.policy_indices(), original.policies(), strict=True))
+    failures = []
+    for failure in violation.failures:
+        match = next(
+            ((index, policy) for index, policy in policies if policy == failure.policy), None
+        )
+        if match is None:
+            raise RuntimeError("Tool publication returned an unknown RETRY policy")
+        index, policy = match
+        failures.append(RetryFailure(index, failure.message, policy))
+    return RetryViolation(failures)
 
 
 def _normalize_aggregate_aliases(sql: str) -> str:
@@ -396,6 +416,8 @@ def _execute_whole_output_remove(connection: Connection, sql: str, bindings: lis
     try:
         connection.planner = planner
         return connection.execute(sql, params=bindings).fetchone()
+    except RetryViolation as exc:
+        raise _original_retry_indices(original, exc) from exc
     finally:
         connection.planner = original
 
