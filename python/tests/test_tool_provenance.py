@@ -536,3 +536,11 @@ def test_interpolation_window_is_rejected_even_when_current_rows_pass(db):
             ],
         )
     assert rows(db) == []
+
+
+def test_intermediate_binding_requires_propagated_states(db):
+    model = ToolProvenance("SELECT * FROM ToolInput", ("id",))
+    result = db.execute(model.sql)
+    with pytest.raises(ValueError, match="automatic intermediate states"):
+        model.bind_intermediates(result, [ToolOutput((1,), {"message": "x"})])
+    assert rows(db) == []

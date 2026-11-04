@@ -1,10 +1,10 @@
 """Optional PR #7 / PR #8 integration through trusted harness boundaries.
 
-Run with PR #8's intermediates.py and intermediate_policy.py available alongside
-PR #7. The standalone branch skips this module. This example derives occurrence
-correspondence from the model query's projected existing input IDs; it is not a
-general SQL lineage inference implementation. Its database snapshot is immutable
-through capture, model evaluation and publication.
+Run in an isolated worktree with PR #8's connection.py, intermediate_execution.py,
+intermediates.py and intermediate_policy.py overlaid. The standalone branch skips
+this module. Low-level tests use explicit projected input IDs; automatic tests
+use normal SQL-derived result.intermediates and the public occurrence-key bridge.
+The source snapshot is immutable through capture, modeling and publication.
 """
 
 import duckdb
@@ -143,7 +143,7 @@ def test_projected_join_partners_merge_whole_input_states(harness):
 
 
 @pytest.fixture
-def automatic_harness():
+def automatic_harness(request):
     """Latest PR #8 route: no manual capture or source-state lookup."""
     connection = dfc(duckdb.connect())
     if not hasattr(connection, "enable_intermediate_propagation"):
@@ -174,6 +174,8 @@ def automatic_harness():
             on_fail=Resolution.KILL,
         )
     )
+    if getattr(request, "param", False):
+        connection.execute("UPDATE Cases SET priority='Low' WHERE category='Discrimination'")
     connection.enable_intermediate_propagation()
     connection.execute(
         "CREATE TABLE ToolInput AS SELECT case_id AS id, COUNT(*) AS contributors "
@@ -294,3 +296,30 @@ def test_legacy_publication_rejection_leaves_automatic_connection_usable(automat
         "INSERT INTO Final SELECT MAX(contributors), BOOL_AND(sent) FROM ToolOutput"
     ) == [(1,)]
     assert connection.fetchall("SELECT * FROM Final") == [(2, True)]
+
+
+@pytest.mark.parametrize("automatic_harness", [True], indirect=True)
+def test_normal_execution_rejects_failed_correlated_source_expression(automatic_harness):
+    connection = automatic_harness
+    model, keys = automatic_model(True)
+    outputs = [
+        ToolOutput(key, {"message": "observed", "sent": True, "contributors": 2})
+        for key in reversed(keys)
+    ]
+    publish_with_automatic_harness(connection, model, outputs)
+    with pytest.raises(Exception, match="KILL|kill"):
+        connection.execute(
+            "INSERT INTO Final SELECT MAX(contributors), BOOL_AND(sent) FROM ToolOutput"
+        )
+    assert connection.fetchall("SELECT * FROM Final") == []
+
+
+def test_intermediate_binding_rejects_partially_consumed_model_result(automatic_harness):
+    connection = automatic_harness
+    model, keys = automatic_model(True)
+    result = connection.execute(model.sql)
+    result.fetchone()
+    outputs = [ToolOutput(key, {"message": "x"}) for key in keys]
+    with pytest.raises(ValueError, match="fresh"):
+        model.bind_intermediates(result, outputs)
+    assert connection.fetchall("SELECT * FROM ToolOutput") == []
