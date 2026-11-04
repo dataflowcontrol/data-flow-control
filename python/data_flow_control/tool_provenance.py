@@ -18,6 +18,7 @@ from sqlglot.tokens import TokenType
 
 from .adapters.duckdb import DuckDBAdapter
 from .connection import Connection
+from .errors import RetryFailure, RetryViolation, _NativeRetrySignal
 from .planner import Planner
 from .policy import Resolution
 
@@ -212,6 +213,7 @@ class ToolProvenance:
                     join.set("kind", "CROSS")
             sql = _normalize_aggregate_aliases(query.sql(dialect="duckdb"))
             if whole_output_remove:
+                _preflight_sink_aborts(connection, sink, columns, outputs)
                 result = _execute_whole_output_remove(connection, sql, bindings)
             else:
                 result = connection.execute(sql, params=bindings).fetchone()
@@ -281,6 +283,46 @@ def _number_parameters(sql: str) -> str:
     for index, token in reversed(list(enumerate(tokens, start=1))):
         sql = sql[: token.start] + f"${index}" + sql[token.end + 1 :]
     return sql
+
+
+def _preflight_sink_aborts(
+    connection: Connection, sink: str, columns: tuple[str, ...], outputs: Sequence[ToolOutput]
+) -> None:
+    """Check original actual candidates before source REMOVE can hide an abort.
+
+    Ask the ordinary INSERT rewriter to establish sink scope, then execute only
+    its rewritten source query. No preflight row is written to the sink.
+    """
+    policies = [
+        policy
+        for policy in connection.policies()
+        if not policy.sources and policy.on_fail in (Resolution.KILL, Resolution.RETRY)
+    ]
+    if not policies:
+        return
+    planner = Planner(dialect=connection.planner.dialect)
+    planner.sync_catalog(connection._introspect_catalog(include_row_counts=True))
+    planner.register_policies(policies)
+    names = [f"v{i}" for i in range(len(columns))]
+    values = ", ".join("(" + ", ".join("?" for _ in columns) + ")" for _ in outputs)
+    sql = (
+        f"INSERT INTO {_quote(sink)} ({', '.join(map(_quote, columns))}) "
+        f"SELECT {', '.join(names)} FROM (VALUES {values}) actual({', '.join(names)})"
+    )
+    rewritten = sqlglot.parse_one(planner.rewrite(sql), read="duckdb")
+    if not isinstance(rewritten, exp.Insert) or rewritten.expression is None:
+        raise ValueError("Tool sink preflight requires a rewritten INSERT source")
+    bindings = [output.values[column] for output in outputs for column in columns]
+    try:
+        connection.adapter.execute(rewritten.expression.sql(dialect="duckdb"), bindings).fetchall()
+    except _NativeRetrySignal as exc:
+        failures = []
+        for index, _ in exc.failures:
+            policy = planner.policy_by_index(index)
+            if policy is None or policy.on_fail is not Resolution.RETRY:
+                raise RuntimeError("Tool sink preflight returned an unknown RETRY policy") from exc
+            failures.append(RetryFailure(index, policy.retry_message, policy))
+        raise RetryViolation(failures) from exc
 
 
 def _normalize_aggregate_aliases(sql: str) -> str:
