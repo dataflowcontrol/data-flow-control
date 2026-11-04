@@ -171,7 +171,9 @@ impl PyPlanner {
     }
 
     fn transform_intermediate_query(&self, query: String) -> PyResult<String> {
-        self.rewriter.rewrite_intermediate_query(&query).map_err(map_rewrite_error)
+        self.rewriter
+            .rewrite_intermediate_query(&query)
+            .map_err(map_rewrite_error)
     }
 
     fn policies_json(&self) -> PyResult<String> {

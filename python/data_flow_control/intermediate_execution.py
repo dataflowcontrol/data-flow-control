@@ -60,7 +60,10 @@ class IntermediateExecution:
         self.db = connection.raw_connection
         self.policy_indices = tuple(connection.planner.inner.registered_policy_indices())
         self.policies = tuple(connection.planner.policy_by_index(i) for i in self.policy_indices)
-        if any(p.on_fail not in (Resolution.REMOVE, Resolution.KILL, Resolution.RETRY) for p in self.policies):
+        if any(
+            p.on_fail not in (Resolution.REMOVE, Resolution.KILL, Resolution.RETRY)
+            for p in self.policies
+        ):
             raise IntermediateError(
                 "Automatic intermediate execution currently supports REMOVE, KILL and RETRY only"
             )
@@ -130,6 +133,12 @@ class IntermediateExecution:
         if not isinstance(query, exp.Select):
             raise IntermediateError("Automatic propagation requires a SELECT")
         snapshot = self.owner._introspect_catalog()
+        # The general adapter omits temporary relations. Resolve logical columns
+        # for this session's physical tables, including temporary materializations.
+        for (name,) in self.db.execute(
+            "SELECT table_name FROM duckdb_tables() WHERE temporary AND NOT internal"
+        ).fetchall():
+            snapshot["tables"][name] = {"columns": self._columns(name)}
         snapshot["intermediate_bindings"] = {
             name: {
                 "source": self.sources.get(name),
@@ -139,7 +148,9 @@ class IntermediateExecution:
         }
         self.owner.planner.sync_catalog(snapshot)
         try:
-            return self.owner.planner.inner.transform_intermediate_query(query.sql(dialect="duckdb"))
+            return self.owner.planner.inner.transform_intermediate_query(
+                query.sql(dialect="duckdb")
+            )
         except PassantRewriteError as exc:
             raise IntermediateError(str(exc)) from exc
 

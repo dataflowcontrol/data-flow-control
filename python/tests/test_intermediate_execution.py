@@ -68,7 +68,7 @@ def test_unsupported_queries_fail_without_effects(conn):
         "UPDATE cases SET amount=0",
         "DELETE FROM cases",
         "CREATE TABLE nope AS SELECT DISTINCT id FROM cases",
-        "INSERT INTO updates SELECT id, TRUE FROM (SELECT * FROM cases) t",
+        "INSERT INTO updates SELECT id, TRUE FROM cases WHERE EXISTS (SELECT 1)",
     ]:
         with pytest.raises(IntermediateError):
             conn.execute(sql)
@@ -141,12 +141,12 @@ def test_automatic_materialization_rejects_lossy_public_timestamp(conn):
         conn.execute(
             "CREATE TABLE precise AS SELECT '2026-01-01 00:00:00.000000001'::TIMESTAMP_NS AS ts"
         )
-    with pytest.raises(duckdb.CatalogException):
+    with pytest.raises(IntermediateError, match="missing catalog"):
         conn.execute("SELECT * FROM precise")
 
 
 def test_nested_exists_is_not_misinterpreted_as_direct_join(conn):
-    with pytest.raises(IntermediateError, match="Nested"):
+    with pytest.raises(IntermediateError, match="expression subqueries"):
         conn.execute("SELECT id FROM cases WHERE EXISTS (SELECT 1 FROM cases other)")
 
 
@@ -289,3 +289,173 @@ def test_trusted_source_observation_append_refreshes_only_its_own_binding(conn):
     assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM cases WHERE id='D'") == [(1,)]
     with pytest.raises(IntermediateError, match="declared SOURCE"):
         conn.execute("INSERT INTO cases SELECT 'E','Benefits','High',10")
+
+
+def test_native_ctes_derived_tables_and_having(conn):
+    conn.execute("""CREATE TABLE grouped AS
+        WITH chosen AS (SELECT * FROM cases WHERE id='B'),
+             counted(case_id, n) AS (SELECT id, COUNT(*) FROM chosen GROUP BY id HAVING COUNT(*)>0)
+        SELECT x.* FROM (SELECT * FROM counted) x""")
+    assert conn.fetchall("INSERT INTO updates SELECT case_id, n=1 FROM grouped") == [(1,)]
+    assert conn.fetchall("INSERT INTO updates SELECT 'A', n=1 FROM grouped") == [(0,)]
+
+
+def test_cte_source_name_shadow_does_not_mint_authority(conn):
+    assert conn.fetchall("""INSERT INTO updates
+        WITH cases AS (SELECT 'B' AS id)
+        SELECT id, TRUE FROM cases""") == [(0,)]
+
+
+def test_cte_parameters_and_nested_scope(conn):
+    result = conn.execute(
+        """WITH chosen AS (SELECT id FROM cases WHERE id=?)
+        SELECT d.id FROM (WITH chosen AS (SELECT id FROM chosen WHERE id=?)
+        SELECT id FROM chosen) d""",
+        params=["B", "B"],
+    )
+    assert result.fetchall() == [("B",)]
+    conn.store_intermediate_outputs("updates", [("B", True)], result.intermediates)
+    assert conn.fetchall("SELECT * FROM updates") == [("B", True)]
+
+
+def test_window_frame_states_propagate_through_cte_and_materialization(conn):
+    conn.execute("""CREATE TABLE framed AS
+        WITH w AS (SELECT id, SUM(amount) OVER
+          (ORDER BY id ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS total FROM cases)
+        SELECT * FROM w""")
+    # B's frame includes C, so a fixed B output cannot claim unique B provenance.
+    assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM framed WHERE id='B'") == [(0,)]
+    conn.execute("""CREATE TABLE singleton AS SELECT id,
+        SUM(amount) OVER (PARTITION BY id) AS total,
+        MAX(amount) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS largest,
+        ROW_NUMBER() OVER (ORDER BY id) AS ordinal FROM cases""")
+    assert conn.fetchall(
+        "INSERT INTO updates SELECT id, total=largest FROM singleton WHERE id='B'"
+    ) == [(1,)]
+
+
+def test_grouped_cte_then_window_and_reused_parameters(conn):
+    result = conn.execute(
+        """WITH g AS (SELECT id, SUM(amount) AS amount FROM cases GROUP BY id)
+        SELECT id, SUM(amount) OVER (PARTITION BY id ORDER BY amount
+        ROWS BETWEEN ? PRECEDING AND CURRENT ROW) AS total FROM g WHERE id=?""",
+        params=[1, "B"],
+    )
+    assert result.fetchall() == [("B", 20)]
+    conn.store_intermediate_outputs("updates", [("B", True)], result.intermediates)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "LAG(amount) OVER (ORDER BY id)",
+        "RANK() OVER (ORDER BY id)",
+        "SUM(amount) FILTER (WHERE amount>10) OVER ()",
+    ],
+)
+def test_windows_without_supported_contributor_contract_fail_closed(conn, expression):
+    with pytest.raises(IntermediateError, match="window"):
+        conn.execute(f"CREATE TABLE rejected AS SELECT id, {expression} AS x FROM cases")
+    assert conn.raw_connection.execute(
+        "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name='rejected'"
+    ).fetchone() == (0,)
+
+
+def test_retry_reports_stable_actual_policy_ids_and_rolls_back():
+    from data_flow_control import Resolution, RetryViolation
+
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE source(id INT, amount INT)")
+        c.execute("INSERT INTO source VALUES (1,10),(2,20)")
+        c.execute("CREATE TABLE target(id INT)")
+        removed = Policy(
+            sources=["source"],
+            sink="target",
+            constraint="SUM(source.amount)<0",
+            on_fail=Resolution.RETRY,
+            retry_message="deleted",
+        )
+        c.register_policy(removed)
+        c.register_policy(
+            Policy(
+                sources=["source"],
+                sink="target",
+                constraint="SUM(source.amount)<15",
+                on_fail=Resolution.RETRY,
+                retry_message="same",
+            )
+        )
+        c.register_policy(
+            Policy(
+                sources=["source"],
+                sink="target",
+                constraint="SUM(source.amount)<18",
+                on_fail=Resolution.RETRY,
+                retry_message="same",
+            )
+        )
+        c.register_policy(
+            Policy(
+                sources=["source"],
+                sink="target",
+                constraint="SUM(source.amount)<100",
+                on_fail=Resolution.RETRY,
+                retry_message="passing",
+            )
+        )
+        assert c.delete_policy(sources=["source"], sink="target", constraint=removed.constraint)
+        c.enable_intermediate_propagation()
+        c.execute("CREATE TABLE intermediate AS WITH s AS (SELECT * FROM source) SELECT id FROM s")
+        with pytest.raises(RetryViolation) as caught:
+            c.execute("INSERT INTO target SELECT id FROM intermediate")
+        assert [(f.policy_index, f.message) for f in caught.value.failures] == [
+            (1, "same"),
+            (2, "same"),
+        ]
+        assert c.raw_connection.execute("SELECT * FROM target").fetchall() == []
+        assert c.last_intermediate_result() is None
+        assert c.fetchall("INSERT INTO target SELECT id FROM intermediate WHERE id=1") == [(1,)]
+
+
+def test_retry_remove_and_kill_precedence():
+    from data_flow_control import Resolution, RetryViolation
+
+    for kill in (False, True):
+        with dfc(duckdb.connect()) as c:
+            c.execute("CREATE TABLE source(id INT)")
+            c.execute("INSERT INTO source VALUES (1),(2)")
+            c.execute("CREATE TABLE target(id INT)")
+            c.register_policy(
+                Policy(
+                    sources=["source"],
+                    sink="target",
+                    constraint="source.id<0",
+                    on_fail=Resolution.RETRY,
+                    retry_message="retry",
+                )
+            )
+            c.register_policy(
+                Policy(
+                    sources=["source"],
+                    sink="target",
+                    constraint="source.id<0",
+                    on_fail=Resolution.REMOVE,
+                )
+            )
+            if kill:
+                c.register_policy(
+                    Policy(
+                        sources=["source"],
+                        sink="target",
+                        constraint="source.id<0",
+                        on_fail=Resolution.KILL,
+                    )
+                )
+            c.enable_intermediate_propagation()
+            if kill:
+                with pytest.raises(duckdb.Error) as caught:
+                    c.execute("INSERT INTO target SELECT id FROM source")
+                assert not isinstance(caught.value, RetryViolation)
+            else:
+                assert c.fetchall("INSERT INTO target SELECT id FROM source") == [(0,)]
+            assert c.raw_connection.execute("SELECT * FROM target").fetchall() == []

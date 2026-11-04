@@ -100,7 +100,9 @@ impl TableCatalog {
             }
         }
         for (table, binding) in snapshot.intermediate_bindings {
-            catalog.intermediate_bindings.insert(TableKey::new(&table), binding);
+            catalog
+                .intermediate_bindings
+                .insert(TableKey::new(&table), binding);
         }
         catalog.loaded = true;
         catalog
