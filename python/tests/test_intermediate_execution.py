@@ -191,6 +191,8 @@ def test_dynamic_and_whole_row_projection_cannot_expose_state(conn):
     for query in [
         "SELECT to_json(saved) AS value FROM saved",
         "SELECT COLUMNS('.*') FROM saved",
+        "SELECT COLUMNS('^_dfc') AS leaked FROM saved",
+        "SELECT id FROM saved ORDER BY 2",
         "SELECT saved.* EXCLUDE(id) FROM saved",
     ]:
         with pytest.raises(IntermediateError):

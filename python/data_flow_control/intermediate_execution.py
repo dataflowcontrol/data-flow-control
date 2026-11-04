@@ -111,6 +111,8 @@ class IntermediateExecution:
             raise IntermediateError("DISTINCT and QUALIFY require an intermediate merge rewrite")
         if query.args.get("having"):
             raise IntermediateError("HAVING is not supported by automatic propagation yet")
+        if any(isinstance(n, exp.Columns) for n in query.walk()):
+            raise IntermediateError("Dynamic COLUMNS projections are unsupported with hidden state")
         tables = list(query.find_all(exp.Table))
         bindings = []
         dependencies = []
@@ -151,6 +153,17 @@ class IntermediateExecution:
                 )
             else:
                 projection.append(item.copy())
+        order = query.args.get("order")
+        if order:
+            for ordered in order.expressions:
+                value = ordered.this
+                if (
+                    isinstance(value, exp.Literal)
+                    and not value.is_string
+                    and value.this.isdigit()
+                    and int(value.this) > len(projection)
+                ):
+                    raise IntermediateError("ORDER BY position exceeds the logical projection")
         annotated = query.copy()
         annotated.set("expressions", projection)
         deps = f"list_concat({', '.join(dependencies)})" if dependencies else _EMPTY
