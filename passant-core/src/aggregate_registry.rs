@@ -184,6 +184,7 @@ impl AggregateRegistry {
                 self.expr_contains_aggregate(left) || self.expr_contains_aggregate(right)
             }
             Expr::Nested(expr)
+            | Expr::Cast { expr, .. }
             | Expr::UnaryOp { expr, .. }
             | Expr::IsFalse(expr)
             | Expr::IsNotFalse(expr)
@@ -622,6 +623,15 @@ mod tests {
         let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
         let expr = crate::sql::parse_projection_expr("coalesce(sum(foo.x), 0)").unwrap();
         assert!(registry.expr_contains_aggregate(&expr));
+    }
+
+    #[test]
+    fn expr_contains_aggregate_inside_cast() {
+        let registry = AggregateRegistry::for_dialect(SqlDialect::DuckDb);
+        let expr = crate::sql::parse_projection_expr("CAST(list(c.id) AS VARCHAR)").unwrap();
+        assert!(registry.expr_contains_aggregate(&expr));
+        let scalar = crate::sql::parse_projection_expr("CAST(c.id AS VARCHAR)").unwrap();
+        assert!(!registry.expr_contains_aggregate(&scalar));
     }
 
     #[test]
