@@ -96,6 +96,7 @@ class Connection:
         self._catalog_has_row_counts = False
         self._catalog_table_names: set[str] | None = None
         self._user_aggregate_functions: list[dict] = []
+        self._intermediate_execution = None
         if adapter.capabilities.exception_udf:
             adapter.register_kill_function()
         if adapter.capabilities.retry_resolution:
@@ -459,7 +460,32 @@ class Connection:
             "extension before execute()."
         )
 
+    def enable_intermediate_propagation(self) -> None:
+        """Enable bounded automatic DuckDB propagation for registered REMOVE policies.
+
+        Register policies and load initial source rows first. This mode owns its
+        transactions and rejects SQL shapes whose provenance is not supported.
+        Raw database writes while enabled are outside the trusted contract.
+        """
+        if not isinstance(self.adapter, DuckDBAdapter):
+            raise ValueError("Automatic intermediate propagation requires DuckDB")
+        if self._intermediate_execution is not None:
+            raise ValueError("Intermediate propagation is already enabled")
+        from .intermediate_execution import IntermediateExecution
+
+        self._intermediate_execution = IntermediateExecution(self)
+
+    def last_intermediate_result(self):
+        """Trusted, row-aligned states for the last automatic execution result."""
+        if self._intermediate_execution is None:
+            raise ValueError("Intermediate propagation is not enabled")
+        return self._intermediate_execution.last_result
+
     def execute(self, query: str, *, params=None, options: RewriteOptions | None = None):
+        if self._intermediate_execution is not None:
+            if options is not None:
+                raise ValueError("Rewrite options are unsupported in automatic intermediate mode")
+            return self._intermediate_execution.execute(query, params=params)
         if self._ui_stream_endpoint is not None:
             self.reset_ui_stream()
         if self._statement_may_change_schema(query):
