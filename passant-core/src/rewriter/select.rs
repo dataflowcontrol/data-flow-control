@@ -367,7 +367,24 @@ impl PassantRewriter {
             {
                 return Ok(());
             }
-            self.rewrite_query_with_context(subquery, context)?;
+            // A sink-only constraint describes the actual INSERT output, not
+            // each contributing derived relation. Its mapped expression may
+            // reference a sibling binding (for example an external payload).
+            // Keep source policies active here and enforce sink-only policies
+            // when the outer SELECT has all output expressions in scope.
+            let saved_deferred = context.deferred_policy_indices.clone();
+            if context.sink.is_some() {
+                context.deferred_policy_indices.extend(
+                    self.store.policy_indices().into_iter().filter(|index| {
+                        self.store.policy(*index).is_some_and(|policy| {
+                            policy.sources().is_empty() && policy.sink().is_some()
+                        })
+                    }),
+                );
+            }
+            let result = self.rewrite_query_with_context(subquery, context);
+            context.deferred_policy_indices = saved_deferred;
+            result?;
         }
         Ok(())
     }
