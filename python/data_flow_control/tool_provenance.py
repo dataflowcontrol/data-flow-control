@@ -155,9 +155,15 @@ class ToolProvenance:
             # Keep actual output values in scope for source/sink comparisons
             # where SQLGlot can safely merge the model's derived table. Number
             # parameters first: merging can move WHERE after the VALUES join.
-            sql = merge_subqueries(sqlglot.parse_one(_number_parameters(sql), read="duckdb")).sql(
-                dialect="duckdb"
-            )
+            query = merge_subqueries(sqlglot.parse_one(_number_parameters(sql), read="duckdb"))
+            # The Rust parser accepts CROSS JOIN LATERAL but not comma LATERAL.
+            # Normalize only unqualified lateral joins; preserve outer/ON joins.
+            for join in query.find_all(exp.Join):
+                if isinstance(join.this, exp.Lateral) and not any(
+                    join.args.get(part) for part in ("on", "using", "side", "kind", "method")
+                ):
+                    join.set("kind", "CROSS")
+            sql = query.sql(dialect="duckdb")
             result = connection.execute(sql, params=bindings).fetchone()
             raw.execute("COMMIT")
             return int(result[0])
