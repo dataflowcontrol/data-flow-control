@@ -5,6 +5,7 @@ from .errors import RetryFailure, RetryViolation
 from .options import RewriteOptions, UiUpdateMode
 from .policy import Policy, Resolution
 from .ui import UiViolationEvent
+from .tool_provenance import ToolOutput, ToolProvenance
 
 __all__ = [
     "Dialect",
@@ -16,6 +17,8 @@ __all__ = [
     "RewriteOptions",
     "UiUpdateMode",
     "UiViolationEvent",
+    "ToolOutput",
+    "ToolProvenance",
     "create_agent",
     "dfc",
     "langchain_dfc",
