@@ -251,6 +251,14 @@ def _validate_publication_shape(connection: Connection, sql: str) -> None:
             raise ValueError(
                 "Tool provenance with policies does not support scalar/expression subqueries"
             )
+    for nested in query.find_all(exp.Query):
+        if nested is not query and not isinstance(
+            nested.parent,
+            (exp.Subquery, exp.CTE, exp.SetOperation, exp.From, exp.Join, exp.Lateral),
+        ):
+            raise ValueError(
+                "Tool provenance with policies does not support scalar/expression subqueries"
+            )
     if query.find(exp.Exists):
         raise ValueError(
             "Tool provenance with policies does not support scalar/expression subqueries"

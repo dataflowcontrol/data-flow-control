@@ -486,3 +486,27 @@ def test_window_model_preserves_original_frame_values_when_allowed(db):
         == 2
     )
     assert rows(db) == [("three",), ("two",)]
+
+
+def test_array_subquery_payload_dependency_is_not_discarded(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT id, ARRAY(SELECT category FROM ToolInput) AS value FROM ToolInput", ("id",)
+    )
+    with pytest.raises(ValueError, match="scalar/expression subqueries"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1,), {"message": "public,private"}),
+                ToolOutput((2,), {"message": "public,private"}),
+            ],
+        )
+    assert rows(db) == []
