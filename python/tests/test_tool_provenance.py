@@ -663,3 +663,40 @@ def test_whole_output_remove_checks_actual_sink_and_restores_planner(db):
     assert db.planner is original
     assert rows(db) == []
     assert model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "allowed"})]) == 1
+
+
+def test_whole_output_remove_rejects_null_contributor(db):
+    db.raw_connection.execute("UPDATE ToolInput SET category=NULL WHERE id=2")
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance("SELECT COUNT(*) AS n FROM ToolInput")
+    assert (
+        model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "contains null row"})])
+        == 0
+    )
+    assert rows(db) == []
+
+
+def test_whole_output_remove_rejects_nested_aggregation(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT SUM(n) AS total FROM (SELECT category, COUNT(*) AS n FROM ToolInput GROUP BY category) groups"
+    )
+    with pytest.raises(ValueError, match="single flat"):
+        model.insert_outputs(
+            db, "ToolOutput", [ToolOutput((), {"message": "contains private group"})]
+        )
+    assert rows(db) == []
