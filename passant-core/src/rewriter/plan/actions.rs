@@ -19,7 +19,8 @@ use crate::rewriter::policy_expr::{
     ConstraintExprCtx, build_pgn_filter_expr, unique_column_guard_from_constraint,
 };
 use crate::rewriter::resolution::{
-    PASSANT_KILL_UDF, UiResolutionSpec, ui_pass_filter, wrap_select_with_tuple_resolution,
+    PASSANT_KILL_UDF, PASSANT_REMOVE_OUTPUT, UiResolutionSpec, ui_pass_filter,
+    wrap_select_with_tuple_resolution,
 };
 use crate::rewriter::scope::TableScope;
 use crate::rewriter::types::{PolicyApplicability, RewriteContext, UiResolutionMode};
@@ -282,7 +283,18 @@ pub(crate) fn apply_policy_resolution_actions(
         })
         .collect::<HashSet<_>>();
     let repeated_udf = actions.len() > 1 && (kinds.contains(&3) || kinds.contains(&4));
-    if kinds.contains(&2) || ((kinds.len() > 1 || repeated_udf) && !kinds.contains(&5)) {
+    // Whole-output removal must evaluate every policy on the same original
+    // candidate set, even for a singleton policy. Never sequence its filtering
+    // before another policy's aggregate/frame calculation.
+    let removes_outputs = actions.iter().any(|action| {
+        matches!(action,
+        PolicyResolutionAction::TupleUdf { udf_name, .. }
+            if udf_name.eq_ignore_ascii_case(PASSANT_REMOVE_OUTPUT))
+    });
+    if removes_outputs
+        || kinds.contains(&2)
+        || ((kinds.len() > 1 || repeated_udf) && !kinds.contains(&5))
+    {
         let inner = std::mem::replace(select, crate::sql::empty_select());
         *select = crate::rewriter::resolution::wrap_select_with_resolution_stages(
             inner,
