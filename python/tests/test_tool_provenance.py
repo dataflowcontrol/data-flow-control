@@ -380,6 +380,7 @@ def test_lateral_expansion_with_passing_input_output_policy(db):
     [
         "LEAD(category) OVER (ORDER BY id)",
         "FIRST_VALUE(category) OVER (ORDER BY id DESC)",
+        "FILL(copies) OVER (ORDER BY id)",
     ],
 )
 @pytest.mark.parametrize("resolution", [Resolution.REMOVE, Resolution.KILL])
