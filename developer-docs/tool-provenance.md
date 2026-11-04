@@ -108,14 +108,32 @@ checks are not a replacement for those guards.
 
 ## Integration with intermediate propagation
 
-The generated INSERT keeps the original SQL model in its FROM tree, rather than
-materializing it into an unlabelled table or rebuilding original contributors.
-The independent propagation implementation should consume that query via the
-ordinary `Connection.execute` path and transfer each input row's complete
-policy-intermediate state using its existing relational aggregation rules.
+The generated INSERT preserves the SQL model's relational semantics, rather
+than materializing it into an unlabelled table or rebuilding original
+contributors. Simple subqueries may be flattened before `Connection.execute`.
+
+The companion [propagation PR #8](https://github.com/dataflowcontrol/data-flow-control/pull/8),
+reviewed at `55441b4bc6038632523c896a877d62ebd44f1572`, exposes explicit
+`PolicyIntermediateState`, `plan.capture`, `plan.merge`, and compiled-policy
+`evaluate` APIs. It does **not** instrument `Connection.execute`. These PRs do
+not yet form an end-to-end intermediate propagation implementation simply by
+being combined.
+
+The remaining adapter must derive modeled-output contributor correspondence
+under the supported SQL semantics, associate whole input states with those
+contributors, copy states for projection/expansion, merge states for joins/groups,
+and evaluate/apply the policy's resolution against the actual output values.
+The occurrence keys here identify modeled outputs; they are not the immutable
+source-contributor identities required by `capture`. The adapter must preserve
+that distinction and PR #8's explicit errors for unsupported partial overlap of
+additive states. This PR does not emit that contributor/state mapping, call
+`capture`/`merge`, or persist states. No integration test across both branches has
+been claimed.
+
 This PR alone checks policies from the model's directly named sources to the
-publication sink. It does **not** add durable intermediate-state storage or claim
-that those policies survive a subsequent query over the published output table.
+publication sink. It does **not** claim that those policies survive a subsequent
+query over the published output table. The current independent APIs and the
+missing adapter are an integration boundary, not automatic propagation.
 
 The existing LangChain tool database remains opt-in/unmodified: its raw output
 logging does not automatically invoke this interface. A trusted harness calls
