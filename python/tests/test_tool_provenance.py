@@ -374,3 +374,35 @@ def test_lateral_expansion_with_passing_input_output_policy(db):
         )
         == 2
     )
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        "LEAD(category) OVER (ORDER BY id)",
+        "FIRST_VALUE(category) OVER (ORDER BY id DESC)",
+    ],
+)
+@pytest.mark.parametrize("resolution", [Resolution.REMOVE, Resolution.KILL])
+def test_navigation_window_cannot_publish_other_rows_private_value(db, function, resolution):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=resolution,
+        )
+    )
+    model = ToolProvenance(f"SELECT id, {function} AS next_value FROM ToolInput", ("id",))
+    # A WHERE injected before the window would retain key 1 while dropping its
+    # private contributor. Actual external payloads cannot be recomputed by SQL.
+    with pytest.raises(Exception, match="window"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1,), {"message": "private"}),
+                ToolOutput((2,), {"message": "none"}),
+            ],
+        )
+    assert rows(db) == []
