@@ -3,7 +3,8 @@
 `data_flow_control.intermediates` provides a trusted Python/DuckDB boundary for
 carrying aggregate state between relational operations and tool calls. It is an
 explicit state API, plus the opt-in automatic `Connection.execute` path described
-below. The existing Rust rewriter is unchanged.
+below. The Rust catalog and rewriter export/import the hidden row-dependency
+channel; Python owns the session-local aggregate states and effect transaction.
 
 `compile_policy_intermediates(raw_connection, policy)` in
 `data_flow_control.intermediate_policy` derives a plan and final predicate from
@@ -27,8 +28,8 @@ Projection, filtering and 1:many output copy the entire immutable state. Joins,
 groups and duplicate-eliminating operations call `merge` on their contributing
 input states. Dropped rows contribute nothing. A nullable join supplies no state
 for an absent side. This API supplies the merge operation, not an SQL lineage
-inference algorithm; it does not expand existing support for EXCEPT, windows,
-nullable joins or arbitrary SQL transformations.
+inference algorithm; it does not by itself infer EXCEPT, nullable joins or arbitrary transformations.
+The automatic path below derives supported aggregate-window contributors in SQL.
 
 ```python
 from data_flow_control.intermediates import Intermediate, PolicyIntermediates
@@ -84,8 +85,12 @@ The Python DuckDB connection now supports automatic capture and propagation for
 a bounded relational subset. Load initial rows and register policies, then call
 `connection.enable_intermediate_propagation()`. Ordinary `execute`, `fetchall`
 and `fetchone` then propagate states through direct SELECT, projection/filter,
-inner/cross joins, GROUP BY/global aggregates, CREATE TABLE AS SELECT (including
-TEMP), and INSERT SELECT. REMOVE filters sink rows; KILL aborts before writing.
+inner/cross joins, GROUP BY/global aggregates and HAVING, nonrecursive CTEs,
+aliased derived tables, and aggregate windows. CREATE TABLE AS SELECT (including
+TEMP) and INSERT SELECT persist these states. REMOVE filters complete fixed
+output rows; KILL aborts before writing. RETRY raises the existing `RetryViolation`
+with the actual failing policies and their stable registration IDs, before writes.
+KILL takes precedence; REMOVE-discarded outputs do not trigger RETRY.
 For example, after registering a policy connecting `cases.id` to `updates.case_id`:
 
 ```python
@@ -104,16 +109,40 @@ metadata access, dynamic metadata projections and whole-row table expressions
 are rejected. Duplicate-valued output rows retain distinct tokens, so matching
 states does not depend on output ordering or equality of public values.
 
-This is an opt-in Python execution adapter, not a replacement for the general
-Rust rewriter. The Rust catalog currently has no persisted-state schema, and
-its lineage finalizer handles query-local predicates rather than export/import
-of intermediate state. Automatic execution therefore rejects unsupported SQL
-instead of sending it through the legacy path and silently losing provenance.
-It currently rejects CTEs/subqueries/windows/set operations, DISTINCT/HAVING,
-nullable/NATURAL/USING joins, UPDATE/DELETE, explicit transactions, INSERT VALUES,
-partial-column INSERTs and custom resolutions/RETRY. Schema-qualified tables
-are not yet supported. Policy changes require a fresh session; source mutation
-and raw writes outside this connection are outside the trusted contract.
+`PassantRewriter.rewrite_intermediate_query` uses the native SQL AST, ordinary
+`TableCatalog` and `AggregateRegistry`. The catalog's `intermediate_bindings`
+records trusted source-rowid and persisted-token channels independently of
+logical columns. CTE and derived scopes carry the generated channel, so a CTE
+named like a source cannot manufacture source authority. The Python adapter no
+longer traverses SELECTs to infer lineage. It still owns intermediate expression
+compilation, state merging, sink predicate evaluation and transactional effects;
+this is not yet a generic native state finalizer or full legacy rewrite coverage.
+
+Aggregate windows union the current row's dependencies with those of each
+referenced frame, deduplicating contributor identities. Multiple inline frames
+are supported. ROW_NUMBER follows the existing row-local contract. Navigation
+and ranking functions, filtered windows, named windows, and grouped plus window
+expressions in the same SELECT fail closed. Group first in a CTE and window over
+its output instead. Positional parameters are numbered before cloning frames.
+
+Unsupported SQL fails instead of falling back to untracked execution: expression
+subqueries, recursive CTEs, set operations, DISTINCT/QUALIFY, nullable/NATURAL/USING
+joins, UPDATE/DELETE, explicit transactions, INSERT VALUES, partial-column INSERTs,
+and custom resolutions remain excluded. Nested computed outputs need explicit
+aliases (or CTE column names). Schema-qualified tables are not yet supported.
+Policy changes require a fresh session; source mutation and raw writes outside
+this connection are outside the trusted contract.
+
+This path preserves already-computed payloads and checks their whole contributor
+states. It does not implement legacy REMOVE's ability to split contributors and
+recompute an aggregate or window result. That would violate the opaque-input
+contract after a tool boundary. Native finalizer integration therefore needs an
+explicit fixed-payload versus recomputable-stage distinction, plus deferred
+policy checks and a state export/import representation; feeding only scalar
+aggregates into the existing scan filters would be unsound. The next practical
+extension is to carry that distinction and the state channels through existing
+lineage/effect stages, while retaining fail-closed opaque-state overlap checks.
+
 Queries must be deterministic and use ordinary SQL equality/collation. Fetch
 results are materialized and support `description`, `fetchone`, `fetchmany` and
 `fetchall`; this is not a streaming or full DuckDB cursor API. The serialized
