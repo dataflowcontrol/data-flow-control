@@ -726,7 +726,8 @@ def test_aggregate_input_output_comparison_fails_closed_until_deferred_binding(d
     assert rows(db) == []
 
 
-def test_source_remove_cannot_hide_original_actual_sink_kill(db):
+@pytest.mark.parametrize("grouped", [False, True])
+def test_source_remove_cannot_hide_original_actual_sink_kill(db, grouped):
     db.register_policy(
         Policy(
             sources=["ToolInput"],
@@ -743,8 +744,21 @@ def test_source_remove_cannot_hide_original_actual_sink_kill(db):
             on_fail=Resolution.KILL,
         )
     )
-    model = ToolProvenance("SELECT COUNT(*) AS n FROM ToolInput")
+    model = ToolProvenance(
+        "SELECT category, COUNT(*) AS n FROM ToolInput GROUP BY category"
+        if grouped
+        else "SELECT COUNT(*) AS n FROM ToolInput",
+        ("category",) if grouped else (),
+    )
+    keys = [("public",), ("private",)] if grouped else [()]
     with pytest.raises(Exception, match="KILLing"):
-        model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "denied"})])
+        model.insert_outputs(
+            db, "ToolOutput", [ToolOutput(key, {"message": "denied"}) for key in keys]
+        )
     assert rows(db) == []
-    assert model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "allowed"})]) == 0
+    assert (
+        model.insert_outputs(
+            db, "ToolOutput", [ToolOutput(key, {"message": "allowed"}) for key in keys]
+        )
+        == 0
+    )

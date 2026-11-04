@@ -96,6 +96,10 @@ if that check fails. A scalar REMOVE constraint is evaluated for each original
 contributor using `BOOL_AND((constraint) IS TRUE)`; NULL contributors cannot be
 silently ignored. Explicit aggregate constraints keep their authored meaning.
 Multiple contributor predicates are evaluated together before any output is discarded.
+A read-only preflight checks sink-only KILL predicates on the original actual
+outputs before contributor filtering can hide an abort. It uses the ordinary
+INSERT rewrite's source query without writing rows. The core's resolution
+precedence remains KILL, then REMOVE, then RETRY.
 For example, a group containing public and private rows produces no external
 output under `category = 'public'`, rather than publishing the original payload
 after removing the private contributor. A sliding window loses just outputs
