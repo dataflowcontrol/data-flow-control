@@ -14,7 +14,12 @@ import sqlglot
 from sqlglot import exp
 
 from .intermediate_policy import compile_policy_intermediates
-from .intermediates import IntermediateError, PolicyIntermediateState, _quote
+from .intermediates import (
+    IntermediateError,
+    PolicyIntermediateState,
+    _quote,
+    validate_transfer_type,
+)
 from .policy import Resolution
 
 _STATE = "_dfc_intermediate_state"
@@ -53,9 +58,9 @@ class IntermediateExecution:
         self.owner = connection
         self.db = connection.raw_connection
         self.policies = tuple(connection.policies())
-        if any(p.on_fail is not Resolution.REMOVE for p in self.policies):
+        if any(p.on_fail not in (Resolution.REMOVE, Resolution.KILL) for p in self.policies):
             raise IntermediateError(
-                "Automatic intermediate execution currently supports REMOVE only"
+                "Automatic intermediate execution currently supports REMOVE and KILL only"
             )
         self.compiled = tuple(compile_policy_intermediates(self.db, p) for p in self.policies)
         self.sources = {s.lower(): s for p in self.policies for s in p.sources}
@@ -92,7 +97,9 @@ class IntermediateExecution:
         if not isinstance(query, exp.Select):
             raise IntermediateError("Automatic propagation requires a direct SELECT")
         if any(
-            isinstance(n, (exp.Subquery, exp.With, exp.Window, exp.SetOperation))
+            isinstance(n, (exp.Subquery, exp.With, exp.Window))
+            or isinstance(n, exp.Query)
+            and n is not query
             for n in query.walk()
         ):
             raise IntermediateError(
@@ -188,27 +195,44 @@ class IntermediateExecution:
         sql = self._instrument(query)
         cursor = self.db.execute(sql, params)
         description = cursor.description[:-1]
+        for column in description:
+            validate_transfer_type(column[1])
         rows = cursor.fetchall()
+        target_casts = None
+        if sink_columns is not None:
+            types = dict(
+                self.db.execute(f"DESCRIBE {_quote(sink)}").fetchall()[n][:2]
+                for n in range(len(self._columns(sink)))
+            )
+            for name in sink_columns:
+                validate_transfer_type(types[name])
+            target_casts = "SELECT " + ", ".join(f"CAST(? AS {types[n]})" for n in sink_columns)
         names = sink_columns or [c[0] for c in description]
         if len(names) != len(description) or len(set(names)) != len(names):
             raise IntermediateError("Output columns must have distinct names and match the sink")
         accepted, states = [], []
         for row in rows:
             state = self._row_states(row[-1])
-            output = dict(zip(names, row[:-1]))
+            public = tuple(row[:-1])
+            if target_casts is not None:
+                public = tuple(self.db.execute(target_casts, public).fetchone())
+            output = dict(zip(names, public))
             keep = True
             for index, (policy, compiled) in enumerate(zip(self.policies, self.compiled)):
                 if policy.sink and (sink is None or policy.sink.lower() != sink.lower()):
                     continue
                 verdict = compiled.evaluate(state[index], sink=output)
                 if verdict is False:
+                    if policy.on_fail is Resolution.KILL:
+                        self.db.execute("SELECT passant_kill()")
                     keep = False
             if keep:
-                accepted.append(tuple(row[:-1]))
+                accepted.append(public)
                 states.append(state)
         return IntermediateResult(accepted, description, tuple(states))
 
     def execute(self, sql, params=None):
+        self.last_result = None
         statements = sqlglot.parse(sql, read="duckdb")
         if len(statements) != 1:
             raise IntermediateError("Automatic propagation requires one statement per execute")
@@ -290,6 +314,46 @@ class IntermediateExecution:
             "Automatic propagation supports SELECT, CREATE TABLE, CTAS and INSERT SELECT only; "
             "other statements cannot silently discard or mutate provenance"
         )
+
+    def merge_rows(self, *rows):
+        if any(len(row) != len(self.compiled) for row in rows):
+            raise IntermediateError("Intermediate row has a different policy set")
+        return tuple(
+            compiled.plan.merge(*(row[n] for row in rows))
+            for n, compiled in enumerate(self.compiled)
+        )
+
+    def store_rows(self, table, rows, intermediates):
+        """Trusted tool-adapter bridge; SQL mapping has already selected inputs."""
+        if not isinstance(table, str):
+            raise IntermediateError("Output table must be a declared physical table name")
+        columns = self._columns(table)
+        rows, intermediates = list(rows), tuple(intermediates)
+        if len(rows) != len(intermediates) or any(len(r) != len(columns) for r in rows):
+            raise IntermediateError("Output rows and intermediate states must align")
+        for states in intermediates:
+            self.merge_rows(states)  # validate plan ownership before effects
+        schema = [
+            (r[0], r[1], None, None, None, None, None)
+            for r in self.db.execute(f"DESCRIBE {_quote(table)}").fetchall()
+            if r[0].lower() != _STATE
+        ]
+        for column in schema:
+            validate_transfer_type(column[1])
+        result = IntermediateResult(rows, schema, intermediates)
+        self.db.execute("BEGIN TRANSACTION")
+        old_token, old_tracked = self.next_token, self.tracked.copy()
+        try:
+            self._persist(table, columns, result)
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            self.tracked = old_tracked
+            self.states = {k: v for k, v in self.states.items() if k < old_token}
+            self.next_token = old_token
+            raise
+        self.last_result = result
+        self.owner._invalidate_catalog_cache()
 
     def _persist(self, table, columns, result):
         if table.lower() not in self.tracked:

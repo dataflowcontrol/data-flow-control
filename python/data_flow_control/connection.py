@@ -426,6 +426,8 @@ class Connection:
             self._ensure_catalog_for_registration(self.policies())
 
     def transform_query(self, sql: str, *, options: RewriteOptions | None = None) -> str:
+        if self._intermediate_execution is not None:
+            raise ValueError("Automatic intermediate SQL must execute on its owning connection")
         self._ensure_catalog_for_rewrite()
         return self.planner.rewrite(sql, options=self._effective_rewrite_options(options))
 
@@ -461,7 +463,7 @@ class Connection:
         )
 
     def enable_intermediate_propagation(self) -> None:
-        """Enable bounded automatic DuckDB propagation for registered REMOVE policies.
+        """Enable bounded automatic DuckDB propagation for REMOVE/KILL policies.
 
         Register policies and load initial source rows first. This mode owns its
         transactions and rejects SQL shapes whose provenance is not supported.
@@ -480,6 +482,22 @@ class Connection:
         if self._intermediate_execution is None:
             raise ValueError("Intermediate propagation is not enabled")
         return self._intermediate_execution.last_result
+
+    def merge_intermediate_inputs(self, *rows):
+        """Trusted adapter: merge policy states of SQL-selected input rows."""
+        if self._intermediate_execution is None:
+            raise ValueError("Intermediate propagation is not enabled")
+        return self._intermediate_execution.merge_rows(*rows)
+
+    def store_intermediate_outputs(self, table, rows, intermediates):
+        """Trusted adapter: record completed tool outputs with aligned states.
+
+        This records observations, not policy-authorized tool side effects. The
+        caller must enforce the tool's input policies before invoking the tool.
+        """
+        if self._intermediate_execution is None:
+            raise ValueError("Intermediate propagation is not enabled")
+        return self._intermediate_execution.store_rows(table, rows, intermediates)
 
     def execute(self, query: str, *, params=None, options: RewriteOptions | None = None):
         if self._intermediate_execution is not None:

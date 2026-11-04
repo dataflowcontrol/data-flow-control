@@ -23,6 +23,39 @@ class IntermediateError(ValueError):
     """An intermediate cannot be computed without losing policy semantics."""
 
 
+def validate_transfer_type(sql_type: str, *, identity: bool = False) -> None:
+    """Fail before Python conversion when SQL equality/precision is not preserved."""
+    sql_type = str(sql_type).upper()
+    scalar_types = {
+        "BOOLEAN",
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "UHUGEINT",
+        "FLOAT",
+        "REAL",
+        "DOUBLE",
+        "VARCHAR",
+        "BLOB",
+    }
+    if (
+        sql_type not in scalar_types
+        and not re.fullmatch(r"DECIMAL\(\d+,\d+\)", sql_type)
+        or identity
+        and sql_type in {"FLOAT", "REAL", "DOUBLE"}
+    ):
+        raise IntermediateError(
+            f"Lossless intermediate transfer is not established for {sql_type}; "
+            "use a lossless SQL scalar encoding or an integer contributor identity"
+        )
+
+
 @dataclass(frozen=True)
 class Intermediate:
     """One source-local expression, evaluated before its aggregate.
@@ -154,38 +187,10 @@ class PolicyIntermediates:
         # Until a typed codec exists, reject these before fetching either IDs
         # or metric values. Checking only aggregate outputs misses COUNT inputs.
         transfer_sql = f"SELECT {', '.join(key_sql + expr_sql)} FROM ({query}) AS {_quote(source)}"
-        scalar_types = {
-            "BOOLEAN",
-            "TINYINT",
-            "SMALLINT",
-            "INTEGER",
-            "BIGINT",
-            "HUGEINT",
-            "UTINYINT",
-            "USMALLINT",
-            "UINTEGER",
-            "UBIGINT",
-            "UHUGEINT",
-            "FLOAT",
-            "REAL",
-            "DOUBLE",
-            "VARCHAR",
-            "BLOB",
-        }
         for n, column in enumerate(
             self.connection.execute(f"DESCRIBE ({transfer_sql})").fetchall()
         ):
-            sql_type = column[1].upper()
-            if (
-                sql_type not in scalar_types
-                and not re.fullmatch(r"DECIMAL\(\d+,\d+\)", sql_type)
-                or n < len(keys)
-                and sql_type in {"FLOAT", "REAL", "DOUBLE"}
-            ):
-                raise IntermediateError(
-                    f"Lossless intermediate transfer is not established for {sql_type}; "
-                    "use a lossless SQL scalar encoding or an integer contributor identity"
-                )
+            validate_transfer_type(column[1], identity=n < len(keys))
         row_key = "ROW(" + ", ".join(f"k{n}" for n in range(len(keys))) + ")"
         null_key = " OR ".join(f"k{n} IS NULL" for n in range(len(keys)))
         columns = [
