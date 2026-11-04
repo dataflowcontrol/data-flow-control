@@ -29,7 +29,18 @@ fn grouped_projection(query: &Query, registry: &AggregateRegistry) -> Option<Box
         return None;
     };
     if select_is_aggregation(select, registry) {
-        return safe_projection(&select.projection).then(|| select.clone());
+        // The scoped path is a global aggregate. GROUP BY ordinals/aliases and
+        // HAVING output aliases need binding-aware remapping before projection
+        // substitution; keep those on the established lineage path for now.
+        let sqlparser::ast::GroupByExpr::Expressions(groups, modifiers) = &select.group_by else {
+            return None;
+        };
+        return (groups.is_empty()
+            && modifiers.is_empty()
+            && select.having.is_none()
+            && select.distinct.is_none()
+            && safe_projection(&select.projection))
+        .then(|| select.clone());
     }
     let mut shape = select.as_ref().clone();
     shape.select_token = crate::sql::empty_select().select_token;

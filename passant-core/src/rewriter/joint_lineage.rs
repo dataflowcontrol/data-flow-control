@@ -72,17 +72,6 @@ pub(crate) fn rewrite_joint_root(
     if context.joint_resolution_prepared || context.joint_lineage_legacy.is_some() {
         return Ok(false);
     }
-    if context.sink.is_some() && grouped_projection::flatten(query, &rewriter.aggregate_registry) {
-        if let SetExpr::Select(select) = query.body.as_ref() {
-            for (column, item) in context.sink_output_columns.iter().zip(&select.projection) {
-                if let Some((expr, _)) = super::expr::projection_expr_and_name(item) {
-                    context
-                        .sink_expr_by_column
-                        .insert(column.value.to_ascii_lowercase(), expr.clone());
-                }
-            }
-        }
-    }
     // Binding/applicability discovery is separate from policy placement visits.
     let original_tables = crate::statement_tables::statement_table_keys(
         &sqlparser::ast::Statement::Query(Box::new(query.clone())),
@@ -106,6 +95,17 @@ pub(crate) fn rewrite_joint_root(
         .collect();
     if applicable.is_empty() {
         return Ok(false);
+    }
+    if context.sink.is_some() && grouped_projection::flatten(query, &rewriter.aggregate_registry) {
+        if let SetExpr::Select(select) = query.body.as_ref() {
+            for (column, item) in context.sink_output_columns.iter().zip(&select.projection) {
+                if let Some((expr, _)) = super::expr::projection_expr_and_name(item) {
+                    context
+                        .sink_expr_by_column
+                        .insert(column.value.to_ascii_lowercase(), expr.clone());
+                }
+            }
+        }
     }
     let strictly_applicable: Vec<_> = applicable
         .iter()
