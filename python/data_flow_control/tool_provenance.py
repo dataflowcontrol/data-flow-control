@@ -293,11 +293,39 @@ def _execute_whole_output_remove(connection: Connection, sql: str, bindings: lis
     original = connection.planner
     planner = Planner(dialect=original.dialect)
     planner.sync_catalog(connection._introspect_catalog(include_row_counts=True))
+    aggregate_names = {
+        row[0].lower()
+        for row in connection.raw_connection.execute(
+            "SELECT function_name FROM duckdb_functions() WHERE function_type = 'aggregate'"
+        ).fetchall()
+    }
+
+    def terminal_policy(policy):
+        expression = sqlglot.parse_one(policy.constraint, read="duckdb")
+        contains_aggregate = any(
+            isinstance(function, exp.AggFunc)
+            or (
+                function.name if isinstance(function, exp.Anonymous) else function.sql_name()
+            ).lower()
+            in aggregate_names
+            for function in expression.find_all(exp.Func)
+        )
+        # REMOVE's row predicate must hold for every original contributor,
+        # including NULL-valued rows. Explicit policy aggregates retain their
+        # authored meaning and are evaluated over the complete group/frame.
+        constraint = (
+            policy.constraint if contains_aggregate else f"BOOL_AND(({policy.constraint}) IS TRUE)"
+        )
+        return replace(
+            policy,
+            constraint=constraint,
+            on_fail=Resolution.UDF,
+            udf_name="__passant_remove_output",
+        )
+
     planner.register_policies(
         [
-            replace(policy, on_fail=Resolution.UDF, udf_name="__passant_remove_output")
-            if policy.on_fail is Resolution.REMOVE
-            else policy
+            terminal_policy(policy) if policy.on_fail is Resolution.REMOVE else policy
             for policy in original.policies()
         ]
     )
