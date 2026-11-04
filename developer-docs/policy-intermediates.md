@@ -150,4 +150,9 @@ concrete trusted bridge is:
 
 External observations remain new sources only where declared as such. Tool
 mapping must account for real external dependencies; the bridge cannot infer
-unmentioned reads. The bridge functions are harness APIs, never model tools.
+unmentioned reads. The bridge functions are harness APIs, never model tools. Unlike ordinary SQL,
+`store_intermediate_outputs` is an explicit authority to append externally
+observed facts, including to a declared source relation. The trusted harness must
+validate that the target is the actual tool's output relation and that the values
+are actual observations; exposing this bridge as a model-writable SQL endpoint
+would violate the authority boundary.

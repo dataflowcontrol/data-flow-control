@@ -86,6 +86,15 @@ class IntermediateExecution:
             )
         return table.name
 
+    def _ordinary_target(self, table):
+        name = self._table(table)
+        if name.lower() in self.sources:
+            raise IntermediateError(
+                "Ordinary SQL cannot write or shadow a declared SOURCE relation; "
+                "authoritative observations must come from the trusted harness"
+            )
+        return name
+
     def _columns(self, table):
         return [
             r[0]
@@ -286,10 +295,12 @@ class IntermediateExecution:
             if statement.args.get("replace") or statement.args.get("exists"):
                 raise IntermediateError("CREATE OR REPLACE / IF NOT EXISTS is unsupported")
             target = statement.this
+            name = self._ordinary_target(target.this if isinstance(target, exp.Schema) else target)
             if statement.expression is None:
                 self.db.execute(statement.sql(dialect="duckdb"), params)
                 return IntermediateResult([], None, ())
-            name = self._table(target)
+            if isinstance(target, exp.Schema):
+                raise IntermediateError("CTAS column lists are unsupported")
             properties = (statement.args.get("properties") or exp.Properties()).expressions
             if any(not isinstance(p, exp.TemporaryProperty) for p in properties):
                 raise IntermediateError("CTAS supports only the TEMPORARY table property")
@@ -321,7 +332,7 @@ class IntermediateExecution:
             if isinstance(target, exp.Schema):
                 columns = [c.name for c in target.expressions]
                 target = target.this
-            name = self._table(target)
+            name = self._ordinary_target(target)
             columns = columns or self._columns(name)
             if set(columns) != set(self._columns(name)):
                 raise IntermediateError(

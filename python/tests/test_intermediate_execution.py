@@ -197,3 +197,52 @@ def test_dynamic_and_whole_row_projection_cannot_expose_state(conn):
     ]:
         with pytest.raises(IntermediateError):
             conn.execute(query)
+
+
+@pytest.mark.parametrize("entrypoint", ["execute", "fetchall", "fetchone"])
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "INSERT INTO cases SELECT 'A','public'",
+        "INSERT INTO \"CASES\" (id,category) SELECT 'A','public'",
+        "CREATE TEMP TABLE cases AS SELECT 'A' AS id,'public' AS category",
+        'CREATE TEMP TABLE "CASES" (id VARCHAR,category VARCHAR)',
+    ],
+)
+def test_ordinary_sql_cannot_forge_or_shadow_authoritative_sources(entrypoint, attack):
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE cases(id VARCHAR,category VARCHAR)")
+        c.execute("INSERT INTO cases VALUES ('A','secret')")
+        c.execute("CREATE TABLE updates(id VARCHAR)")
+        c.register_policy(
+            Policy.from_pgn("""SOURCE REQUIRED cases SINK updates
+            CONSTRAINT cases.category='public' AND cases.id=updates.id ON FAIL REMOVE""")
+        )
+        c.enable_intermediate_propagation()
+        assert c.fetchall("INSERT INTO updates SELECT id FROM cases") == [(0,)]
+        with pytest.raises(IntermediateError, match="declared SOURCE"):
+            getattr(c, entrypoint)(attack)
+        assert c.last_intermediate_result() is None
+        assert c.fetchall("SELECT * FROM cases") == [("A", "secret")]
+        assert c.fetchall("INSERT INTO updates SELECT id FROM cases WHERE category='public'") == [
+            (0,)
+        ]
+        assert c.fetchall("SELECT * FROM updates") == []
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "INSERT INTO main.cases SELECT 'A','public','High',10",
+        "CREATE TEMP TABLE main.cases AS SELECT 'A' AS id",
+        "COPY cases FROM 'fabricated.csv'",
+        "ALTER TABLE cases RENAME TO discarded",
+        "TRUNCATE cases",
+        "CREATE VIEW cases AS SELECT 'A' AS id",
+        "CREATE OR REPLACE TABLE cases AS SELECT 'A' AS id",
+    ],
+)
+def test_other_source_write_entrypoints_fail_closed(conn, attack):
+    with pytest.raises(IntermediateError):
+        conn.execute(attack)
+    assert conn.fetchall("SELECT COUNT(*) AS n FROM cases") == [(3,)]
