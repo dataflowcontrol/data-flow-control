@@ -157,7 +157,7 @@ fn safe_projection(items: &[SelectItem]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::SqlDialect;
+    use crate::sql::SqlDialect;
 
     fn query(sql: &str) -> Query {
         let sqlparser::ast::Statement::Query(query) = crate::parser::parse_query(sql).unwrap()
