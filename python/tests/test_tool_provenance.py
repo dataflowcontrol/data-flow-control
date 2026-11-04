@@ -406,3 +406,55 @@ def test_navigation_window_cannot_publish_other_rows_private_value(db, function,
             ],
         )
     assert rows(db) == []
+
+
+@pytest.mark.parametrize("source", ["ToolInput", "Secrets"])
+@pytest.mark.parametrize("resolution", [Resolution.REMOVE, Resolution.KILL])
+def test_scalar_subquery_payload_dependencies_cannot_disappear(db, source, resolution):
+    db.execute("CREATE TABLE Secrets AS SELECT * FROM ToolInput")
+    db.register_policy(
+        Policy(
+            sources=[source],
+            sink="ToolOutput",
+            constraint=f"{source}.category = 'public'",
+            on_fail=resolution,
+        )
+    )
+    model = ToolProvenance(
+        f"SELECT id, (SELECT category FROM {source} WHERE id=2) AS value FROM ToolInput", ("id",)
+    )
+    with pytest.raises(ValueError, match="scalar/expression subqueries"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1,), {"message": "private"}),
+                ToolOutput((2,), {"message": "private"}),
+            ],
+        )
+    assert rows(db) == []
+
+
+@pytest.mark.parametrize(
+    "query,key",
+    [
+        ("SELECT string_agg(category) AS message FROM ToolInput", ()),
+        ("SELECT 1 AS id, string_agg(category) AS message FROM ToolInput GROUP BY id", (1,)),
+        ("SELECT DISTINCT 1 AS id FROM ToolInput", (1,)),
+        ("SELECT 1 AS id FROM ToolInput UNION SELECT 1 AS id FROM ToolInput", (1,)),
+        ("SELECT a.id FROM ToolInput a LEFT JOIN ToolInput b ON a.id < b.id WHERE a.id=1", (1,)),
+    ],
+)
+def test_remove_cannot_recompute_contributors_of_fixed_payload(db, query, key):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(query, ("id",) if key else ())
+    with pytest.raises(ValueError, match="row-preserving"):
+        model.insert_outputs(db, "ToolOutput", [ToolOutput(key, {"message": "public,private"})])
+    assert rows(db) == []

@@ -18,6 +18,7 @@ from sqlglot.tokens import TokenType
 
 from .adapters.duckdb import DuckDBAdapter
 from .connection import Connection
+from .policy import Resolution
 
 
 def _quote(name: str) -> str:
@@ -104,6 +105,7 @@ class ToolProvenance:
         # not roll back a caller's existing transaction.
         raw.execute("BEGIN TRANSACTION")
         try:
+            _validate_publication_shape(connection, self.sql)
             model_sql = _expand_stars(raw, self.sql)
             key_projection = ", ".join(map(_quote, self.key_columns)) or "1"
             modeled = raw.execute(
@@ -231,3 +233,53 @@ def _number_parameters(sql: str) -> str:
     for index, token in reversed(list(enumerate(tokens, start=1))):
         sql = sql[: token.start] + f"${index}" + sql[token.end + 1 :]
     return sql
+
+
+def _validate_publication_shape(connection: Connection, sql: str) -> None:
+    """Reject rewrites that can change contributors but retain an external row.
+
+    Ordinary SQL can recompute a scalar/window/aggregate after REMOVE. External
+    payloads cannot be recomputed, so publication only permits REMOVE on models
+    where removing an input removes the entire dependent output occurrence.
+    """
+    policies = connection.planner.policies()
+    if not policies:
+        return
+    query = sqlglot.parse_one(sql, read="duckdb")
+    for subquery in query.find_all(exp.Subquery):
+        if not isinstance(subquery.parent, (exp.From, exp.Join, exp.Lateral)):
+            raise ValueError(
+                "Tool provenance with policies does not support scalar/expression subqueries"
+            )
+    if query.find(exp.Exists):
+        raise ValueError(
+            "Tool provenance with policies does not support scalar/expression subqueries"
+        )
+    if any(
+        policy.on_fail not in (Resolution.KILL, Resolution.REMOVE, Resolution.RETRY)
+        for policy in policies
+    ):
+        raise ValueError("Tool provenance cannot repair or recompute external output payloads")
+    if not any(policy.on_fail is Resolution.REMOVE for policy in policies):
+        return
+    aggregates = {
+        row[0].lower()
+        for row in connection.raw_connection.execute(
+            "SELECT function_name FROM duckdb_functions() WHERE function_type = 'aggregate'"
+        ).fetchall()
+    }
+    changes_contributors = (
+        query.find(exp.Window, exp.Group, exp.Having, exp.Distinct, exp.SetOperation) is not None
+    )
+    changes_contributors |= any(
+        isinstance(function, exp.AggFunc)
+        or (function.name if isinstance(function, exp.Anonymous) else function.sql_name()).lower()
+        in aggregates
+        for function in query.find_all(exp.Func)
+    )
+    changes_contributors |= any(join.side for join in query.find_all(exp.Join))
+    if changes_contributors:
+        raise ValueError(
+            "Tool provenance REMOVE requires a row-preserving model; aggregation, window, "
+            "set, distinct and outer-join models cannot recompute external payloads"
+        )
