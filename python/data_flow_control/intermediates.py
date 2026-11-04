@@ -3,10 +3,12 @@
 This API is a boundary for relational/tool provenance adapters. It does not infer
 which input rows contributed to an output, or change Connection's SQL rewriter.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -36,7 +38,14 @@ class Intermediate:
 
     def __post_init__(self) -> None:
         if self.aggregate not in {
-            "unique", "min", "max", "bool_and", "bool_or", "sum", "count", "avg"
+            "unique",
+            "min",
+            "max",
+            "bool_and",
+            "bool_or",
+            "sum",
+            "count",
+            "avg",
         }:
             raise IntermediateError(f"Unsupported intermediate aggregate: {self.aggregate}")
         parsed = sqlglot.parse_one(self.expression, read="duckdb")
@@ -138,7 +147,8 @@ class PolicyIntermediates:
         row_key = "ROW(" + ", ".join(f"k{n}" for n in range(len(keys))) + ")"
         null_key = " OR ".join(f"k{n} IS NULL" for n in range(len(keys)))
         columns = [
-            f"LIST({row_key})", f"COUNT(*) <> COUNT(DISTINCT {row_key})",
+            f"LIST({row_key})",
+            f"COUNT(*) <> COUNT(DISTINCT {row_key})",
             f"COALESCE(BOOL_OR({null_key}), FALSE)",
         ]
         for n, spec in enumerate(specs):
@@ -164,11 +174,13 @@ class PolicyIntermediates:
         try:
             identities = frozenset(tuple(key) for key in (row[0] or []))
         except TypeError as error:
-            raise IntermediateError("Contributor identities must have hashable scalar fields") from error
+            raise IntermediateError(
+                "Contributor identities must have hashable scalar fields"
+            ) from error
         values, offset = [], 3
         for spec in specs:
             width = 2 if spec.aggregate in {"unique", "avg"} else 1
-            values.append(tuple(row[offset:offset + width]))
+            values.append(tuple(row[offset : offset + width]))
             offset += width
         return PolicyIntermediateState(
             self._owner, (_SourceState(source, identities, tuple(values)),)
@@ -197,14 +209,13 @@ class PolicyIntermediates:
                 kept.append(part)
             if any(not s.idempotent for s in specs):
                 for n, part in enumerate(kept):
-                    if any(part.identities & other.identities for other in kept[n + 1:]):
+                    if any(part.identities & other.identities for other in kept[n + 1 :]):
                         raise IntermediateError(
                             "Partially overlapping additive intermediate states cannot be merged "
                             "without splitting an input; retain disjoint inputs instead"
                         )
             values = tuple(
-                self._merge_value(spec, [p.values[n] for p in kept])
-                for n, spec in enumerate(specs)
+                self._merge_value(spec, [p.values[n] for p in kept]) for n, spec in enumerate(specs)
             )
             identities = frozenset().union(*(p.identities for p in kept))
             merged.append(_SourceState(source, identities, values))
@@ -215,16 +226,20 @@ class PolicyIntermediates:
         aliases = ", ".join(f"v{n}" for n in range(width))
         rows = ", ".join("(" + ", ".join("?" for _ in range(width)) + ")" for _ in values)
         if spec.aggregate == "unique":
-            aggregation = "CASE WHEN MAX(v0) = 2 THEN 2 ELSE LEAST(COUNT(DISTINCT v1), 2) END, MIN(v1)"
+            aggregation = (
+                "CASE WHEN MAX(v0) = 2 THEN 2 ELSE LEAST(COUNT(DISTINCT v1), 2) END, MIN(v1)"
+            )
         elif spec.aggregate == "avg":
             aggregation = "SUM(v0), SUM(v1)"
         else:
             function = "sum" if spec.aggregate == "count" else spec.aggregate
             aggregation = f"{function}(v0)"
-        return tuple(self.connection.execute(
-            f"SELECT {aggregation} FROM (VALUES {rows}) AS states({aliases})",
-            [v for row in values for v in row],
-        ).fetchone())
+        return tuple(
+            self.connection.execute(
+                f"SELECT {aggregation} FROM (VALUES {rows}) AS states({aliases})",
+                [v for row in values for v in row],
+            ).fetchone()
+        )
 
     def values(self, state: PolicyIntermediateState) -> dict[str, Any]:
         """Finalize metrics; unique values retain explicit cardinality metadata.
@@ -239,15 +254,19 @@ class PolicyIntermediates:
             part = parts.get(source)
             for n, spec in enumerate(self._specs(source)):
                 if part is None:
-                    value = (0, None) if spec.aggregate == "unique" else (
-                        0 if spec.aggregate == "count" else None
+                    value = (
+                        (0, None)
+                        if spec.aggregate == "unique"
+                        else (0 if spec.aggregate == "count" else None)
                     )
                 else:
                     raw = part.values[n]
                     if spec.aggregate == "unique":
                         value = (raw[0], raw[1] if raw[0] == 1 else None)
                     elif spec.aggregate == "avg":
-                        value = self.connection.execute("SELECT ? / NULLIF(?, 0)", raw).fetchone()[0]
+                        value = self.connection.execute("SELECT ? / NULLIF(?, 0)", raw).fetchone()[
+                            0
+                        ]
                     else:
                         value = raw[0]
                 result[spec.name] = value
