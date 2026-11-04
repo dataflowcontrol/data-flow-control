@@ -18,7 +18,6 @@ from sqlglot.tokens import TokenType
 
 from .adapters.duckdb import DuckDBAdapter
 from .connection import Connection
-from .errors import RetryFailure, RetryViolation, _NativeRetrySignal
 from .planner import Planner
 from .policy import Resolution
 
@@ -213,18 +212,8 @@ class ToolProvenance:
                     join.set("kind", "CROSS")
             sql = _normalize_aggregate_aliases(query.sql(dialect="duckdb"))
             if whole_output_remove:
-                sink_retry = None
-                try:
-                    _preflight_sink_aborts(connection, sink, columns, outputs)
-                except RetryViolation as exc:
-                    sink_retry = exc
-                try:
-                    result = _execute_whole_output_remove(connection, sql, bindings)
-                except RetryViolation as exc:
-                    failures = [*exc.failures, *(sink_retry.failures if sink_retry else ())]
-                    raise RetryViolation(failures) from exc
-                if sink_retry is not None:
-                    raise sink_retry
+                _preflight_sink_kill(connection, sink, columns, outputs)
+                result = _execute_whole_output_remove(connection, sql, bindings)
             else:
                 result = connection.execute(sql, params=bindings).fetchone()
             raw.execute("COMMIT")
@@ -295,18 +284,20 @@ def _number_parameters(sql: str) -> str:
     return sql
 
 
-def _preflight_sink_aborts(
+def _preflight_sink_kill(
     connection: Connection, sink: str, columns: tuple[str, ...], outputs: Sequence[ToolOutput]
 ) -> None:
-    """Check original actual candidates before source REMOVE can hide an abort.
+    """Preserve KILL > REMOVE priority over original actual candidates.
 
     Ask the ordinary INSERT rewriter to establish sink scope, then execute only
-    its rewritten source query. No preflight row is written to the sink.
+    its rewritten source query. No preflight row is written. RETRY is deliberately
+    excluded: core precedence is KILL > REMOVE > RETRY, so removed outputs must
+    not trigger a retry.
     """
     policies = [
         policy
         for policy in connection.policies()
-        if not policy.sources and policy.on_fail in (Resolution.KILL, Resolution.RETRY)
+        if not policy.sources and policy.on_fail is Resolution.KILL
     ]
     if not policies:
         return
@@ -319,30 +310,7 @@ def _preflight_sink_aborts(
     if not isinstance(rewritten, exp.Insert) or rewritten.expression is None:
         raise ValueError("Tool sink preflight requires a rewritten INSERT source")
     bindings = [output.values[column] for output in outputs for column in columns]
-    try:
-        connection.adapter.execute(rewritten.expression.sql(dialect="duckdb"), bindings).fetchall()
-    except _NativeRetrySignal as exc:
-        failures = []
-        for index, _ in exc.failures:
-            policy = planner.policy_by_index(index)
-            if policy is None or policy.on_fail is not Resolution.RETRY:
-                raise RuntimeError("Tool sink preflight returned an unknown RETRY policy") from exc
-            failures.append(RetryFailure(index, policy.retry_message, policy))
-        raise _original_retry_indices(connection.planner, RetryViolation(failures)) from exc
-
-
-def _original_retry_indices(original: Planner, violation: RetryViolation) -> RetryViolation:
-    policies = list(zip(original.policy_indices(), original.policies(), strict=True))
-    failures = []
-    for failure in violation.failures:
-        match = next(
-            ((index, policy) for index, policy in policies if policy == failure.policy), None
-        )
-        if match is None:
-            raise RuntimeError("Tool publication returned an unknown RETRY policy")
-        index, policy = match
-        failures.append(RetryFailure(index, failure.message, policy))
-    return RetryViolation(failures)
+    connection.adapter.execute(rewritten.expression.sql(dialect="duckdb"), bindings).fetchall()
 
 
 def _normalize_aggregate_aliases(sql: str) -> str:
@@ -416,8 +384,6 @@ def _execute_whole_output_remove(connection: Connection, sql: str, bindings: lis
     try:
         connection.planner = planner
         return connection.execute(sql, params=bindings).fetchone()
-    except RetryViolation as exc:
-        raise _original_retry_indices(original, exc) from exc
     finally:
         connection.planner = original
 

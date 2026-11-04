@@ -726,8 +726,7 @@ def test_aggregate_input_output_comparison_fails_closed_until_deferred_binding(d
     assert rows(db) == []
 
 
-@pytest.mark.parametrize("resolution", [Resolution.KILL, Resolution.RETRY])
-def test_source_remove_cannot_hide_original_actual_sink_abort(db, resolution):
+def test_source_remove_cannot_hide_original_actual_sink_kill(db):
     db.register_policy(
         Policy(
             sources=["ToolInput"],
@@ -741,12 +740,11 @@ def test_source_remove_cannot_hide_original_actual_sink_abort(db, resolution):
             sources=[],
             sink="ToolOutput",
             constraint="ToolOutput.message = 'allowed'",
-            on_fail=resolution,
-            retry_message="choose allowed" if resolution is Resolution.RETRY else None,
+            on_fail=Resolution.KILL,
         )
     )
     model = ToolProvenance("SELECT COUNT(*) AS n FROM ToolInput")
-    with pytest.raises(Exception, match="KILLing|choose allowed"):
+    with pytest.raises(Exception, match="KILLing"):
         model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "denied"})])
     assert rows(db) == []
     assert model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "allowed"})]) == 0

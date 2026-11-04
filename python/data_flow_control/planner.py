@@ -34,10 +34,6 @@ class Planner:
     def register_resolution_splittability(self, name: str, *, splittable: bool) -> None:
         self._planner.register_resolution_splittability(name, splittable)
 
-    def policy_indices(self) -> list[int]:
-        """Active stable registration indices, in policies() order."""
-        return self._planner.policy_indices()
-
     def policy_by_index(self, index: int) -> Policy | None:
         encoded = self._planner.policy_json(index)
         if encoded is None:
