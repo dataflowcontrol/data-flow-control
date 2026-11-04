@@ -64,7 +64,11 @@ Joins, self-joins, grouping, CTEs, windows and lateral expansion can describe
 modeled rows. Their policy behavior is exactly that of the existing SQL rewrite
 engine; this interface does not expand its supported policy/SQL combinations.
 SQL acceptance alone is not evidence that every window dependency is captured.
-Unsupported combinations may raise the existing rewrite error.
+Unsupported combinations may raise the existing rewrite or backend binding error.
+In particular, the tested `SUM(...) OVER (ORDER BY ...)` model binds outputs
+without policies, but a source comparison enforced with KILL currently produces
+a GROUP BY binding error. Publication rolls back; complete window-policy
+propagation is not delivered by this PR.
 
 Every external data source read by the tool must be represented in its model,
 using a trusted relation/snapshot with the appropriate DFC source policies and

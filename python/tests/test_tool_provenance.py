@@ -181,3 +181,82 @@ def test_bad_actual_payload_rolls_back_and_connection_remains_usable(db):
 def test_reject_nonqueries_and_known_volatile_functions(sql):
     with pytest.raises(ValueError):
         ToolProvenance(sql)
+
+
+@pytest.mark.parametrize("limit,passes", [(1, True), (2, False)])
+def test_grouped_model_enforces_aggregate_policy(db, limit, passes):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint=f"COUNT(ToolInput.id) = {limit}",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT category, COUNT(*) AS n FROM ToolInput GROUP BY category", ("category",)
+    )
+    outputs = [ToolOutput((category,), {"message": category}) for category in ("public", "private")]
+    if passes:
+        assert model.insert_outputs(db, "ToolOutput", outputs) == 2
+    else:
+        with pytest.raises(Exception, match="KILLing"):
+            model.insert_outputs(db, "ToolOutput", outputs)
+        assert rows(db) == []
+
+
+def test_self_join_model_enforces_policy(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT a.id AS a, b.id AS b FROM ToolInput a JOIN ToolInput b ON a.id < b.id", ("a", "b")
+    )
+    with pytest.raises(Exception, match="KILLing"):
+        model.insert_outputs(db, "ToolOutput", [ToolOutput((1, 2), {"message": "pair"})])
+    assert rows(db) == []
+
+
+def test_window_policy_rewrite_limitation_rolls_back(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.KILL,
+        )
+    )
+    model = ToolProvenance("SELECT id, SUM(copies) OVER (ORDER BY id) AS n FROM ToolInput", ("id",))
+    # The current SQL rewriter treats this aggregate window as grouping when
+    # injecting the source constraint. Do not silently bypass the DFC error.
+    with pytest.raises(Exception, match="GROUP BY"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1,), {"message": "one"}),
+                ToolOutput((2,), {"message": "two"}),
+            ],
+        )
+    assert rows(db) == []
+
+
+def test_sql_collation_cannot_duplicate_occurrences(db):
+    db.execute("CREATE TABLE CollatedInput (id VARCHAR COLLATE NOCASE)")
+    db.execute("INSERT INTO CollatedInput VALUES ('a'), ('A')")
+    model = ToolProvenance("SELECT * FROM CollatedInput", ("id",))
+    with pytest.raises(ValueError, match="SQL equality"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput(("a",), {"message": "lower"}),
+                ToolOutput(("A",), {"message": "upper"}),
+            ],
+        )
+    assert rows(db) == []
