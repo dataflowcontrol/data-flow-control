@@ -153,3 +153,52 @@ fn safe_projection(items: &[SelectItem]) -> bool {
         .is_continue()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::SqlDialect;
+
+    fn query(sql: &str) -> Query {
+        let sqlparser::ast::Statement::Query(query) = crate::parser::parse_query(sql).unwrap()
+        else {
+            panic!("expected query");
+        };
+        *query
+    }
+
+    #[test]
+    fn flatten_pure_projection_keeps_global_aggregate() {
+        let mut q = query(
+            "SELECT v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases) AS v",
+        );
+        assert!(flatten(
+            &mut q,
+            &AggregateRegistry::for_dialect(SqlDialect::DuckDb)
+        ));
+        assert_eq!(
+            q.to_string(),
+            "SELECT CAST(list(id) AS VARCHAR) AS body FROM cases"
+        );
+    }
+
+    #[test]
+    fn preserve_cardinality_and_unsupported_boundaries() {
+        for sql in [
+            "SELECT 1 AS x FROM (SELECT count(*) AS n FROM cases) AS v",
+            "SELECT v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases) AS v WHERE v.body IS NOT NULL",
+            "SELECT random() AS x, v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases) AS v",
+            "SELECT v.body AS body FROM (SELECT category, CAST(list(id) AS VARCHAR) AS body FROM cases GROUP BY 1) AS v",
+            "SELECT v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases HAVING body IS NOT NULL) AS v",
+            "SELECT v.body AS body FROM (SELECT CAST(list(id) AS VARCHAR) AS body FROM cases LIMIT 1) AS v",
+        ] {
+            let mut q = query(sql);
+            let original = q.clone();
+            assert!(
+                !flatten(&mut q, &AggregateRegistry::for_dialect(SqlDialect::DuckDb)),
+                "{sql}"
+            );
+            assert_eq!(q, original);
+        }
+    }
+}
