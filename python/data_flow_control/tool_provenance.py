@@ -7,7 +7,7 @@ The model is relational SQL, not an implementation of the external tool. See
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import sqlglot
@@ -18,6 +18,7 @@ from sqlglot.tokens import TokenType
 
 from .adapters.duckdb import DuckDBAdapter
 from .connection import Connection
+from .planner import Planner
 from .policy import Resolution
 
 
@@ -144,7 +145,7 @@ class ToolProvenance:
         # not roll back a caller's existing transaction.
         raw.execute("BEGIN TRANSACTION")
         try:
-            _validate_publication_shape(connection, self.sql)
+            whole_output_remove = _validate_publication_shape(connection, self.sql)
             model_sql = _expand_stars(raw, self.sql)
             key_projection = ", ".join(map(_quote, self.key_columns)) or "1"
             modeled = raw.execute(
@@ -210,7 +211,10 @@ class ToolProvenance:
                 ):
                     join.set("kind", "CROSS")
             sql = query.sql(dialect="duckdb")
-            result = connection.execute(sql, params=bindings).fetchone()
+            if whole_output_remove:
+                result = _execute_whole_output_remove(connection, sql, bindings)
+            else:
+                result = connection.execute(sql, params=bindings).fetchone()
             raw.execute("COMMIT")
             return int(result[0])
         except BaseException:
@@ -279,16 +283,41 @@ def _number_parameters(sql: str) -> str:
     return sql
 
 
-def _validate_publication_shape(connection: Connection, sql: str) -> None:
+def _execute_whole_output_remove(connection: Connection, sql: str, bindings: list[Any]):
+    """Use DFC's terminal tuple predicates without changing registered policies.
+
+    The native marker is a non-pushdown resolution that discards a complete
+    candidate after its original group/frame predicate has been evaluated.
+    The ordinary execute path preserves KILL/RETRY handling and joint priority.
+    """
+    original = connection.planner
+    planner = Planner(dialect=original.dialect)
+    planner.sync_catalog(connection._introspect_catalog(include_row_counts=True))
+    planner.register_policies(
+        [
+            replace(policy, on_fail=Resolution.UDF, udf_name="__passant_remove_output")
+            if policy.on_fail is Resolution.REMOVE
+            else policy
+            for policy in original.policies()
+        ]
+    )
+    try:
+        connection.planner = planner
+        return connection.execute(sql, params=bindings).fetchone()
+    finally:
+        connection.planner = original
+
+
+def _validate_publication_shape(connection: Connection, sql: str) -> bool:
     """Reject rewrites that can change contributors but retain an external row.
 
     Ordinary SQL can recompute a scalar/window/aggregate after REMOVE. External
-    payloads cannot be recomputed, so publication only permits REMOVE on models
-    where removing an input removes the entire dependent output occurrence.
+    payloads cannot be recomputed. Return True for models requiring terminal
+    whole-output REMOVE rather than ordinary contributor filtering.
     """
     policies = connection.planner.policies()
     if not policies:
-        return
+        return False
     query = sqlglot.parse_one(sql, read="duckdb")
     for subquery in query.find_all(exp.Subquery):
         if not isinstance(subquery.parent, (exp.From, exp.Join, exp.Lateral)):
@@ -313,7 +342,7 @@ def _validate_publication_shape(connection: Connection, sql: str) -> None:
     ):
         raise ValueError("Tool provenance cannot repair or recompute external output payloads")
     if not any(policy.on_fail is Resolution.REMOVE for policy in policies):
-        return
+        return False
     aggregates = {
         row[0].lower()
         for row in connection.raw_connection.execute(
@@ -330,8 +359,20 @@ def _validate_publication_shape(connection: Connection, sql: str) -> None:
         for function in query.find_all(exp.Func)
     )
     changes_contributors |= any(join.side for join in query.find_all(exp.Join))
-    if changes_contributors:
+    if not changes_contributors:
+        return False
+    # A terminal predicate may safely remove one flat group's/window's output.
+    # Resolving an inner stage before a second aggregation could still retain
+    # an external output with changed contributors, so do not use this path for
+    # nested relational stages until the core can carry unresolved predicates.
+    if (
+        not isinstance(query, exp.Select)
+        or query.find(exp.Subquery, exp.CTE, exp.Lateral, exp.Distinct, exp.SetOperation)
+        or any(join.side for join in query.find_all(exp.Join))
+    ):
         raise ValueError(
-            "Tool provenance REMOVE requires a row-preserving model; aggregation, window, "
-            "set, distinct and outer-join models cannot recompute external payloads"
+            "Tool provenance REMOVE requires a row-preserving model or a single flat "
+            "aggregate/window SELECT; nested, set, distinct and outer-join models "
+            "cannot recompute external payloads"
         )
+    return True
