@@ -246,3 +246,46 @@ def test_other_source_write_entrypoints_fail_closed(conn, attack):
     with pytest.raises(IntermediateError):
         conn.execute(attack)
     assert conn.fetchall("SELECT COUNT(*) AS n FROM cases") == [(3,)]
+
+
+@pytest.mark.parametrize("replacement", ["table", "view", "recreated"])
+def test_physical_source_binding_detects_same_name_replacement(conn, replacement):
+    # Raw catalog mutation is outside the model SQL API. Nevertheless, the next
+    # execution must reject a changed binding rather than trusting its spelling.
+    raw = conn.raw_connection
+    if replacement == "recreated":
+        raw.execute("DROP TABLE cases")
+        raw.execute(
+            "CREATE TABLE cases AS SELECT 'B' AS id, 'Benefits' AS category, 'High' AS priority, 1 AS amount"
+        )
+    else:
+        raw.execute(
+            f"CREATE TEMP {replacement.upper()} cases AS SELECT 'B' AS id, 'Benefits' AS category, 'High' AS priority, 1 AS amount"
+        )
+    with pytest.raises(IntermediateError, match="Physical SOURCE binding"):
+        conn.execute("INSERT INTO updates SELECT id, TRUE FROM cases")
+    assert raw.execute("SELECT * FROM updates").fetchall() == []
+
+
+def test_preexisting_source_shadow_is_rejected_when_enabling():
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE cases(id INT)")
+        c.execute("CREATE TABLE updates(id INT)")
+        c.register_policy(
+            Policy.from_pgn(
+                "SOURCE REQUIRED cases SINK updates CONSTRAINT cases.id=updates.id ON FAIL REMOVE"
+            )
+        )
+        c.raw_connection.execute("CREATE TEMP TABLE cases(id INT)")
+        with pytest.raises(IntermediateError, match="unambiguous base table"):
+            c.enable_intermediate_propagation()
+
+
+def test_trusted_source_observation_append_refreshes_only_its_own_binding(conn):
+    # This is explicitly trusted harness authority, never a model SQL endpoint.
+    # A real external observation may introduce a fresh source contributor.
+    state = conn.merge_intermediate_inputs()
+    conn.store_intermediate_outputs("cases", [("D", "Benefits", "High", 10)], [state])
+    assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM cases WHERE id='D'") == [(1,)]
+    with pytest.raises(IntermediateError, match="declared SOURCE"):
+        conn.execute("INSERT INTO cases SELECT 'E','Benefits','High',10")

@@ -64,6 +64,7 @@ class IntermediateExecution:
             )
         self.compiled = tuple(compile_policy_intermediates(self.db, p) for p in self.policies)
         self.sources = {s.lower(): s for p in self.policies for s in p.sources}
+        self.source_bindings = {name: self._source_binding(name) for name in self.sources}
         self.tracked: set[str] = set()
         self.states: dict[int, tuple[PolicyIntermediateState, ...]] = {}
         self.next_token = 1
@@ -85,6 +86,27 @@ class IntermediateExecution:
                 "Automatic propagation requires unqualified physical table names"
             )
         return table.name
+
+    def _source_binding(self, name):
+        # Reject ambiguous names instead of guessing search-path precedence.
+        # Include views so a temporary view cannot shadow a pinned base table.
+        bindings = self.db.execute(
+            "SELECT 'table', database_oid, schema_oid, table_oid FROM duckdb_tables() "
+            "WHERE lower(table_name) = ? UNION ALL "
+            "SELECT 'view', database_oid, schema_oid, view_oid FROM duckdb_views() "
+            "WHERE lower(view_name) = ?",
+            [name.lower(), name.lower()],
+        ).fetchall()
+        if len(bindings) != 1 or bindings[0][0] != "table":
+            raise IntermediateError(
+                f"Physical SOURCE binding for {name!r} must be one unambiguous base table"
+            )
+        return tuple(bindings[0][1:])
+
+    def _validate_source_bindings(self):
+        for name, binding in self.source_bindings.items():
+            if self._source_binding(name) != binding:
+                raise IntermediateError(f"Physical SOURCE binding changed for {name!r}")
 
     def _ordinary_target(self, table):
         name = self._table(table)
@@ -275,12 +297,15 @@ class IntermediateExecution:
         self.db.execute("BEGIN TRANSACTION")
         old_token = self.next_token
         old_tracked = self.tracked.copy()
+        old_bindings = self.source_bindings.copy()
         try:
+            self._validate_source_bindings()
             result = self._execute(statement, params)
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             self.tracked = old_tracked
+            self.source_bindings = old_bindings
             self.states = {k: v for k, v in self.states.items() if k < old_token}
             self.next_token = old_token
             raise
@@ -378,12 +403,15 @@ class IntermediateExecution:
         result = IntermediateResult(rows, schema, intermediates)
         self.db.execute("BEGIN TRANSACTION")
         old_token, old_tracked = self.next_token, self.tracked.copy()
+        old_bindings = self.source_bindings.copy()
         try:
+            self._validate_source_bindings()
             self._persist(table, columns, result)
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             self.tracked = old_tracked
+            self.source_bindings = old_bindings
             self.states = {k: v for k, v in self.states.items() if k < old_token}
             self.next_token = old_token
             raise
@@ -394,6 +422,10 @@ class IntermediateExecution:
         if table.lower() not in self.tracked:
             self.db.execute(f"ALTER TABLE {_quote(table)} ADD COLUMN {_quote(_STATE)} BIGINT")
             self.tracked.add(table.lower())
+            if table.lower() in self.source_bindings:
+                # Only the trusted observation bridge can reach this for a
+                # declared source. ALTER installs our metadata and changes OID.
+                self.source_bindings[table.lower()] = self._source_binding(table.lower())
         values = []
         for row, state in zip(result._rows, result.intermediates):
             token = self.next_token

@@ -156,3 +156,12 @@ observed facts, including to a declared source relation. The trusted harness mus
 validate that the target is the actual tool's output relation and that the values
 are actual observations; exposing this bridge as a model-writable SQL endpoint
 would violate the authority boundary.
+
+Declared sources are pinned to DuckDB database/schema/table catalog IDs at
+initialization. Each automatic statement validates those bindings inside its
+transaction, including checking for same-name table or view shadows. Ambiguous
+initial bindings, replaced tables and added shadows fail closed. The trusted
+observation bridge validates the same pins; if it installs its own metadata
+column, it refreshes only that known target's changed catalog ID and rolls the
+pin back on failure. This detects physical rebinding, not arbitrary raw DML:
+external raw updates to an existing table remain outside the trusted contract.
