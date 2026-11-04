@@ -135,37 +135,53 @@ than materializing it into an unlabelled table or rebuilding original
 contributors. Simple subqueries may be flattened before `Connection.execute`.
 
 The companion [propagation PR #8](https://github.com/dataflowcontrol/data-flow-control/pull/8),
-reviewed at `55441b4bc6038632523c896a877d62ebd44f1572`, exposes explicit
-`PolicyIntermediateState`, `plan.capture`, `plan.merge`, and compiled-policy
-`evaluate` APIs. It does **not** instrument `Connection.execute`. These PRs do
-not yet form an end-to-end intermediate propagation implementation simply by
-being combined.
+reviewed at `1bfb3cc70cc5b6e91102e535bc87d74b5e646184`, now provides opt-in
+propagation through normal `Connection.execute`, plus trusted observation storage.
+For its supported relational subset, the model query itself derives the whole
+input states for each result row; the harness does not declare input-ID mappings.
 
-The remaining adapter must derive modeled-output contributor correspondence
-under the supported SQL semantics, associate whole input states with those
-contributors, copy states for projection/expansion, merge states for joins/groups,
-and evaluate/apply the policy's resolution against the actual output values.
-The occurrence keys here identify modeled outputs; they are not the immutable
-source-contributor identities required by `capture`. The adapter must preserve
-that distinction and PR #8's explicit errors for unsupported partial overlap of
-additive states. This PR does not emit that contributor/state mapping, call
-`capture`/`merge`, or persist states automatically.
+Use a fresh model result with `bind_intermediates` to align those states with
+actual output occurrences:
 
-The optional `python/tests/test_tool_provenance_intermediates.py` exercises both
-PRs through an explicit trusted harness. It evaluates the model SQL, uses
-projected existing input IDs to select whole states, maps outputs by occurrence
-keys, merges join/fan-in states, evaluates actual sink values, and applies KILL
-before publication. Six combined-worktree tests cover 1:1, reordered 1:many,
-whole-state identity, additive deduplication, joins, and rejected source/sink
-values. The test skips when PR #8 is absent; it can be run in an isolated PR #7
-worktree with PR #8's two Python modules overlaid, without merging either PR.
-This establishes practical adapter compatibility, not general SQL lineage
-inference for queries that do not project their input correspondence.
+```python
+result = connection.execute(model.sql)  # automatic propagation is enabled
+states = model.bind_intermediates(result, actual_outputs)
+# Output tuples must follow the declared ToolOutput table's public column order.
+connection.store_intermediate_outputs(
+    "ToolOutput", [(output.values["message"],) for output in actual_outputs], states,
+)
+# Subsequent ordinary SQL carries inherited states and enforces its sink policies.
+connection.execute("INSERT INTO FinalSink SELECT message FROM ToolOutput")
+```
 
-This PR alone checks policies from the model's directly named sources to the
-publication sink. It does **not** claim that those policies survive a subsequent
-query over the published output table. The current independent APIs and the
-missing adapter are an integration boundary, not automatic propagation.
+The binding helper rejects missing/duplicate keys and partially consumed results.
+It reorders whole state tuples and does not inspect original source contributors.
+A singleton model uses an empty key; expansion may reuse a whole input state;
+join/group states are already merged by the automatic relational adapter.
+
+`store_intermediate_outputs` records trusted observations; it does not authorize
+external effects or evaluate output-sink policies against their actual payloads.
+Use the appropriate pre-effect guards and ordinary downstream sink operations.
+It is **not** a silent substitute for `insert_outputs`, which enforces policies
+using the legacy SQL rewriter. Calling `insert_outputs` with automatic propagation
+enabled raises an explicit error before starting a transaction. This avoids the
+two adapters' competing transaction ownership and their different SQL subsets.
+
+The optional `python/tests/test_tool_provenance_intermediates.py` is run in an
+isolated worktree containing PR #7 and PR #8 files without a Git merge. It covers
+normal CTAS/grouping of initial sources into a tool input, SELECT-star and
+physical-relation expansion models, reordered duplicate actual payloads,
+whole-state propagation through the observation bridge, and downstream ordinary
+INSERT accepting/rejecting correlated source-expression and actual-sink checks.
+The module skips on standalone PR #7; its tests and the lower-level explicit
+state tests establish actual compatibility against the pinned companion revision.
+
+Automatic mode currently rejects CTEs/subqueries/windows/set operations,
+DISTINCT/HAVING, nullable joins and lateral/VALUES table expansions. Those remain
+separate from the legacy publisher's supported scope. Use a physical expansion
+relation in the tested automatic 1:many path. Source states are session-local;
+there is no cross-process persistence contract. The two PRs remain separately
+reviewable, and a harness must explicitly select the appropriate execution path.
 
 The existing LangChain tool database remains opt-in/unmodified: its raw output
 logging does not automatically invoke this interface. A trusted harness calls
