@@ -29,7 +29,12 @@ pub(crate) fn policy_window(
         fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
             if let Expr::Function(function) = expr {
                 if let Some(window) = &function.over {
-                    let name = function.name.to_string().to_ascii_lowercase();
+                    let name = function
+                        .name
+                        .0
+                        .last()
+                        .map(|ident| ident.value.to_ascii_lowercase())
+                        .unwrap_or_default();
                     if name == "row_number" {
                         // Preserve the established row-wise ROW_NUMBER case.
                     } else if matches!(

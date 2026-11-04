@@ -178,6 +178,11 @@ fn window_policy_rejects_unsupported_contributor_shapes_before_filtering() {
             "value/navigation windows",
         ),
         (
+            "\"lead\"(amount) OVER (ORDER BY id)",
+            Resolution::Kill,
+            "value/navigation windows",
+        ),
+        (
             "FIRST_VALUE(amount) OVER (ORDER BY id DESC)",
             Resolution::Remove,
             "value/navigation windows",
