@@ -609,3 +609,53 @@ def test_remove_self_join_checks_both_contributors(db):
     outputs = [ToolOutput((a, b), {"message": f"{a},{b}"}) for a in (1, 2) for b in (1, 2)]
     assert model.insert_outputs(db, "ToolOutput", outputs) == 1
     assert rows(db) == [("1,1",)]
+
+
+def test_whole_output_remove_preserves_joint_window_predicates(db):
+    for constraint in ("SUM(ToolInput.copies) >= 3", "SUM(ToolInput.copies) <= 3"):
+        db.register_policy(
+            Policy(
+                sources=["ToolInput"],
+                sink="ToolOutput",
+                constraint=constraint,
+                on_fail=Resolution.REMOVE,
+            )
+        )
+    model = ToolProvenance(
+        "SELECT id, SUM(copies) OVER (ORDER BY id) AS total FROM ToolInput", ("id",)
+    )
+    assert (
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [ToolOutput((1,), {"message": "2"}), ToolOutput((2,), {"message": "3"})],
+        )
+        == 1
+    )
+    assert rows(db) == [("3",)]
+
+
+def test_whole_output_remove_checks_actual_sink_and_restores_planner(db):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="COUNT(ToolInput.id) = 2",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    db.register_policy(
+        Policy(
+            sources=[],
+            sink="ToolOutput",
+            constraint="ToolOutput.message = 'allowed'",
+            on_fail=Resolution.KILL,
+        )
+    )
+    original = db.planner
+    model = ToolProvenance("SELECT SUM(copies) AS total FROM ToolInput")
+    with pytest.raises(Exception, match="KILLing"):
+        model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "denied"})])
+    assert db.planner is original
+    assert rows(db) == []
+    assert model.insert_outputs(db, "ToolOutput", [ToolOutput((), {"message": "allowed"})]) == 1
