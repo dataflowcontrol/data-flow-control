@@ -64,20 +64,42 @@ input data and include them in the model.
 
 ## Relational scope and external data
 
-Joins, self-joins, grouping, CTEs, windows and lateral expansion can describe
-modeled rows. Their policy behavior is exactly that of the existing SQL rewrite
-engine; this interface does not expand its supported policy/SQL combinations.
-SQL acceptance alone is not evidence that every window dependency is captured.
-Unsupported combinations may raise the existing rewrite or backend binding error.
-In particular, the tested `SUM(...) OVER (ORDER BY ...)` model binds outputs
-without policies, but a source comparison enforced with KILL currently produces
-a GROUP BY binding error. Publication rolls back; complete window-policy
-propagation is not delivered by this PR. Lateral `generate_series` also binds
-without policies, but the tested policy rewrite rejects LATERAL syntax; use the
-ordinary relational expansion above for the tested policy-bearing 1:many path.
-Source-to-output comparisons are tested for 1:1 and that 1:many path. Safe model
-subqueries are flattened with SQLGlot so actual outputs remain in policy scope;
-this does not fix every nested/grouped sink-reference limitation of the engine.
+Joins, self-joins, grouping, CTEs and lateral expansion can describe modeled
+rows. `CROSS JOIN LATERAL generate_series(...)` supports policy-bearing expansion;
+comma-lateral spelling is normalized before the Rust parser. Source-to-output
+comparisons are tested for 1:1 and 1:many. Safe model subqueries are flattened
+with SQLGlot so actual outputs remain in policy scope.
+
+Aggregate windows now support KILL policies over one common inline contributor
+frame that includes the current row. Policy aggregates receive that same OVER
+clause, preserving the original window values. For example, a cumulative SUM
+with a source-category constraint checks every contributor to each cumulative
+frame, rather than only its current row. Mixed/different frames, named windows,
+grouped/HAVING/QUALIFY window inputs and non-KILL aggregate-window resolutions
+are explicitly unsupported. Value/navigation windows such as LEAD, LAG and
+FIRST_VALUE are rejected when a policy applies; they are not silently treated
+as row-local provenance. The core retains its established ROW_NUMBER behavior.
+
+### Fixed payloads cannot be recomputed after filtering
+
+An ordinary SQL query can filter a contributor and recompute its aggregate,
+window or scalar-subquery value. An external tool's already computed payload
+cannot be recomputed that way. Keeping its output key is not sufficient evidence
+that its original contributors passed policy checks.
+
+Publication therefore fails closed, before normalization, when registered
+policies coexist with scalar/expression subqueries (including ARRAY queries).
+REMOVE is supported only on row-preserving models: aggregates, windows, DISTINCT,
+set operations and outer joins are rejected with REMOVE. These checks currently
+consider all registered policies conservatively, even if a particular policy
+might be inapplicable to this call. Repair/UI/UDF resolutions are also rejected;
+the publisher cannot recompute or repair an external payload. KILL and RETRY
+retain their abort behavior within the ordinary rewriter's supported SQL scope.
+
+Regression tests cover the otherwise unsafe public-row/private-LEAD payload,
+same-source and distinct-source scalar subqueries, and unchanged secret-bearing
+string aggregates after REMOVE. Rejection rolls back all publication. This
+boundary is narrower than accepting arbitrary SQL that happens to execute.
 
 Every external data source read by the tool must be represented in its model,
 using a trusted relation/snapshot with the appropriate DFC source policies and
@@ -127,8 +149,18 @@ The occurrence keys here identify modeled outputs; they are not the immutable
 source-contributor identities required by `capture`. The adapter must preserve
 that distinction and PR #8's explicit errors for unsupported partial overlap of
 additive states. This PR does not emit that contributor/state mapping, call
-`capture`/`merge`, or persist states. No integration test across both branches has
-been claimed.
+`capture`/`merge`, or persist states automatically.
+
+The optional `python/tests/test_tool_provenance_intermediates.py` exercises both
+PRs through an explicit trusted harness. It evaluates the model SQL, uses
+projected existing input IDs to select whole states, maps outputs by occurrence
+keys, merges join/fan-in states, evaluates actual sink values, and applies KILL
+before publication. Six combined-worktree tests cover 1:1, reordered 1:many,
+whole-state identity, additive deduplication, joins, and rejected source/sink
+values. The test skips when PR #8 is absent; it can be run in an isolated PR #7
+worktree with PR #8's two Python modules overlaid, without merging either PR.
+This establishes practical adapter compatibility, not general SQL lineage
+inference for queries that do not project their input correspondence.
 
 This PR alone checks policies from the model's directly named sources to the
 publication sink. It does **not** claim that those policies survive a subsequent
