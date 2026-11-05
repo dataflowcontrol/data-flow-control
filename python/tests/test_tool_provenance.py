@@ -714,7 +714,7 @@ def test_aggregate_input_output_comparison_fails_closed_until_deferred_binding(d
     model = ToolProvenance(
         "SELECT category, COUNT(*) AS n FROM ToolInput GROUP BY category", ("category",)
     )
-    with pytest.raises(Exception, match="ToolOutput|unsupported"):
+    with pytest.raises(Exception, match="Referenced table .* not found|unsupported"):
         model.insert_outputs(
             db,
             "ToolOutput",
