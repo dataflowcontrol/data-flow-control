@@ -27,9 +27,9 @@ fn ident(value: &str) -> Result<String, RewriteError> {
 
 #[derive(Debug, Clone)]
 pub struct ToolProvenanceModel {
-    pub query: Query,
-    pub key_columns: Vec<String>,
-    pub parameter_count: usize,
+    pub(crate) query: Query,
+    pub(crate) key_columns: Vec<String>,
+    pub(crate) parameter_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -130,6 +130,14 @@ impl ToolProvenanceModel {
 
     pub fn sql(&self) -> String {
         self.query.to_string()
+    }
+
+    pub fn key_columns(&self) -> &[String] {
+        &self.key_columns
+    }
+
+    pub fn parameter_count(&self) -> usize {
+        self.parameter_count
     }
 
     pub fn validate_parameter_count(&self, supplied: usize) -> Result<(), RewriteError> {
@@ -592,6 +600,18 @@ fn factor_columns(
         })
         .collect())
 }
+fn qualifier_matches(requested: &[Ident], actual: &[Ident]) -> bool {
+    (requested.len() == actual.len()
+        && requested
+            .iter()
+            .zip(actual)
+            .all(|(a, b)| a.value.eq_ignore_ascii_case(&b.value)))
+        || (requested.len() == 1
+            && actual
+                .last()
+                .is_some_and(|last| requested[0].value.eq_ignore_ascii_case(&last.value)))
+}
+
 fn expand_select(
     select: &mut Select,
     catalog: &TableCatalog,
@@ -619,7 +639,7 @@ fn expand_select(
         if let Some(qualifier) = qualifier {
             let mut count = 0;
             for input in &inputs {
-                if qualifier.is_none_or(|name| name.0 == input.qualifier) {
+                if qualifier.is_none_or(|name| qualifier_matches(&name.0, &input.qualifier)) {
                     let mut ids = input.qualifier.clone();
                     ids.push(Ident::with_quote('"', &input.name));
                     projection.push(SelectItem::UnnamedExpr(Expr::CompoundIdentifier(ids)));
@@ -636,13 +656,18 @@ fn expand_select(
         }
     }
     select.projection = projection;
-    struct Qualify<'a>(&'a [InputColumn]);
+    struct Qualify<'a> {
+        inputs: &'a [InputColumn],
+        nested_query_depth: usize,
+    }
     impl VisitorMut for Qualify<'_> {
         type Break = ();
         fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
-            if let Expr::Identifier(id) = expr {
+            if self.nested_query_depth == 0
+                && let Expr::Identifier(id) = expr
+            {
                 let matches = self
-                    .0
+                    .inputs
                     .iter()
                     .filter(|column| column.name.eq_ignore_ascii_case(&id.value))
                     .collect::<Vec<_>>();
@@ -655,11 +680,46 @@ fn expand_select(
             ControlFlow::Continue(())
         }
         fn pre_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
-            ControlFlow::Break(())
+            self.nested_query_depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
+            self.nested_query_depth -= 1;
+            ControlFlow::Continue(())
         }
     }
-    let _ = select.visit(&mut Qualify(&inputs));
+    let _ = select.visit(&mut Qualify {
+        inputs: &inputs,
+        nested_query_depth: 0,
+    });
     Ok(())
+}
+
+fn expand_projection_aliases(
+    expression: &Expr,
+    aliases: &HashMap<String, Expr>,
+    visiting: &mut Vec<String>,
+) -> Option<Expr> {
+    let mut result = expression.clone();
+    let outcome = sqlparser::ast::visit_expressions_mut(&mut result, |node| {
+        if let Expr::Identifier(id) = node {
+            let name = id.value.to_ascii_lowercase();
+            if let Some(replacement) = aliases.get(&name) {
+                if visiting.contains(&name) {
+                    return ControlFlow::Break(());
+                }
+                visiting.push(name);
+                let expanded = expand_projection_aliases(replacement, aliases, visiting);
+                visiting.pop();
+                let Some(expanded) = expanded else {
+                    return ControlFlow::Break(());
+                };
+                *node = expanded;
+            }
+        }
+        ControlFlow::Continue(())
+    });
+    outcome.is_continue().then_some(result)
 }
 
 fn flatten_binding(
@@ -732,6 +792,43 @@ fn flatten_binding(
             return Ok(());
         }
     }
+    // The model can use a SELECT alias in its WHERE or another projection.
+    // Resolve those aliases before adding the occurrence relation: an alias
+    // such as v0 must not bind to the newly introduced actual payload column.
+    let original_mapping = mapping.clone();
+    for (name, expression) in &mut mapping {
+        let Some(expanded) =
+            expand_projection_aliases(expression, &original_mapping, &mut vec![name.clone()])
+        else {
+            return Ok(());
+        };
+        *expression = expanded;
+    }
+    let selection = if let Some(selection) = &inner.selection {
+        let Some(expanded) = expand_projection_aliases(selection, &mapping, &mut Vec::new()) else {
+            return Ok(());
+        };
+        Some(expanded)
+    } else {
+        None
+    };
+    // Without catalog-backed resolution, an unqualified original column could
+    // be captured by a generated k0/v0 column. Keep the derived boundary when
+    // any such reference remains instead of guessing its SQL binding.
+    let mut unresolved = false;
+    for expression in mapping.values().chain(selection.iter()) {
+        let _: ControlFlow<()> = sqlparser::ast::visit_expressions(expression, |node| {
+            unresolved |= matches!(node, Expr::Identifier(_));
+            ControlFlow::Continue(())
+        });
+    }
+    let _: ControlFlow<()> = sqlparser::ast::visit_expressions(&inner.from, |node| {
+        unresolved |= matches!(node, Expr::Identifier(_));
+        ControlFlow::Continue(())
+    });
+    if unresolved {
+        return Ok(());
+    }
     let mut predicate = match join.join_operator {
         JoinOperator::Inner(JoinConstraint::On(predicate)) => predicate,
         _ => return Ok(()),
@@ -757,7 +854,7 @@ fn flatten_binding(
         joins: Vec::new(),
     });
     outer.from = from;
-    outer.selection = Some(match &inner.selection {
+    outer.selection = Some(match &selection {
         Some(selection) => crate::sql::and_exprs(vec![selection.clone(), predicate]).unwrap(),
         None => predicate,
     });
