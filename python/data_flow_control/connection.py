@@ -471,7 +471,7 @@ class Connection:
         )
 
     def enable_intermediate_propagation(self) -> None:
-        """Enable bounded automatic DuckDB propagation for REMOVE/KILL policies.
+        """Enable native automatic DuckDB propagation for REMOVE/KILL/RETRY policies.
 
         Register policies and load initial source rows first. This mode owns its
         transactions and rejects SQL shapes whose provenance is not supported.

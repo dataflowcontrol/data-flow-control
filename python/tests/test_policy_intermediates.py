@@ -329,3 +329,31 @@ def test_explicit_lossless_sql_timestamp_encoding_keeps_distinct_contributors(db
     ]
     assert plan.values(plan.merge(*states)) == {"total": 20, "stamp": (2, None)}
     assert not plan.evaluate(plan.merge(*states), "total <= 10")
+
+
+def test_native_state_transport_preserves_embedded_nul_unicode_and_binary(db):
+    text = "nul\0quote'雪"
+    db.execute("UPDATE cases SET category=? WHERE id IN ('A','B')", [text])
+    plan = PolicyIntermediates(db, [Intermediate("cat", "cases", "category")])
+    state = plan.merge(capture(plan, "id='A'"), capture(plan, "id='B'"))
+    assert plan.values(state) == {"cat": (1, text)}
+    assert plan.evaluate(state, "cat__cardinality=1 AND cat=expected", sink={"expected": text})
+    db.execute("CREATE TABLE binary_input(id INT, payload BLOB)")
+    db.execute("INSERT INTO binary_input VALUES (1, ?)", [b"\x00\xff"])
+    binary = PolicyIntermediates(db, [Intermediate("payload", "binary_input", "payload")])
+    blob = binary.capture("binary_input", "SELECT * FROM binary_input", identity_columns=["id"])
+    assert binary.values(binary.merge(blob, blob)) == {"payload": (1, b"\x00\xff")}
+
+
+def test_native_identity_type_change_cannot_double_count_same_key(db):
+    db.execute("CREATE TABLE typed_input(id INT, amount INT)")
+    db.execute("INSERT INTO typed_input VALUES (1,10)")
+    plan = PolicyIntermediates(db, [Intermediate("total", "typed_input", "amount", "sum")])
+    a = plan.capture("typed_input", "SELECT * FROM typed_input", identity_columns=["id"])
+    b = plan.capture(
+        "typed_input",
+        "SELECT CAST(id AS BIGINT) AS id, amount FROM typed_input",
+        identity_columns=["id"],
+    )
+    with pytest.raises(IntermediateError, match="type"):
+        plan.merge(a, b)

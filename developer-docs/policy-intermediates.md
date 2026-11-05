@@ -3,8 +3,9 @@
 `data_flow_control.intermediates` provides a trusted Python/DuckDB boundary for
 carrying aggregate state between relational operations and tool calls. It is an
 explicit state API, plus the opt-in automatic `Connection.execute` path described
-below. The Rust catalog and rewriter export/import the hidden row-dependency
-channel; Python owns the session-local aggregate states and effect transaction.
+below. Rust owns policy compilation, state representation/capture/merge, contributor
+resolution, token storage and policy resolution decisions. Python is a database
+execution/API adapter; it does not parse or interpret intermediate policies.
 
 `compile_policy_intermediates(raw_connection, policy)` in
 `data_flow_control.intermediate_policy` derives a plan and final predicate from
@@ -113,10 +114,33 @@ states does not depend on output ordering or equality of public values.
 `TableCatalog` and `AggregateRegistry`. The catalog's `intermediate_bindings`
 records trusted source-rowid and persisted-token channels independently of
 logical columns. CTE and derived scopes carry the generated channel, so a CTE
-named like a source cannot manufacture source authority. The Python adapter no
-longer traverses SELECTs to infer lineage. It still owns intermediate expression
-compilation, state merging, sink predicate evaluation and transactional effects;
-this is not yet a generic native state finalizer or full legacy rewrite coverage.
+named like a source cannot manufacture source authority.
+
+`intermediate_compile` lowers the existing registration-time `CompiledPolicy` AST
+into state demands and a final predicate, using core source/sink aliases and
+`AggregateRegistry`. Original single-parse AST metadata is retained so unsupported
+AVG modifiers cannot disappear during existing AVG decomposition. The standalone
+trusted-plan API uses the same compiler without claiming catalog registration.
+There is no SQLGlot policy compiler or separate scalar-function whitelist.
+
+`intermediate_state` owns opaque states, SQL-typed scalar transport, capture/merge
+SQL, overlap handling, required-source applicability and final predicate evaluation.
+`intermediate_session` resolves contributor dependencies and owns opaque stored
+state tokens, ownership checks and transaction rollback checkpoints. The core
+`SqlExecutor` trait supplies database execution without a Python dependency.
+Values use SQL type plus lossless text/NULL encoding; rebinding uses encoded text
+rather than Python scalar equality. Identity type changes fail closed.
+
+`intermediate_execution` plans SELECT/INSERT/CREATE and chooses KILL/REMOVE/RETRY
+using the existing `ResolutionRegistry` precedence and stable policy identities.
+Python executes these plans, performs catalog/database-identity checks, manages
+the DB-API transaction/cursor and translates native effect results to existing
+exceptions. PyO3 transports values and invokes the supplied DB connection; it
+contains no aggregate merge or policy interpretation rules.
+
+The state-aware SQL lowering is still a dedicated native path. It shares the core
+policy compiler, AST, catalog, aggregate and resolution registries; it does not
+claim full operator parity with the legacy joint-lineage traversal.
 
 Aggregate windows union the current row's dependencies with those of each
 referenced frame, deduplicating contributor identities. Multiple inline frames
@@ -137,12 +161,11 @@ this connection are outside the trusted contract.
 This path preserves already-computed payloads and checks their whole contributor
 states. It does not implement legacy REMOVE's ability to split contributors and
 recompute an aggregate or window result. That would violate the opaque-input
-contract after a tool boundary. Native finalizer integration therefore needs an
-explicit fixed-payload versus recomputable-stage distinction, plus deferred
-policy checks and a state export/import representation; feeding only scalar
-aggregates into the existing scan filters would be unsound. The next practical
-extension is to carry that distinction and the state channels through existing
-lineage/effect stages, while retaining fail-closed opaque-state overlap checks.
+contract after a tool boundary. Native resolution treats this path as fixed
+payloads. Broader integration with legacy recomputable stages must preserve that
+distinction; feeding only scalar aggregates into scan filters would be unsound.
+The dedicated native lowering currently fails closed on unsupported operators
+and partial-overlap additive merges.
 
 Queries must be deterministic and use ordinary SQL equality/collation. Fetch
 results are materialized and support `description`, `fetchone`, `fetchmany` and
@@ -163,8 +186,20 @@ nanoseconds. No automatic type-changing encoding is imposed on a policy.
 
 ## Bridge for the separate SQL tool-provenance adapter
 
-The tool declaration and its SQL lineage rewrite remain in the other PR. The
-concrete trusted bridge is:
+The tool declaration remains in the other PR. The concrete Rust interface is:
+
+- `PassantRewriter::compile_intermediate_policy(stable_id)` returns native demands
+  from the registered policy; `compile_intermediate_definition` supports trusted
+  standalone definitions without registering enforcement authority.
+- `IntermediatePlan` captures, merges and evaluates `IntermediateState` through
+  `SqlExecutor`. States are opaque Rust-owned objects, not Python dictionaries.
+- `IntermediateSession::row_states`, `merge_rows`, `register_rows`, `checkpoint`
+  and `rollback` resolve whole-input dependencies and manage session tokens.
+- `PassantRewriter::plan_intermediate_statement`, `intermediate_policy_indices`
+  and `resolve_intermediate_rows` provide native SQL/effect plans.
+
+The Python tool-facing API remains compatible; it passes opaque native states:
+
 
 1. Execute the tool-input query normally. `result.intermediates` aligns with the
    result's original row order (independent of subsequent fetch position).

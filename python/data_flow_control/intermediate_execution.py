@@ -1,8 +1,8 @@
 """Bounded automatic DuckDB propagation through Connection.execute.
 
-The native catalog-backed lineage rewriter instruments SELECTs; this adapter
-materializes policy states and executes effects while keeping hidden state out
-of the logical schema. Unsupported SQL fails before effects.
+The Rust core plans SQL, owns opaque states and decides policy effects. This
+adapter executes database operations and adapts results, keeping hidden state
+out of the public schema.
 """
 
 from __future__ import annotations
