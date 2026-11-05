@@ -371,6 +371,11 @@ def _validate_publication_shape(connection: Connection, sql: str) -> bool:
     if not policies:
         return False
     query = sqlglot.parse_one(sql, read="duckdb")
+    # The native parser has no frame-exclusion representation. In particular,
+    # EXCLUDE CURRENT ROW/GROUP invalidates the current-row inclusion needed
+    # for whole-output checks. Reject before normalization or policy rewriting.
+    if any(spec.args.get("exclude") is not None for spec in query.find_all(exp.WindowSpec)):
+        raise ValueError("Tool provenance does not support window frame EXCLUDE clauses")
     for subquery in query.find_all(exp.Subquery):
         if not isinstance(subquery.parent, (exp.From, exp.Join, exp.Lateral)):
             raise ValueError(

@@ -781,3 +781,33 @@ def test_whole_output_remove_preserves_implicit_source_uniqueness(db, uniform):
         db, "ToolOutput", [ToolOutput((), {"message": "aggregate"})]
     ) == int(uniform)
     assert rows(db) == ([("aggregate",)] if uniform else [])
+
+
+@pytest.mark.parametrize("exclude", ["CURRENT ROW", "GROUP", "TIES", "NO OTHERS"])
+@pytest.mark.parametrize("resolution", [Resolution.REMOVE, Resolution.KILL])
+def test_window_exclusion_cannot_omit_current_row_policy_contribution(db, exclude, resolution):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=resolution,
+        )
+    )
+    model = ToolProvenance(
+        "SELECT id, SUM(id) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING "
+        f"AND UNBOUNDED FOLLOWING EXCLUDE {exclude}) AS total FROM ToolInput",
+        ("id",),
+    )
+    with pytest.raises(ValueError, match="window frame EXCLUDE"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [
+                ToolOutput((1,), {"message": "private frame contributor"}),
+                ToolOutput((2,), {"message": "private current row"}),
+            ],
+        )
+    assert rows(db) == []
+    # The rejected declaration leaves the connection usable after rollback.
+    assert db.raw_connection.execute("SELECT COUNT(*) FROM ToolInput").fetchone() == (2,)

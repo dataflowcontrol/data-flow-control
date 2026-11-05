@@ -71,7 +71,9 @@ comparisons are tested for 1:1 and 1:many. Safe model subqueries are flattened
 with SQLGlot so actual outputs remain in policy scope.
 
 Aggregate windows support KILL and whole-output REMOVE policies over one common inline contributor
-frame that includes the current row. Policy aggregates receive that same OVER
+frame that includes the current row. Frame `EXCLUDE` clauses are rejected before
+rewriting: the native parser cannot represent them, and excluding the current
+row would omit a required contributor. Policy aggregates receive that same OVER
 clause, preserving the original window values. For example, a cumulative SUM
 with a source-category constraint checks every contributor to each cumulative
 frame, rather than only its current row. Mixed/different frames, named windows,
