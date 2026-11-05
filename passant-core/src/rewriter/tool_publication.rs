@@ -155,7 +155,7 @@ impl PassantRewriter {
 
         // A branch view preserves registration identities, aggregate metadata,
         // and catalog semantics. The original policy registry is never mutated.
-        let mut terminal = self.tool_policy_branch(false, true);
+        let mut terminal = self.tool_policy_branch(false, true)?;
         // This declaration is scoped to a native-validated flat model followed
         // only by the planner's bijective occurrence binding. It is not a claim
         // that terminal removal can be pushed through arbitrary nested SQL.
@@ -167,7 +167,7 @@ impl PassantRewriter {
         }) {
             // Enforce KILL > REMOVE against the original actual outputs without
             // writing them. RETRY deliberately remains below REMOVE precedence.
-            let preflight = self.tool_policy_branch(true, false);
+            let preflight = self.tool_policy_branch(true, false)?;
             let rewritten =
                 preflight.rewrite_with_options(&actual_candidates.to_string(), options.clone())?;
             match parse_query_with_dialect(&rewritten, self.parse_dialect)? {
@@ -190,32 +190,40 @@ impl PassantRewriter {
         })
     }
 
-    fn tool_policy_branch(&self, sink_kill_only: bool, terminal_remove: bool) -> Self {
-        let entries = self
-            .store
-            .policy_indices()
-            .into_iter()
-            .filter_map(|index| {
-                let mut policy = self.store.policy(index)?.clone();
-                if sink_kill_only
-                    && (!policy.sources().is_empty()
-                        || !matches!(policy.resolution(), Resolution::Kill))
-                {
-                    return None;
+    fn tool_policy_branch(
+        &self,
+        sink_kill_only: bool,
+        terminal_remove: bool,
+    ) -> Result<Self, RewriteError> {
+        let mut entries = Vec::new();
+        for index in self.store.policy_indices() {
+            let mut policy = self
+                .store
+                .policy(index)
+                .ok_or_else(|| {
+                    unsupported("Tool policy registry contains a missing active policy")
+                })?
+                .clone();
+            if sink_kill_only
+                && (!policy.sources().is_empty()
+                    || !matches!(policy.resolution(), Resolution::Kill))
+            {
+                continue;
+            }
+            if terminal_remove {
+                let PolicyIr::Pgn { on_fail, .. } = &mut policy;
+                if matches!(on_fail, Resolution::Remove) {
+                    *on_fail = Resolution::Udf(PASSANT_REMOVE_OUTPUT.to_owned());
                 }
-                if terminal_remove {
-                    let PolicyIr::Pgn { on_fail, .. } = &mut policy;
-                    if matches!(on_fail, Resolution::Remove) {
-                        *on_fail = Resolution::Udf(PASSANT_REMOVE_OUTPUT.to_owned());
-                    }
-                }
-                Some(BranchPolicyEntry {
-                    policy,
-                    original_policy_index: self.store.original_policy_index(index),
-                    constraint_ast: self.store.clone_constraint_ast(index)?,
-                })
-            })
-            .collect();
+            }
+            entries.push(BranchPolicyEntry {
+                policy,
+                original_policy_index: self.store.original_policy_index(index),
+                constraint_ast: self.store.clone_constraint_ast(index).ok_or_else(|| {
+                    unsupported("Tool policy registry contains an uncompiled constraint")
+                })?,
+            });
+        }
         let mut branch = Self::with_branch_view(
             &self.store,
             entries,
@@ -227,7 +235,7 @@ impl PassantRewriter {
         for index in branch.store.policy_indices() {
             branch.finalize_scan_ready_expr(index, &self.aggregate_registry);
         }
-        branch
+        Ok(branch)
     }
 }
 
@@ -381,7 +389,7 @@ mod tests {
         let retry = parse_policy_text("SOURCE ToolInput SINK ToolOutput CONSTRAINT ToolInput.id=2 ON FAIL RETRY('retry second')").unwrap();
         r.register_policy(retry.clone()).unwrap();
         assert!(r.delete_policy(None, None, Some("ToolInput.id=1"), None, None));
-        let branch = r.tool_policy_branch(false, true);
+        let branch = r.tool_policy_branch(false, true).unwrap();
         assert!(branch.policy_by_index(0).is_none());
         assert_eq!(branch.policy_by_index(1), Some(&retry));
     }
