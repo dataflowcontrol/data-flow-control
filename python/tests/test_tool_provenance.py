@@ -794,12 +794,13 @@ def test_window_exclusion_cannot_omit_current_row_policy_contribution(db, exclud
             on_fail=resolution,
         )
     )
-    model = ToolProvenance(
-        "SELECT id, SUM(id) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING "
-        f"AND UNBOUNDED FOLLOWING EXCLUDE {exclude}) AS total FROM ToolInput",
-        ("id",),
-    )
+    # Native parsing rejects unsupported frame syntax at construction time.
     with pytest.raises(ValueError, match="window frame EXCLUDE"):
+        model = ToolProvenance(
+            "SELECT id, SUM(id) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING "
+            f"AND UNBOUNDED FOLLOWING EXCLUDE {exclude}) AS total FROM ToolInput",
+            ("id",),
+        )
         model.insert_outputs(
             db,
             "ToolOutput",
