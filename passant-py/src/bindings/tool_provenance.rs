@@ -61,6 +61,19 @@ impl PyToolProvenanceModel {
         Ok(PyToolPublicationPlan { inner })
     }
 
+    fn validate_modeled_keys(
+        &self,
+        modeled_rows: &Bound<'_, PyAny>,
+        actual_keys: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let positions = (0..self.model.key_columns.len()).collect::<Vec<_>>();
+        let modeled = extract_key_rows(modeled_rows, Some(&positions))?;
+        let actual = extract_key_rows(actual_keys, None)?;
+        align_tool_keys(&modeled, &actual, self.model.key_columns.len())
+            .map(|_| ())
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     fn bind_indices(
         &self,
         result_columns: Option<Vec<String>>,
@@ -89,6 +102,11 @@ pub struct PyToolPublicationPlan {
 
 #[pymethods]
 impl PyToolPublicationPlan {
+    #[getter]
+    fn model_keys_sql(&self) -> &str {
+        &self.inner.model_keys_sql
+    }
+
     #[getter]
     fn validation_sql(&self) -> &str {
         &self.inner.validation_sql

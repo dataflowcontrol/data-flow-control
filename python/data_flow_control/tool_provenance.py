@@ -102,6 +102,10 @@ class ToolProvenance:
             for output in outputs:
                 bindings.extend(output.key)
                 bindings.extend(output.values[column] for column in plan.output_columns)
+            modeled_keys = raw.execute(plan.model_keys_sql, list(params)).fetchall()
+            self._native.validate_modeled_keys(
+                modeled_keys, [tuple(output.key) for output in outputs]
+            )
             status = raw.execute(plan.validation_sql, bindings).fetchone()[0]
             plan.check_validation(status)
             if plan.sink_kill_preflight_sql is not None:

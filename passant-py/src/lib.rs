@@ -2,11 +2,11 @@ mod bindings;
 
 use bindings::{
     PassantRewriteError, PyPlanner, PyRewriteStats, PyRewriteStatsTimings,
-    PyToolProvenanceModel, PyToolPublicationPlan,
-    PyStatementRewriteSummary, normalize_policy_dimension_aliases_py,
-    normalize_policy_dimension_queries_py, normalize_policy_dimensions_py,
-    normalize_policy_source_aliases_py, normalize_policy_sources_py, parse_policy_to_json,
-    resolution_to_python_py, validate_constraint_expression_py,
+    PyStatementRewriteSummary, PyToolProvenanceModel, PyToolPublicationPlan,
+    normalize_policy_dimension_aliases_py, normalize_policy_dimension_queries_py,
+    normalize_policy_dimensions_py, normalize_policy_source_aliases_py,
+    normalize_policy_sources_py, parse_policy_to_json, resolution_to_python_py,
+    validate_constraint_expression_py,
 };
 use pyo3::prelude::*;
 
