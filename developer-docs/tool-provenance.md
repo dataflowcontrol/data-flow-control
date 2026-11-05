@@ -92,9 +92,11 @@ policies coexist with scalar/expression subqueries (including ARRAY queries).
 REMOVE uses ordinary filtering for row-preserving models, including self-joins.
 For a single flat aggregate or supported aggregate-window SELECT, it instead
 checks the original complete group/frame and discards the entire modeled output
-if that check fails. A scalar REMOVE constraint is evaluated for each original
-contributor using `BOOL_AND((constraint) IS TRUE)`; NULL contributors cannot be
-silently ignored. Explicit aggregate constraints keep their authored meaning.
+if that check fails. Scalar source comparisons retain DFC's implicit-uniqueness
+checks; the terminal predicate also evaluates `BOOL_AND((constraint) IS TRUE)`
+over the original contributors, so NULL contributors cannot be silently ignored.
+This does not reinterpret an implicit UNIQUE comparison as a weaker universal
+row predicate. Explicit aggregate constraints keep their authored meaning.
 Multiple contributor predicates are evaluated together before any output is discarded.
 A read-only preflight checks sink-only KILL predicates on the original actual
 outputs before contributor filtering can hide an abort. It uses the ordinary
