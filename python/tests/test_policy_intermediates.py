@@ -355,5 +355,5 @@ def test_native_identity_type_change_cannot_double_count_same_key(db):
         "SELECT CAST(id AS BIGINT) AS id, amount FROM typed_input",
         identity_columns=["id"],
     )
-    with pytest.raises(IntermediateError, match="type"):
+    with pytest.raises(IntermediateError, match="identity schema"):
         plan.merge(a, b)
