@@ -27,6 +27,7 @@ pub mod source_sets;
 pub mod sql;
 pub mod statement_tables;
 pub mod threshold;
+pub mod tool_correspondence;
 
 pub use aggregate_registry::{
     AggregateClassification, AggregateFunction, AggregateFunctionSnapshot, AggregateFunctionSource,
