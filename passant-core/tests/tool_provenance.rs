@@ -33,7 +33,7 @@ fn plan(db: &TestDb, sql: &str, keys: &[&str], rows: usize) -> ToolPublicationPl
             "ToolOutput",
             &vec![keys.len(); rows],
             &vec![vec!["message".into()]; rows],
-            model.parameter_count,
+            model.parameter_count(),
         )
         .unwrap()
 }
@@ -80,7 +80,7 @@ fn native_tool_constructor_and_shape_validation() {
         vec!["id".into()],
     )
     .unwrap();
-    assert_eq!(model.parameter_count, 1);
+    assert_eq!(model.parameter_count(), 1);
     assert!(model.validate_parameter_count(0).is_err());
     assert!(
         model
@@ -212,4 +212,111 @@ fn native_tool_whole_group_and_window_remove_remain_intact() {
             expected
         );
     }
+}
+
+#[test]
+fn native_tool_binding_does_not_capture_projected_where_aliases() {
+    let mut db = fixture();
+    db.exec("CREATE TABLE ModelInput(id INT,copies INT); INSERT INTO ModelInput VALUES(1,1),(1,2)");
+    db.rewriter
+        .catalog_mut()
+        .register_table("ModelInput", vec!["id".into(), "copies".into()]);
+    let bound = plan(
+        &db,
+        "SELECT id, copies AS v0 FROM ModelInput WHERE v0=1",
+        &["id"],
+        1,
+    );
+    let values = [n(1), s("1")];
+    assert_eq!(scalar(&db, &bound.validation_sql, &values), 0);
+    assert_eq!(
+        scalar(&db, bound.publication_sql.as_ref().unwrap(), &values),
+        1
+    );
+    let chained = plan(
+        &db,
+        "SELECT id, copies AS x, x+1 AS v0 FROM ModelInput WHERE v0=2",
+        &["id"],
+        1,
+    );
+    assert_eq!(scalar(&db, &chained.validation_sql, &values), 0);
+    assert_eq!(
+        scalar(&db, chained.publication_sql.as_ref().unwrap(), &values),
+        1
+    );
+}
+
+#[test]
+fn native_tool_binding_preserves_business_columns_and_quoted_aliases() {
+    let mut db = fixture();
+    db.exec("CREATE TABLE ModelInput(id INT,k0 INT,v0 INT); INSERT INTO ModelInput VALUES(1,2,3)");
+    db.rewriter
+        .catalog_mut()
+        .register_table("ModelInput", vec!["id".into(), "k0".into(), "v0".into()]);
+    for alias in ["actual", "model", "__dfc_tool_actual", "__dfc_tool_model"] {
+        let sql = format!("SELECT {alias}.* FROM ModelInput AS \"{alias}\" WHERE k0=2 AND v0=3");
+        let plan = plan(&db, &sql, &["id"], 1);
+        let values = [n(1), s("a")];
+        assert_eq!(scalar(&db, &plan.validation_sql, &values), 0);
+        assert_eq!(
+            scalar(&db, plan.publication_sql.as_ref().unwrap(), &values),
+            1
+        );
+    }
+}
+
+#[test]
+fn native_tool_wildcard_accepts_unqualified_name_for_schema_table() {
+    let mut db = fixture();
+    db.rewriter.catalog_mut().register_table(
+        "main.ToolInput",
+        vec!["id".into(), "category".into(), "copies".into()],
+    );
+    let plan = plan(
+        &db,
+        "SELECT ToolInput.* FROM main.ToolInput WHERE id=1",
+        &["id"],
+        1,
+    );
+    let values = [n(1), s("a")];
+    assert_eq!(scalar(&db, &plan.validation_sql, &values), 0);
+    assert_eq!(
+        scalar(&db, plan.publication_sql.as_ref().unwrap(), &values),
+        1
+    );
+}
+
+#[test]
+fn native_tool_alias_expansion_preserves_source_column_precedence() {
+    let db = fixture();
+    let bound = plan(
+        &db,
+        "SELECT id, copies+1 AS copies FROM ToolInput WHERE copies=1",
+        &["id"],
+        1,
+    );
+    let values = [n(2), s("not a number")];
+    assert_eq!(scalar(&db, &bound.validation_sql, &values), 0);
+    assert_eq!(
+        scalar(&db, bound.publication_sql.as_ref().unwrap(), &values),
+        1
+    );
+}
+
+#[test]
+fn native_tool_preserves_derived_scope_without_column_binding_proof() {
+    let mut db = fixture();
+    db.exec("CREATE TABLE Uncatalogued(id INT,v0 INT); INSERT INTO Uncatalogued VALUES(1,1),(1,2)");
+    let bound = plan(
+        &db,
+        "SELECT t.id FROM Uncatalogued t WHERE v0=1",
+        &["id"],
+        1,
+    );
+    let values = [n(1), s("1")];
+    assert_eq!(scalar(&db, &bound.validation_sql, &values), 0);
+    assert_eq!(
+        scalar(&db, bound.publication_sql.as_ref().unwrap(), &values),
+        1
+    );
 }
