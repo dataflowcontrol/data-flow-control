@@ -41,6 +41,8 @@ mod policy_expr;
 mod projection;
 pub(crate) mod resolution;
 mod select;
+mod tool_publication;
+mod window;
 mod write_path;
 
 pub(crate) use plan::{

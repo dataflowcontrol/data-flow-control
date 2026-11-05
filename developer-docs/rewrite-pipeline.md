@@ -103,3 +103,18 @@ Requires catalog unique/primary-key columns on the update target for edited mode
 ## DELETE
 
 No rewrite; statement returned as-is.
+
+## Window policy boundary
+
+Aggregate-window KILL predicates use the same inline contributor frame as the
+query's aggregate windows, instead of introducing a grouped COUNT/MIN/MAX into
+an ungrouped SELECT. Supported frames include the current row and share one
+identical specification. Grouped/HAVING/QUALIFY window inputs, distinct frames,
+named window specifications and non-KILL aggregate-window resolutions fail
+explicitly. Unsupported value/navigation windows (including LEAD/LAG and
+FIRST_VALUE/LAST_VALUE/NTH_VALUE) fail before policy pushdown. ROW_NUMBER retains
+its existing row-wise semantics.
+
+External payload publication imposes additional constraints because filtering
+cannot recompute an already observed tool result; see
+[SQL-defined tool provenance](tool-provenance.md).

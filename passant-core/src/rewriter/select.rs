@@ -177,6 +177,22 @@ impl PassantRewriter {
         let mut policy_tables = super::TableScope::from_select(select).direct_base_tables;
         policy_tables.extend(context.joint_resolution_sources.iter().cloned());
         let sink = context.sink.as_deref().map(TableKey::new);
+        let applicable_policy = self.store.policy_indices().into_iter().any(|index| {
+            self.store.compiled(index).is_some_and(|compiled| {
+                super::policy_expr::compiled_policy_applicability(
+                    compiled,
+                    &policy_tables,
+                    sink.as_ref(),
+                    context.allow_partial_source_visibility,
+                )
+                .is_some()
+            })
+        });
+        let policy_window = if applicable_policy {
+            super::window::policy_window(select, &self.aggregate_registry)?
+        } else {
+            None
+        };
         let applicable_retry = self.store.policy_indices().into_iter().any(|index| {
             self.store.compiled(index).is_some_and(|compiled| {
                 matches!(
@@ -274,7 +290,7 @@ impl PassantRewriter {
             local_context
         };
         let plan_start = Instant::now();
-        let plan = plan_select_rewrite(
+        let mut plan = plan_select_rewrite(
             &self.store,
             &self.catalog,
             stats,
@@ -283,6 +299,9 @@ impl PassantRewriter {
             &plan_context,
             &handled,
         )?;
+        if let Some(window) = &policy_window {
+            super::window::apply_policy_window(&mut plan, window, &self.aggregate_registry)?;
+        }
         if context.collect_stats {
             self.stats.add_elapsed_planning(plan_start.elapsed());
         }
@@ -348,7 +367,33 @@ impl PassantRewriter {
             {
                 return Ok(());
             }
-            self.rewrite_query_with_context(subquery, context)?;
+            // A sink-only constraint describes the actual INSERT output, not
+            // each contributing derived relation. Its mapped expression may
+            // reference a sibling binding (for example an external payload).
+            // Keep source policies active here and enforce sink-only policies
+            // when the outer SELECT has all output expressions in scope.
+            let temporarily_deferred: Vec<_> = if context.sink.is_some() {
+                self.store
+                    .policy_indices()
+                    .into_iter()
+                    .filter(|index| {
+                        !context.deferred_policy_indices.contains(index)
+                            && self.store.policy(*index).is_some_and(|policy| {
+                                policy.sources().is_empty() && policy.sink().is_some()
+                            })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            context
+                .deferred_policy_indices
+                .extend(temporarily_deferred.iter().copied());
+            let result = self.rewrite_query_with_context(subquery, context);
+            for index in temporarily_deferred {
+                context.deferred_policy_indices.remove(&index);
+            }
+            result?;
         }
         Ok(())
     }
