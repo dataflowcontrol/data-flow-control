@@ -138,9 +138,19 @@ the DB-API transaction/cursor and translates native effect results to existing
 exceptions. PyO3 transports values and invokes the supplied DB connection; it
 contains no aggregate merge or policy interpretation rules.
 
-The state-aware SQL lowering is still a dedicated native path. It shares the core
-policy compiler, AST, catalog, aggregate and resolution registries; it does not
-claim full operator parity with the legacy joint-lineage traversal.
+Opaque state propagation uses the existing `rewrite_query_with_context` and
+joint-lineage traversal. `JointLineageContext` has an explicit opaque-payload mode;
+CTE memoization, derived recursion, physical/CTE binding, logical stars and hidden
+alias extension are shared with ordinary SQL rewriting. The opaque helper has no
+recursive query or factor walker: it supplies supported-shape validation and
+aggregate/window dependency expressions for whole inputs.
+
+Both live SQL and state compilation use the target-parameterized
+`rewriter::policy_lowering` expression walker and guard placement. Aggregate-demand
+analysis is shared with deferred INSERT policy projections. Source applicability
+and no-SINK `_OUTPUT_` column availability use the same core functions in both
+execution modes. State emission and indivisible-input restrictions remain explicit
+mode-specific behavior; sharing traversal does not establish full operator parity.
 
 Aggregate windows union the current row's dependencies with those of each
 referenced frame, deduplicating contributor identities. Multiple inline frames
@@ -164,8 +174,8 @@ recompute an aggregate or window result. That would violate the opaque-input
 contract after a tool boundary. Native resolution treats this path as fixed
 payloads. Broader integration with legacy recomputable stages must preserve that
 distinction; feeding only scalar aggregates into scan filters would be unsound.
-The dedicated native lowering currently fails closed on unsupported operators
-and partial-overlap additive merges.
+The opaque-payload mode currently fails closed on unsupported operators and
+partial-overlap additive merges.
 
 Queries must be deterministic and use ordinary SQL equality/collation. Fetch
 results are materialized and support `description`, `fetchone`, `fetchmany` and
