@@ -36,3 +36,29 @@ def test_missing_ordinary_source_precedes_required_source(propagate, ordinary_pr
             "INSERT INTO updates " + ("SELECT id FROM b" if ordinary_present else "SELECT 1")
         )
         assert conn.fetchall("SELECT * FROM updates") == ([] if ordinary_present else [(1,)])
+
+
+@pytest.mark.parametrize("propagate", [False, True])
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("SELECT x FROM a ORDER BY x", [(-1,), (1,)]),
+        ("SELECT y FROM b ORDER BY y", [(-1,), (1,)]),
+        ("SELECT x,y FROM a CROSS JOIN b ORDER BY x,y", [(1, 1)]),
+    ],
+)
+def test_source_only_conjunction_requires_both_ordinary_sources(propagate, query, expected):
+    with dfc(duckdb.connect()) as conn:
+        conn.execute("CREATE TABLE a(x INTEGER)")
+        conn.execute("CREATE TABLE b(y INTEGER)")
+        conn.execute("INSERT INTO a VALUES (-1),(1)")
+        conn.execute("INSERT INTO b VALUES (-1),(1)")
+        conn.register_policy(
+            Policy.from_pgn("SOURCE a,b CONSTRAINT a.x>0 AND b.y>0 ON FAIL REMOVE")
+        )
+        if propagate:
+            conn.enable_intermediate_propagation()
+        # Internal partial-source discovery does not make a top-level policy
+        # applicable without its ordinary sources. Both paths enforce it once
+        # the query actually combines contributors from a and b.
+        assert conn.fetchall(query) == expected
