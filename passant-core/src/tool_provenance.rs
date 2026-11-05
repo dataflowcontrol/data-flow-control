@@ -69,6 +69,12 @@ impl ToolProvenanceModel {
         }
         impl Visitor for Validate {
             type Break = ();
+            fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+                if validate_read_only_body(&query.body).is_err() || !query.locks.is_empty() {
+                    self.error = Some("Tool provenance requires a read-only query".into());
+                }
+                ControlFlow::Continue(())
+            }
             fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
                 match expr {
                     Expr::Value(Value::Placeholder(name)) if name == "?" => {
@@ -324,6 +330,9 @@ impl ToolProvenanceModel {
 
 fn validate_read_only_body(body: &SetExpr) -> Result<(), RewriteError> {
     match body {
+        SetExpr::Select(select) if select.into.is_some() => {
+            Err(invalid("Tool provenance requires a read-only query"))
+        }
         SetExpr::Select(_) | SetExpr::Values(_) | SetExpr::Table(_) => Ok(()),
         SetExpr::Query(query) => validate_read_only_body(&query.body),
         SetExpr::SetOperation { left, right, .. } => {
@@ -342,16 +351,35 @@ fn normalize_tokens(sql: &str) -> Result<String, RewriteError> {
         .iter()
         .filter(|token| !matches!(token, Token::Whitespace(_)))
         .collect::<Vec<_>>();
-    for pair in significant.windows(2) {
-        if pair[0].to_string().eq_ignore_ascii_case("EXCLUDE")
-            && matches!(
-                pair[1].to_string().to_ascii_uppercase().as_str(),
-                "CURRENT" | "GROUP" | "TIES" | "NO"
-            )
-        {
-            return Err(invalid(
-                "Tool provenance does not support window frame EXCLUDE clauses",
-            ));
+    let mut frame_scopes: Vec<bool> = Vec::new();
+    for (index, token) in significant.iter().enumerate() {
+        match token {
+            Token::LParen => frame_scopes.push(false),
+            Token::RParen => {
+                frame_scopes.pop();
+            }
+            Token::Word(word) if word.quote_style.is_none() => {
+                let word = word.value.to_ascii_uppercase();
+                if matches!(word.as_str(), "ROWS" | "RANGE" | "GROUPS")
+                    && let Some(scope) = frame_scopes.last_mut()
+                {
+                    *scope = true;
+                }
+                if word == "EXCLUDE"
+                    && frame_scopes.iter().any(|scope| *scope)
+                    && significant.get(index + 1).is_some_and(|next| {
+                        matches!(
+                            next.to_string().to_ascii_uppercase().as_str(),
+                            "CURRENT" | "GROUP" | "TIES" | "NO"
+                        )
+                    })
+                {
+                    return Err(invalid(
+                        "Tool provenance does not support window frame EXCLUDE clauses",
+                    ));
+                }
+            }
+            _ => {}
         }
     }
     let mut out = String::new();
