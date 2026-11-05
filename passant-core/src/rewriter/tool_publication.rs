@@ -39,6 +39,7 @@ impl PassantRewriter {
             registry: &'a crate::aggregate_registry::AggregateRegistry,
             queries: usize,
             expression_subquery: bool,
+            ranking_window: bool,
             changes_contributors: bool,
             unsupported_terminal_shape: bool,
         }
@@ -89,6 +90,27 @@ impl PassantRewriter {
                 if let Expr::Function(function) = expr {
                     self.expression_subquery |=
                         matches!(function.args, FunctionArguments::Subquery(_));
+                    // Rank/ordinal values depend on ordering predecessors even
+                    // when the public current row has no prohibited values.
+                    // Legacy row-local ROW_NUMBER provenance is insufficient
+                    // for retaining an already-computed external payload.
+                    if function.over.is_some() {
+                        let name = function
+                            .name
+                            .0
+                            .last()
+                            .map(|ident| ident.value.to_ascii_lowercase())
+                            .unwrap_or_default();
+                        self.ranking_window |= matches!(
+                            name.as_str(),
+                            "row_number"
+                                | "rank"
+                                | "dense_rank"
+                                | "percent_rank"
+                                | "cume_dist"
+                                | "ntile"
+                        );
+                    }
                     self.changes_contributors |=
                         function.over.is_some() || self.registry.is_aggregate_call(function);
                 }
@@ -99,6 +121,7 @@ impl PassantRewriter {
             registry: &self.aggregate_registry,
             queries: 0,
             expression_subquery: false,
+            ranking_window: false,
             changes_contributors: false,
             unsupported_terminal_shape: false,
         };
@@ -106,6 +129,11 @@ impl PassantRewriter {
         if shape.expression_subquery {
             return Err(unsupported(
                 "Tool provenance with policies does not support scalar/expression subqueries",
+            ));
+        }
+        if shape.ranking_window {
+            return Err(unsupported(
+                "Tool provenance ranking windows (including ROW_NUMBER) require ordering-contributor provenance",
             ));
         }
         let policies = self.policies();
@@ -380,6 +408,43 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn native_tool_ranking_window_cannot_retain_secret_predecessor_ordinal() {
+        let r = rewriter(
+            "SOURCE ToolInput SINK ToolOutput CONSTRAINT ToolInput.category='public' ON FAIL REMOVE",
+        );
+        // A private id=1 precedes public id=2. Keeping the actual ordinal '2'
+        // after removing row 1 reveals that predecessor; recomputing SQL would
+        // instead yield '1', which cannot repair the external fixed payload.
+        for function in [
+            "ROW_NUMBER()",
+            "RANK()",
+            "DENSE_RANK()",
+            "PERCENT_RANK()",
+            "CUME_DIST()",
+            "NTILE(2)",
+        ] {
+            let model_sql = format!("SELECT id,{function} OVER (ORDER BY id) n FROM ToolInput");
+            let model = query(&model_sql);
+            let publication = statement(&format!(
+                "INSERT INTO ToolOutput(message) SELECT actual.v FROM ({model_sql}) model JOIN (VALUES (1,'ordinal1'),(2,'ordinal2')) actual(k,v) ON model.id=actual.k"
+            ));
+            let candidates = statement(
+                "INSERT INTO ToolOutput(message) SELECT 'ordinal1' UNION ALL SELECT 'ordinal2'",
+            );
+            let error = match r.rewrite_tool_publication(
+                &model,
+                &publication,
+                &candidates,
+                RewriteOptions::default(),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("ranking model retained an unchecked predecessor: {model_sql}"),
+            };
+            assert!(error.to_string().contains("ranking windows"), "{error}");
+        }
     }
 
     #[test]
