@@ -96,6 +96,7 @@ impl SqlValue {
 struct SourceState {
     source: String,
     identities: BTreeSet<String>,
+    identity_types: Vec<String>,
     values: Vec<Vec<SqlValue>>,
 }
 #[derive(Debug, Clone)]
@@ -272,9 +273,11 @@ impl IntermediatePlan {
             projection.join(", "),
             quote(source)
         );
-        for (n, sql_type) in db.describe_types(&input)?.iter().enumerate() {
+        let types = db.describe_types(&input)?;
+        for (n, sql_type) in types.iter().enumerate() {
             validate_transfer_type(sql_type, n < keys.len())?;
         }
+        let identity_types = types[..keys.len()].to_vec();
         let row_key = format!(
             "ROW({})",
             (0..keys.len())
@@ -339,6 +342,7 @@ impl IntermediatePlan {
             sources: vec![SourceState {
                 source: source.into(),
                 identities: data.identities.into_iter().collect(),
+                identity_types,
                 values: data.metrics,
             }],
         })
@@ -357,6 +361,12 @@ impl IntermediatePlan {
         }
         let mut merged = Vec::new();
         for (source, mut parts) in by_source {
+            if parts
+                .iter()
+                .any(|part| part.identity_types != parts[0].identity_types)
+            {
+                return Err("Contributor identity schema changed between captures".into());
+            }
             parts.sort_by_key(|p| std::cmp::Reverse(p.identities.len()));
             let mut kept: Vec<&SourceState> = Vec::new();
             for part in parts {
@@ -393,6 +403,7 @@ impl IntermediatePlan {
             }
             merged.push(SourceState {
                 source: source.into(),
+                identity_types: kept[0].identity_types.clone(),
                 identities: kept
                     .iter()
                     .flat_map(|p| p.identities.iter().cloned())
@@ -713,6 +724,30 @@ mod tests {
             )
             .unwrap_err()
             .contains("TIMESTAMP_NS")
+        );
+    }
+    #[test]
+    fn changed_identity_sql_type_cannot_double_count_one_contributor() {
+        let mut db = Db::new();
+        let plan = IntermediatePlan::new(
+            vec![spec("total", "amount", "sum")],
+            vec!["cases".into()],
+            vec![],
+        )
+        .unwrap();
+        let a = capture(&plan, &mut db, "id=1");
+        let b = plan
+            .capture(
+                &mut db,
+                "cases",
+                "SELECT id::BIGINT AS id, amount FROM cases WHERE id=1",
+                &["id".into()],
+            )
+            .unwrap();
+        assert!(
+            plan.merge(&mut db, &[&a, &b])
+                .unwrap_err()
+                .contains("identity schema")
         );
     }
 }
