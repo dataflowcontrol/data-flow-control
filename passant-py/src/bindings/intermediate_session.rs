@@ -3,11 +3,10 @@ use std::collections::HashMap;
 
 use passant_core::intermediate_session::{IntermediateDependency, IntermediateSession};
 use passant_core::intermediate_state::IntermediateState;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-use super::intermediates::{PyIntermediatePlan, PyIntermediateState, PySqlExecutor};
+use super::intermediates::{PyIntermediatePlan, PyIntermediateState, PySqlExecutor, state_error};
 
 #[pyclass(name = "PyIntermediateSession")]
 pub struct PyIntermediateSession {
@@ -51,7 +50,7 @@ impl PyIntermediateSession {
             })
             .collect();
         Ok(Self {
-            inner: IntermediateSession::new(plans?, sources).map_err(PyValueError::new_err)?,
+            inner: IntermediateSession::new(plans?, sources).map_err(state_error)?,
         })
     }
 
@@ -74,7 +73,7 @@ impl PyIntermediateSession {
         let result = self
             .inner
             .row_states(&mut PySqlExecutor { conn: conn.clone() }, &parsed)
-            .map_err(PyValueError::new_err)?;
+            .map_err(state_error)?;
         state_tuple(py, result)
     }
 
@@ -87,14 +86,12 @@ impl PyIntermediateSession {
         let result = self
             .inner
             .merge_rows(&mut PySqlExecutor { conn: conn.clone() }, &states(rows)?)
-            .map_err(PyValueError::new_err)?;
+            .map_err(state_error)?;
         state_tuple(py, result)
     }
 
     fn register_rows(&mut self, rows: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
-        self.inner
-            .register_rows(states(rows)?)
-            .map_err(PyValueError::new_err)
+        self.inner.register_rows(states(rows)?).map_err(state_error)
     }
 
     fn checkpoint(&self) -> i64 {
@@ -102,8 +99,6 @@ impl PyIntermediateSession {
     }
 
     fn rollback(&mut self, checkpoint: i64) -> PyResult<()> {
-        self.inner
-            .rollback(checkpoint)
-            .map_err(PyValueError::new_err)
+        self.inner.rollback(checkpoint).map_err(state_error)
     }
 }
