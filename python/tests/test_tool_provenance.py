@@ -812,3 +812,28 @@ def test_window_exclusion_cannot_omit_current_row_policy_contribution(db, exclud
     assert rows(db) == []
     # The rejected declaration leaves the connection usable after rollback.
     assert db.raw_connection.execute("SELECT COUNT(*) FROM ToolInput").fetchone() == (2,)
+
+
+@pytest.mark.parametrize(
+    "function",
+    ["ROW_NUMBER()", "RANK()", "DENSE_RANK()", "PERCENT_RANK()", "CUME_DIST()", "NTILE(2)"],
+)
+def test_fixed_payload_ranking_cannot_retain_secret_predecessor_ordinal(db, function):
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.category = 'public'",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance(
+        f"SELECT id, {function} OVER (ORDER BY id DESC) AS position FROM ToolInput", ("id",)
+    )
+    with pytest.raises(ValueError, match="ranking windows"):
+        model.insert_outputs(
+            db,
+            "ToolOutput",
+            [ToolOutput((1,), {"message": "ordinal2"}), ToolOutput((2,), {"message": "ordinal1"})],
+        )
+    assert rows(db) == []

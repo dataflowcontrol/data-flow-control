@@ -4,7 +4,44 @@
 rows with the provenance of a SQL query. It does not execute the external tool,
 implement its business logic, or authorize its side effects. The query remains
 an ordinary relational input to DFC's `INSERT … SELECT` rewrite; this is not an
-input/output pair language.
+input/output pair language. The model, correspondence rules and enforcement
+planning are implemented in the OSS Rust core; Python is a binding and database
+host adapter.
+
+## Native API and host boundary
+
+`passant_core::tool_provenance::ToolProvenanceModel::new` parses and validates the
+read-only declaration. `PassantRewriter::plan_tool_publication` uses the ordinary
+catalog, aggregate registry and policy store to construct a `ToolPublicationPlan`.
+Only this entry point constructs the model/publication pair; hosts cannot assert
+that a model has passed fixed-payload capability checks.
+
+The native plan contains the modeled-key query, SQL correspondence validation,
+optional read-only sink-KILL preflight, publication SQL, output-column order and
+preflight binding indices. Hosts execute these within one snapshot and pass the
+validation status to native `ToolPublicationPlan::check_validation`. Model keys
+use model parameters; validation/publication bind model parameters followed by
+each actual row's key and payload values. The preflight's indices select its
+bindings from that same vector. The host must not rewrite these queries or
+interpret the status itself.
+
+`passant_core::tool_correspondence` supplies exact typed-key validation,
+bijection and output-order alignment, including result-column lookup and
+complete-result/state alignment. Hosts convert their scalar values to native
+keys and call the same matcher for publication and intermediate binding. Numeric
+keys use exact rational values, preserving integer/float/Decimal distinctions
+without rounding; SQL validation additionally checks backend equality/collation.
+The Python binding supports standard numeric, string, bytes, temporal and UUID
+keys and moves intermediate-state tuples opaquely using native alignment indices.
+
+Rust owns shape validation, star expansion, SQL scope/alias normalization,
+parameter numbering, fixed-payload resolution selection, policy applicability,
+implicit uniqueness, window contributor checks and effect precedence. Python
+only extracts arguments and catalog facts, binds values, owns the DuckDB
+transaction, executes returned statements, and translates adapter errors. It
+has no SQLGlot traversal, policy copies, shape whitelist or resolution selector.
+Native tests exercise the planner and publication SQL directly through Rust
+DuckDB, without invoking the Python package.
 
 ## One input, one output
 
@@ -66,9 +103,10 @@ input data and include them in the model.
 
 Joins, self-joins, grouping, CTEs and lateral expansion can describe modeled
 rows. `CROSS JOIN LATERAL generate_series(...)` supports policy-bearing expansion;
-comma-lateral spelling is normalized before the Rust parser. Source-to-output
-comparisons are tested for 1:1 and 1:many. Safe model subqueries are flattened
-with SQLGlot so actual outputs remain in policy scope.
+comma-lateral spelling is normalized by the native model parser. Source-to-output
+comparisons are tested for 1:1 and 1:many. The native planner qualifies source
+references and safely flattens row-preserving models so actual outputs remain
+in policy scope, retaining derived boundaries when safe binding is not proved.
 
 Aggregate windows support KILL and whole-output REMOVE policies over one common inline contributor
 frame that includes the current row. Frame `EXCLUDE` clauses are rejected before
@@ -80,7 +118,10 @@ frame, rather than only its current row. Mixed/different frames, named windows,
 grouped/HAVING/QUALIFY window inputs and other aggregate-window resolutions
 are explicitly unsupported. Value/navigation windows such as LEAD, LAG and
 FIRST_VALUE are rejected when a policy applies; they are not silently treated
-as row-local provenance. The core retains its established ROW_NUMBER behavior.
+as row-local provenance. Ranking windows, including ROW_NUMBER, are also rejected
+for policy-bearing tool models: retaining a public row's already-computed ordinal
+can reveal a private predecessor even after REMOVE. This tool-specific boundary
+does not change the ordinary SQL rewriter's existing ROW_NUMBER behavior.
 
 ### Fixed payloads cannot be recomputed after filtering
 
@@ -89,7 +130,7 @@ window or scalar-subquery value. An external tool's already computed payload
 cannot be recomputed that way. Keeping its output key is not sufficient evidence
 that its original contributors passed policy checks.
 
-Publication therefore fails closed, before normalization, when registered
+Native publication planning therefore fails closed when registered
 policies coexist with scalar/expression subqueries (including ARRAY queries).
 REMOVE uses ordinary filtering for row-preserving models, including self-joins.
 For a single flat aggregate or supported aggregate-window SELECT, it instead
@@ -110,7 +151,8 @@ after removing the private contributor. A sliding window loses just outputs
 whose original frames fail, without recomputing surviving frames.
 
 This uses DFC's existing tuple-resolution stage with an internal terminal-remove
-marker in a temporary planner; registered user policies remain unchanged.
+marker in a native policy branch view; registered user policies and their stable
+identities remain unchanged. No host-selected splittability flag is exposed.
 Nested relational stages, DISTINCT, set operations and outer joins still fail
 closed with non-row-preserving REMOVE: resolving an inner stage could change a
 later output's contributor set. Value/navigation windows still need their own
