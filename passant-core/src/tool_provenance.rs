@@ -425,6 +425,17 @@ fn number_parameters(query: &mut Query) {
     let _ = query.visit(&mut Number(0));
 }
 
+fn placeholder_names<T: Visit>(node: &T) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let _: ControlFlow<()> = sqlparser::ast::visit_expressions(node, |expression| {
+        if let Expr::Value(Value::Placeholder(name)) = expression {
+            names.insert(name.clone());
+        }
+        ControlFlow::Continue(())
+    });
+    names
+}
+
 fn invalid_keys(table: &str, columns: &[String]) -> String {
     if columns.is_empty() {
         return "FALSE".into();
@@ -845,6 +856,15 @@ fn flatten_binding(
     });
     let mut from = inner.from.clone();
     if from.is_empty() {
+        return Ok(());
+    }
+    // Flattening drops non-key projections. Preserve the derived model when
+    // that would discard a numbered parameter: the host supplies the same
+    // validated binding vector to both correspondence and publication SQL.
+    let mut retained_parameters = placeholder_names(&predicate);
+    retained_parameters.extend(placeholder_names(&selection));
+    retained_parameters.extend(placeholder_names(&from));
+    if !placeholder_names(model).is_subset(&retained_parameters) {
         return Ok(());
     }
     // The original FROM cross-product keeps its order; the occurrence relation

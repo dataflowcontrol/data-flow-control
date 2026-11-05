@@ -320,3 +320,33 @@ fn native_tool_preserves_derived_scope_without_column_binding_proof() {
         1
     );
 }
+
+#[test]
+fn native_tool_preserves_parameters_in_discarded_model_projections() {
+    let db = fixture();
+    for sql in [
+        "SELECT id, ? AS context FROM ToolInput WHERE id=?",
+        "SELECT id, ? FROM ToolInput WHERE id=?",
+        "SELECT id, ? AS context, context + 1 AS derived FROM ToolInput WHERE id=?",
+    ] {
+        let bound = plan(&db, sql, &["id"], 1);
+        let values = [n(7), n(1), n(1), s("payload")];
+        assert_eq!(bound.model_parameter_count, 2);
+        assert_eq!(scalar(&db, &bound.validation_sql, &values), 0);
+        assert_eq!(scalar(&db, bound.publication_sql.as_ref().unwrap(), &values), 1);
+    }
+}
+
+#[test]
+fn native_tool_retains_parameters_used_by_flattened_keys_and_alias_filters() {
+    let db = fixture();
+    for sql in [
+        "SELECT id+? AS key FROM ToolInput WHERE id=?",
+        "SELECT id+? AS key, ? AS selected FROM ToolInput WHERE id=selected",
+    ] {
+        let bound = plan(&db, sql, &["key"], 1);
+        let values = [n(10), n(1), n(11), s("payload")];
+        assert_eq!(scalar(&db, &bound.validation_sql, &values), 0);
+        assert_eq!(scalar(&db, bound.publication_sql.as_ref().unwrap(), &values), 1);
+    }
+}
