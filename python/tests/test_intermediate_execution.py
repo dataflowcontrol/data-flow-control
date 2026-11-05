@@ -327,8 +327,7 @@ def test_window_frame_states_propagate_through_cte_and_materialization(conn):
     assert conn.fetchall("INSERT INTO updates SELECT id, TRUE FROM framed WHERE id='B'") == [(0,)]
     conn.execute("""CREATE TABLE singleton AS SELECT id,
         SUM(amount) OVER (PARTITION BY id) AS total,
-        MAX(amount) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS largest,
-        ROW_NUMBER() OVER (ORDER BY id) AS ordinal FROM cases""")
+        MAX(amount) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS largest FROM cases""")
     assert conn.fetchall(
         "INSERT INTO updates SELECT id, total=largest FROM singleton WHERE id='B'"
     ) == [(1,)]
@@ -348,6 +347,8 @@ def test_grouped_cte_then_window_and_reused_parameters(conn):
 @pytest.mark.parametrize(
     "expression",
     [
+        "ROW_NUMBER() OVER (ORDER BY id)",
+        "ROW_NUMBER() OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND CURRENT ROW)",
         "LAG(amount) OVER (ORDER BY id)",
         "RANK() OVER (ORDER BY id)",
         "SUM(amount) FILTER (WHERE amount>10) OVER ()",
@@ -516,3 +517,34 @@ def test_whole_row_metadata_is_hidden_in_all_expression_scopes(conn, sql):
     conn.execute("CREATE TABLE sent AS SELECT id FROM cases WHERE id='B'")
     with pytest.raises(IntermediateError, match="whole-row"):
         conn.execute(sql)
+
+
+def test_secret_predecessor_cannot_leak_through_public_row_ordinal():
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE source(id INT, public BOOLEAN)")
+        c.execute("INSERT INTO source VALUES (1,FALSE),(2,TRUE)")
+        c.execute("CREATE TABLE target(id INT, ordinal BIGINT)")
+        c.register_policy(
+            Policy.from_pgn("""SOURCE REQUIRED source SINK target
+            CONSTRAINT BOOL_AND(source.public) ON FAIL REMOVE""")
+        )
+        # Public payload unchanged; the secret predecessor changes its ordinal.
+        assert c.raw_connection.execute(
+            "SELECT id, ROW_NUMBER() OVER(ORDER BY id) AS ordinal FROM source"
+        ).fetchall() == [(1, 1), (2, 2)]
+        assert c.raw_connection.execute(
+            "SELECT id, ROW_NUMBER() OVER(ORDER BY id) AS ordinal FROM source WHERE public"
+        ).fetchall() == [(2, 1)]
+        c.enable_intermediate_propagation()
+        with pytest.raises(IntermediateError, match="ranking"):
+            c.execute("""INSERT INTO target WITH ranked AS
+                (SELECT id, ROW_NUMBER() OVER(ORDER BY id) AS ordinal FROM source)
+                SELECT * FROM ranked WHERE id=2""")
+        with pytest.raises(IntermediateError, match="ranking"):
+            c.execute(
+                "CREATE TABLE ranked AS SELECT id, ROW_NUMBER() OVER(ORDER BY id) AS ordinal FROM source"
+            )
+        assert c.raw_connection.execute("SELECT * FROM target").fetchall() == []
+        assert c.raw_connection.execute(
+            "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name='ranked'"
+        ).fetchone() == (0,)

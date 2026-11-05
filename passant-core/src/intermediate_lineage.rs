@@ -347,9 +347,6 @@ impl Lineage<'_> {
             if let Expr::Function(function) = node {
                 if let Some(window) = &function.over {
                     let name = function.name.to_string().to_ascii_lowercase();
-                    if name == "row_number" {
-                        return ControlFlow::Continue(());
-                    }
                     if !self
                         .registry
                         .lookup(&name)

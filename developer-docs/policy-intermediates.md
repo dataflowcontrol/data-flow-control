@@ -120,7 +120,8 @@ this is not yet a generic native state finalizer or full legacy rewrite coverage
 
 Aggregate windows union the current row's dependencies with those of each
 referenced frame, deduplicating contributor identities. Multiple inline frames
-are supported. ROW_NUMBER follows the existing row-local contract. Navigation
+are supported. ROW_NUMBER is rejected: a public row's ordinal can depend on
+a secret predecessor, so row-local state is insufficient. Other navigation
 and ranking functions, filtered windows, named windows, and grouped plus window
 expressions in the same SELECT fail closed. Group first in a CTE and window over
 its output instead. Positional parameters are numbered before cloning frames.

@@ -38,6 +38,7 @@ fn frames_reuse_numbered_parameters() {
 #[test]
 fn unsupported_windows_and_expression_subqueries_are_rejected() {
     for sql in [
+        "SELECT ROW_NUMBER() OVER (ORDER BY id) FROM source",
         "SELECT LAG(id) OVER () FROM source",
         "SELECT id FROM source WHERE EXISTS (SELECT 1)",
         "SELECT id FROM source ORDER BY 3",
