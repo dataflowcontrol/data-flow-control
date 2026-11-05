@@ -579,3 +579,20 @@ def test_observation_storage_rejects_replaced_policy_session(conn):
     with pytest.raises(IntermediateError, match="Policy changes"):
         conn.store_intermediate_outputs("updates", [("B", True)], inputs.intermediates)
     assert conn.raw_connection.execute("SELECT * FROM updates").fetchall() == []
+
+
+def test_native_count_and_average_survive_join_back_to_original_source():
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE source(id INT, amount INT)")
+        c.execute("INSERT INTO source VALUES (1,10)")
+        c.execute("CREATE TABLE target(id INT)")
+        c.register_policy(
+            Policy.from_pgn("""SOURCE source SINK target
+            CONSTRAINT COUNT(source.id)=1 AND AVG(source.amount)=10 ON FAIL REMOVE""")
+        )
+        c.enable_intermediate_propagation()
+        c.execute("CREATE TABLE saved AS SELECT id FROM source")
+        assert c.fetchall(
+            "INSERT INTO target SELECT s.id FROM saved s JOIN source t ON s.id=t.id"
+        ) == [(1,)]
+        assert c.fetchall("SELECT * FROM target") == [(1,)]

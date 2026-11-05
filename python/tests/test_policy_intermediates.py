@@ -368,3 +368,11 @@ def test_native_compiler_validates_original_average_arguments(db, function, argu
     policy = Policy.from_pgn(f"SOURCE cases CONSTRAINT {function}({argument})>0 ON FAIL REMOVE")
     with pytest.raises(IntermediateError, match="aggregate argument"):
         compile_policy_intermediates(db, policy)
+
+
+@pytest.mark.parametrize("aggregate", ["count", "avg"])
+def test_native_count_fields_keep_identity_after_repeated_merge(db, aggregate):
+    plan = PolicyIntermediates(db, [Intermediate("v", "cases", "amount", aggregate)])
+    original = capture(plan, "id='A'")
+    merged = plan.merge(original)
+    assert plan.values(plan.merge(original, merged, plan.merge(merged))) == plan.values(original)
