@@ -305,7 +305,7 @@ fn native_tool_alias_expansion_preserves_source_column_precedence() {
 
 #[test]
 fn native_tool_preserves_derived_scope_without_column_binding_proof() {
-    let mut db = fixture();
+    let db = fixture();
     db.exec("CREATE TABLE Uncatalogued(id INT,v0 INT); INSERT INTO Uncatalogued VALUES(1,1),(1,2)");
     let bound = plan(
         &db,
