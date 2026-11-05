@@ -12,8 +12,8 @@ fn exact_ratio(
     // Invoke the standard implementation rather than a subclass override.
     let ratio = scalar_type.getattr("as_integer_ratio")?.call1((value,))?;
     Ok(ToolKeyScalar::Number {
-        numerator: ratio.get_item(0)?.str()?.to_str()?.to_owned(),
-        denominator: ratio.get_item(1)?.str()?.to_str()?.to_owned(),
+        numerator: ratio.get_item(0)?.str()?.extract()?,
+        denominator: ratio.get_item(1)?.str()?.extract()?,
     })
 }
 
