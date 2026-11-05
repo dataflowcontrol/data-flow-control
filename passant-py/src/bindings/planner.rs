@@ -200,11 +200,19 @@ impl PyPlanner {
         serde_json::to_string(&plan).map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature = (sink=None))]
-    fn intermediate_policy_indices(&self, sink: Option<String>) -> PyResult<Vec<usize>> {
-        self.rewriter
-            .intermediate_policy_indices(sink.as_deref())
-            .map_err(map_rewrite_error)
+    #[pyo3(signature = (sink=None, output_columns=None))]
+    fn intermediate_policy_indices(
+        &self,
+        sink: Option<String>,
+        output_columns: Option<Vec<String>>,
+    ) -> PyResult<Vec<usize>> {
+        match output_columns {
+            Some(columns) => self
+                .rewriter
+                .intermediate_policy_indices_for_output(sink.as_deref(), &columns),
+            None => self.rewriter.intermediate_policy_indices(sink.as_deref()),
+        }
+        .map_err(map_rewrite_error)
     }
 
     #[pyo3(signature = (sink, policy_indices, verdicts))]

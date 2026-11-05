@@ -147,7 +147,7 @@ class IntermediateExecution:
         if len(names) != len(description) or len(set(names)) != len(names):
             raise IntermediateError("Output columns must have distinct names and match the sink")
         public_rows, states, verdicts = [], [], []
-        applicable = set(self._native_call("intermediate_policy_indices", sink))
+        applicable = set(self._native_call("intermediate_policy_indices", sink, names))
         for row in rows:
             state = self.session.row_states(self.db, row[-1] or [])
             public = tuple(row[:-1])

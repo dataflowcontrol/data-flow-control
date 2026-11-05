@@ -286,6 +286,42 @@ impl PassantRewriter {
             .collect())
     }
 
+    /// Use the ordinary output-schema applicability rule before binding state
+    /// predicates. INSERT callers supply target names rather than SELECT labels.
+    pub fn intermediate_policy_indices_for_output(
+        &self,
+        sink: Option<&str>,
+        outputs: &[String],
+    ) -> Result<Vec<usize>, RewriteError> {
+        let mut applicable = Vec::new();
+        let eligible: HashSet<_> = self
+            .intermediate_policy_indices(sink)?
+            .into_iter()
+            .collect();
+        for local_index in self.store.policy_indices() {
+            let compiled = self
+                .store
+                .compiled(local_index)
+                .expect("registered intermediate policy");
+            let index = compiled.original_policy_index;
+            if !eligible.contains(&index) {
+                continue;
+            }
+            let required = crate::rewriter::output_scope::required_columns(
+                &compiled.policy,
+                &compiled
+                    .constraint
+                    .as_ref()
+                    .expect("compiled constraint")
+                    .ast,
+            );
+            if crate::rewriter::output_scope::output_columns_available(&required, outputs)? {
+                applicable.push(index);
+            }
+        }
+        Ok(applicable)
+    }
+
     /// Apply existing registry precedence to already-evaluated native predicates.
     /// All rows are inspected for KILL before a RETRY decision can escape.
     pub fn resolve_intermediate_rows(
