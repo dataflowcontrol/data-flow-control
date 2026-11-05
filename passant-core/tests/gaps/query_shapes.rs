@@ -422,3 +422,48 @@ fn whole_output_publisher_checks_sink_only_policy_at_actual_payload_scope() {
         }
     }
 }
+
+#[test]
+fn whole_output_scalar_policy_preserves_unique_and_rejects_null_contributors() {
+    for source in ["foo", "foo AS input_alias"] {
+        let sql = rewrite(
+            &format!("SELECT amount, SUM(id) AS total FROM {source} GROUP BY amount"),
+            &[whole_output_policy("foo.id > 0")],
+        );
+        assert!(sql.to_ascii_lowercase().contains("count(distinct"), "{sql}");
+        crate::common::assert_same_rows(
+            &sql,
+            "SELECT 20 AS amount, 6::HUGEINT AS total",
+            "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+             INSERT INTO foo VALUES(1,10),(2,10),(3,20),(3,20),(4,30),(NULL,30),(NULL,40);",
+        );
+    }
+}
+
+#[test]
+fn whole_output_scalar_policy_checks_unique_in_original_window_frame() {
+    let sql = rewrite(
+        "SELECT amount, SUM(id) OVER (ORDER BY amount ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS total FROM foo",
+        &[whole_output_policy("foo.id > 0")],
+    );
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT 10 AS amount, 1::HUGEINT AS total UNION ALL SELECT 30,4::HUGEINT",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,10),(2,20),(2,30),(NULL,40),(2,50);",
+    );
+}
+
+#[test]
+fn whole_output_scalar_policy_maps_unique_checks_to_self_join_aliases() {
+    let sql = rewrite(
+        "SELECT l.amount, SUM(l.id) AS total FROM foo l JOIN foo r ON l.amount=r.amount GROUP BY l.amount",
+        &[whole_output_policy("foo.id > 0")],
+    );
+    crate::common::assert_same_rows(
+        &sql,
+        "SELECT 20 AS amount, 12::HUGEINT AS total",
+        "CREATE TABLE foo(id INTEGER,amount INTEGER); \
+         INSERT INTO foo VALUES(1,10),(2,10),(3,20),(3,20),(4,30),(NULL,30);",
+    );
+}

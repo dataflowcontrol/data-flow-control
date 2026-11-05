@@ -3,10 +3,11 @@ use std::collections::HashSet;
 use sqlparser::ast::{Expr, Select};
 
 use crate::catalog::TableCatalog;
-use crate::identifiers::TableKey;
+use crate::identifiers::{AliasByBase, TableKey};
 use crate::policy::{PolicyIr, Resolution};
 use crate::policy_store::PolicyStore;
 use crate::rewrite_stats::RewriteStatsCell;
+use crate::rewriter::columns::rewrite_column_qualifiers;
 use crate::rewriter::dimensions::{
     constraint_references_skipped_dimensions, inject_policy_dimensions,
 };
@@ -24,6 +25,7 @@ use crate::rewriter::resolution::{
 };
 use crate::rewriter::scope::TableScope;
 use crate::rewriter::types::{PolicyApplicability, RewriteContext, UiResolutionMode};
+use crate::sql::function_call;
 
 use super::applicability::{ScopePlanDiagnostics, resolve_scope_policies};
 
@@ -200,6 +202,44 @@ pub(crate) fn build_policy_resolution_actions(
             && let Some(guard) =
                 unique_column_guard_from_constraint(constraint, sources, &constraint_ctx)
         {
+            let guard = if matches!(on_fail, Resolution::Udf(name)
+                if name.eq_ignore_ascii_case(PASSANT_REMOVE_OUTPUT))
+            {
+                // Preserve the scalar policy's implicit UNIQUE check. The
+                // bare predicate cannot be projected from a grouped input;
+                // every original contributor must pass before a fixed tool
+                // payload survives, including contributors whose value is NULL.
+                expr = function_call("bool_and", vec![Expr::IsTrue(Box::new(expr))]);
+                let aliases = sources.first().and_then(|source| {
+                    (sources.len() == 1)
+                        .then(|| {
+                            table_scope
+                                .aliases_by_base
+                                .get(&source.to_ascii_lowercase())
+                        })
+                        .flatten()
+                });
+                if let Some(aliases) = aliases.filter(|aliases| aliases.len() > 1) {
+                    aliases
+                        .iter()
+                        .map(|alias| {
+                            let mut mapped = guard.clone();
+                            rewrite_column_qualifiers(
+                                &mut mapped,
+                                &AliasByBase::single(&sources[0], alias),
+                            );
+                            mapped
+                        })
+                        .reduce(and_expr)
+                        .expect("multiple source aliases")
+                } else {
+                    let mut mapped = guard;
+                    rewrite_column_qualifiers(&mut mapped, &table_scope.alias_by_base);
+                    mapped
+                }
+            } else {
+                guard
+            };
             expr = and_expr(guard, expr);
         }
         let mut action = action_for_resolution(expr, on_fail, description.clone(), policy, index)?;
