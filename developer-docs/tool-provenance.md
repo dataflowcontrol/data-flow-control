@@ -162,7 +162,7 @@ than materializing it into an unlabelled table or rebuilding original
 contributors. Simple subqueries may be flattened before `Connection.execute`.
 
 The companion [propagation PR #8](https://github.com/dataflowcontrol/data-flow-control/pull/8),
-reviewed at `1bfb3cc70cc5b6e91102e535bc87d74b5e646184`, now provides opt-in
+tested at `10d4a01648eb65cd47c020a5b6d61fa5cef26242`, now provides opt-in
 propagation through normal `Connection.execute`, plus trusted observation storage.
 For its supported relational subset, the model query itself derives the whole
 input states for each result row; the harness does not declare input-ID mappings.
@@ -203,10 +203,21 @@ INSERT accepting/rejecting correlated source-expression and actual-sink checks.
 The module skips on standalone PR #7; its tests and the lower-level explicit
 state tests establish actual compatibility against the pinned companion revision.
 
-Automatic mode currently rejects CTEs/subqueries/windows/set operations,
-DISTINCT/HAVING, nullable joins and lateral/VALUES table expansions. Those remain
-separate from the legacy publisher's supported scope. Use a physical expansion
-relation in the tested automatic 1:many path. Source states are session-local;
+At that companion revision, automatic mode uses native Rust lineage planning
+for CTEs, derived queries, inner/self-joins, grouping and aggregate windows with
+multiple inline frames. The companion's optional
+`python/tests/test_native_tool_intermediates.py` additionally verifies CTE/group
+and window states crossing this adapter and rejecting a mismatched actual
+source/output value at a downstream sink. This deferred-state path supports
+cases that the legacy publisher's direct aggregate input/output predicate
+binding cannot yet express.
+
+Navigation/ranking windows, named/filtered windows, grouped and window expressions
+in the same SELECT, expression subqueries, recursive CTEs, set operations,
+DISTINCT/QUALIFY and nullable joins remain outside automatic mode. Group in a
+CTE before applying a window. Use a physical expansion relation for the tested
+1:many path. Opaque additive states with partial overlap cannot be split to
+recover an intersection; they fail closed. Source states are session-local;
 there is no cross-process persistence contract. The two PRs remain separately
 reviewable, and a harness must explicitly select the appropriate execution path.
 
