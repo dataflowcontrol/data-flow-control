@@ -75,7 +75,16 @@ impl SqlValue {
     pub fn sql(&self) -> String {
         match &self.value {
             None => format!("CAST(NULL AS {})", self.sql_type),
-            Some(value) => format!("CAST({} AS {})", literal(value), self.sql_type),
+            Some(value) => {
+                // SQL text cannot contain embedded NUL. UTF-8 hex transports
+                // every VARCHAR/control character without parser truncation.
+                let hex = value
+                    .as_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                format!("CAST(decode(from_hex('{hex}')) AS {})", self.sql_type)
+            }
         }
     }
     fn null() -> Self {
@@ -115,9 +124,6 @@ pub struct IntermediatePlan {
 
 pub fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
-}
-fn literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 fn encoded(expr: &str) -> String {
     format!("json_object('sql_type', typeof({expr}), 'value', CAST(({expr}) AS VARCHAR))")
@@ -749,5 +755,25 @@ mod tests {
                 .unwrap_err()
                 .contains("identity schema")
         );
+    }
+    #[test]
+    fn native_values_round_trip_embedded_nul_and_quotes() {
+        let mut db = Db::new();
+        db.0.execute("UPDATE cases SET category=? WHERE id=1", ["a\0b'雪"])
+            .unwrap();
+        let plan = IntermediatePlan::new(
+            vec![spec("category", "category", "unique")],
+            vec!["cases".into()],
+            vec![],
+        )
+        .unwrap();
+        let state = capture(&plan, &mut db, "id=1");
+        let merged = plan.merge(&mut db, &[&state, &state]).unwrap();
+        let value = plan.values(&mut db, &merged).unwrap()["category"][1].clone();
+        assert_eq!(value.value.as_deref(), Some("a\0b'雪"));
+        let fetched: String =
+            db.0.query_row(&format!("SELECT {}", value.sql()), [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(fetched, "a\0b'雪");
     }
 }
