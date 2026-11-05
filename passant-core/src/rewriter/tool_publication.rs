@@ -59,12 +59,17 @@ impl PassantRewriter {
                                 | JoinOperator::RightOuter(_)
                                 | JoinOperator::FullOuter(_)
                                 | JoinOperator::OuterApply
+                                | JoinOperator::LeftSemi(_)
+                                | JoinOperator::RightSemi(_)
+                                | JoinOperator::LeftAnti(_)
+                                | JoinOperator::RightAnti(_)
                         );
                         self.changes_contributors |= nullable;
                         self.unsupported_terminal_shape |= nullable;
                     }
                 } else {
-                    self.changes_contributors = true;
+                    self.changes_contributors |=
+                        matches!(query.body.as_ref(), SetExpr::SetOperation { .. });
                     self.unsupported_terminal_shape = true;
                 }
                 ControlFlow::Continue(())
