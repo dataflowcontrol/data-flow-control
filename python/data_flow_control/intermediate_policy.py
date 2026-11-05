@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from .intermediates import Intermediate, PolicyIntermediates, PolicyIntermediateState
-from .planner import Planner
+from .planner import Planner, _policy_specs_json
 from .policy import Policy
 
 
@@ -25,6 +25,10 @@ class CompiledIntermediatePolicy:
 
 def _from_registered(connection, planner, index, policy):
     compilation = json.loads(planner.inner.compile_intermediate_policy(index))
+    return _from_compilation(connection, compilation, policy)
+
+
+def _from_compilation(connection, compilation, policy):
     return CompiledIntermediatePolicy(
         PolicyIntermediates(
             connection,
@@ -38,8 +42,9 @@ def _from_registered(connection, planner, index, policy):
 
 
 def compile_policy_intermediates(connection: Any, policy: Policy) -> CompiledIntermediatePolicy:
-    """Use the ordinary Rust policy registration/compiler for a standalone plan."""
+    """Use the ordinary Rust compiler for a trusted standalone plan definition."""
     planner = Planner()
-    planner.register_policy(policy)
-    index = planner.inner.registered_policy_indices()[0]
-    return _from_registered(connection, planner, index, policy)
+    compilation = json.loads(
+        planner.inner.compile_intermediate_definition(_policy_specs_json([policy]))
+    )
+    return _from_compilation(connection, compilation, policy)

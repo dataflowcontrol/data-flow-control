@@ -174,7 +174,21 @@ impl PyPlanner {
         let compilation = self
             .rewriter
             .compile_intermediate_policy(policy_index)
-            .map_err(map_rewrite_error)?;
+            .map_err(|err| super::intermediates::state_error(err.to_string()))?;
+        serde_json::to_string(&compilation).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    fn compile_intermediate_definition(&self, policies_json: String) -> PyResult<String> {
+        let mut policies = parse_policy_specs(&policies_json)?;
+        if policies.len() != 1 {
+            return Err(PyValueError::new_err(
+                "one intermediate policy definition is required",
+            ));
+        }
+        let compilation = self
+            .rewriter
+            .compile_intermediate_definition(policies.remove(0))
+            .map_err(|err| super::intermediates::state_error(err.to_string()))?;
         serde_json::to_string(&compilation).map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
