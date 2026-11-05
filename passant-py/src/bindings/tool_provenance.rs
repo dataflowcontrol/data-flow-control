@@ -74,6 +74,7 @@ impl PyToolProvenanceModel {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    #[pyo3(signature = (result_columns, result_rows, state_count, actual_keys))]
     fn bind_indices(
         &self,
         result_columns: Option<Vec<String>>,
