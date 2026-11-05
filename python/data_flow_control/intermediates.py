@@ -7,7 +7,7 @@ from typing import Any, Iterable
 import json
 
 from ._passant import (
-    IntermediateError,
+    IntermediateError as IntermediateError,
     PyIntermediatePlan,
     PyIntermediateState as PolicyIntermediateState,
     validate_intermediate_spec_json,
