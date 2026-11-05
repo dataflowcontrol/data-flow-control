@@ -231,13 +231,13 @@ mod tests {
     struct GuardedColumns;
     impl PolicyExpressionTarget for GuardedColumns {
         fn lower_atom(&mut self, node: &Expr) -> Result<Option<LoweredPolicyExpr>, RewriteError> {
-            if let Expr::Identifier(id) = node {
-                if id.value == "x" {
-                    return Ok(Some((
-                        parse_expr("metric").unwrap(),
-                        vec![parse_expr("cardinality = 1").unwrap()],
-                    )));
-                }
+            if let Expr::Identifier(id) = node
+                && id.value == "x"
+            {
+                return Ok(Some((
+                    parse_expr("metric").unwrap(),
+                    vec![parse_expr("cardinality = 1").unwrap()],
+                )));
             }
             Ok(None)
         }
