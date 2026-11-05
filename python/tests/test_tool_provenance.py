@@ -762,3 +762,22 @@ def test_source_remove_cannot_hide_original_actual_sink_kill(db, grouped):
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("uniform", [False, True])
+def test_whole_output_remove_preserves_implicit_source_uniqueness(db, uniform):
+    if uniform:
+        db.raw_connection.execute("UPDATE ToolInput SET copies=2")
+    db.register_policy(
+        Policy(
+            sources=["ToolInput"],
+            sink="ToolOutput",
+            constraint="ToolInput.copies > 0",
+            on_fail=Resolution.REMOVE,
+        )
+    )
+    model = ToolProvenance("SELECT SUM(copies) AS total FROM ToolInput")
+    assert model.insert_outputs(
+        db, "ToolOutput", [ToolOutput((), {"message": "aggregate"})]
+    ) == int(uniform)
+    assert rows(db) == ([("aggregate",)] if uniform else [])
