@@ -205,10 +205,10 @@ checks are not a replacement for those guards.
 
 The generated INSERT preserves the SQL model's relational semantics, rather
 than materializing it into an unlabelled table or rebuilding original
-contributors. Simple subqueries may be flattened before `Connection.execute`.
+contributors. The native publication planner may flatten simple subqueries before rewriting.
 
 The companion [propagation PR #8](https://github.com/dataflowcontrol/data-flow-control/pull/8),
-tested at `10d4a01648eb65cd47c020a5b6d61fa5cef26242`, now provides opt-in
+provides opt-in
 propagation through normal `Connection.execute`, plus trusted observation storage.
 For its supported relational subset, the model query itself derives the whole
 input states for each result row; the harness does not declare input-ID mappings.
@@ -249,7 +249,7 @@ INSERT accepting/rejecting correlated source-expression and actual-sink checks.
 The module skips on standalone PR #7; its tests and the lower-level explicit
 state tests establish actual compatibility against the pinned companion revision.
 
-At that companion revision, automatic mode uses native Rust lineage planning
+The companion Rust-native implementation uses native lineage planning
 for CTEs, derived queries, inner/self-joins, grouping and aggregate windows with
 multiple inline frames. The companion's optional
 `python/tests/test_native_tool_intermediates.py` additionally verifies CTE/group

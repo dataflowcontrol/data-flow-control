@@ -293,6 +293,13 @@ def test_question_mark_literals_do_not_shift_parameters(db):
     assert rows(db) == [("?",)]
 
 
+def test_unused_projection_parameter_preserves_publication_bindings(db):
+    model = ToolProvenance("SELECT id, ? AS context FROM ToolInput", ("id",))
+    outputs = [ToolOutput((1,), {"message": "first"}), ToolOutput((2,), {"message": "second"})]
+    assert model.insert_outputs(db, "ToolOutput", outputs, params=["context"]) == 2
+    assert rows(db) == [("first",), ("second",)]
+
+
 @pytest.mark.parametrize("swapped", [False, True])
 def test_one_to_many_input_output_policy(db, swapped):
     db.register_policy(

@@ -333,7 +333,10 @@ fn native_tool_preserves_parameters_in_discarded_model_projections() {
         let values = [n(7), n(1), n(1), s("payload")];
         assert_eq!(bound.model_parameter_count, 2);
         assert_eq!(scalar(&db, &bound.validation_sql, &values), 0);
-        assert_eq!(scalar(&db, bound.publication_sql.as_ref().unwrap(), &values), 1);
+        assert_eq!(
+            scalar(&db, bound.publication_sql.as_ref().unwrap(), &values),
+            1
+        );
     }
 }
 
@@ -347,6 +350,9 @@ fn native_tool_retains_parameters_used_by_flattened_keys_and_alias_filters() {
         let bound = plan(&db, sql, &["key"], 1);
         let values = [n(10), n(1), n(11), s("payload")];
         assert_eq!(scalar(&db, &bound.validation_sql, &values), 0);
-        assert_eq!(scalar(&db, bound.publication_sql.as_ref().unwrap(), &values), 1);
+        assert_eq!(
+            scalar(&db, bound.publication_sql.as_ref().unwrap(), &values),
+            1
+        );
     }
 }
