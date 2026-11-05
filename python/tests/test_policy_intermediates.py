@@ -357,3 +357,14 @@ def test_native_identity_type_change_cannot_double_count_same_key(db):
     )
     with pytest.raises(IntermediateError, match="identity schema"):
         plan.merge(a, b)
+
+
+@pytest.mark.parametrize("function", ["AVG", "MEAN"])
+@pytest.mark.parametrize("argument", ["cases.amount, 100", "cases.amount ORDER BY cases.id"])
+def test_native_compiler_validates_original_average_arguments(db, function, argument):
+    from data_flow_control import Policy
+    from data_flow_control.intermediate_policy import compile_policy_intermediates
+
+    policy = Policy.from_pgn(f"SOURCE cases CONSTRAINT {function}({argument})>0 ON FAIL REMOVE")
+    with pytest.raises(IntermediateError, match="aggregate argument"):
+        compile_policy_intermediates(db, policy)

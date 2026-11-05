@@ -548,3 +548,34 @@ def test_secret_predecessor_cannot_leak_through_public_row_ordinal():
         assert c.raw_connection.execute(
             "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name='ranked'"
         ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("function", ["AVG", "MEAN"])
+@pytest.mark.parametrize("argument", ["source.amount, 100", "source.amount ORDER BY source.id"])
+def test_registered_state_compiler_rejects_average_arguments_before_normalization(
+    function, argument
+):
+    with dfc(duckdb.connect()) as c:
+        c.execute("CREATE TABLE source(id INT, amount INT)")
+        c.execute("INSERT INTO source VALUES (1,10),(2,20)")
+        c.execute("CREATE TABLE target(id INT)")
+        c.register_policy(
+            Policy.from_pgn(
+                f"SOURCE source SINK target CONSTRAINT {function}({argument})>0 ON FAIL REMOVE"
+            )
+        )
+        with pytest.raises(IntermediateError, match="aggregate argument"):
+            c.enable_intermediate_propagation()
+        assert c.raw_connection.execute("SELECT * FROM target").fetchall() == []
+
+
+def test_observation_storage_rejects_replaced_policy_session(conn):
+    inputs = conn.execute("SELECT id FROM cases WHERE id='B'")
+    policy = conn.policies()[0]
+    assert conn.delete_policy(
+        sources=policy.sources, sink=policy.sink, constraint=policy.constraint
+    )
+    conn.register_policy(policy)
+    with pytest.raises(IntermediateError, match="Policy changes"):
+        conn.store_intermediate_outputs("updates", [("B", True)], inputs.intermediates)
+    assert conn.raw_connection.execute("SELECT * FROM updates").fetchall() == []
