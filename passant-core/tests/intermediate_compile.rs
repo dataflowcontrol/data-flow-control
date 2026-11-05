@@ -217,9 +217,9 @@ fn standalone_compilation_needs_no_existing_sink_or_source_catalog() {
 
 #[test]
 fn scalar_function_calls_use_existing_aggregate_registry_classification() {
-    let compiled = compile("SOURCE cases CONSTRAINT CONCAT_WS('-', LOWER(cases.category), COALESCE(cases.priority,'none'))='public-low' ON FAIL REMOVE").unwrap();
+    let compiled = compile("SOURCE cases CONSTRAINT BOOL_AND(CONCAT_WS('-', LOWER(cases.category), COALESCE(cases.priority,'none'))='public-low') ON FAIL REMOVE").unwrap();
     assert_eq!(compiled.specs.len(), 1);
-    assert_eq!(compiled.specs[0].aggregate, "unique");
+    assert_eq!(compiled.specs[0].aggregate, "bool_and");
     assert!(compiled.specs[0].expression.contains("CONCAT_WS"));
 }
 
