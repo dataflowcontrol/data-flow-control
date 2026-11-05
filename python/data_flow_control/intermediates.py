@@ -46,6 +46,7 @@ class PolicyIntermediates:
         *,
         sources: Iterable[str] | None = None,
         required_sources: Iterable[str] = (),
+        _sink_endpoint: bool = True,
     ) -> None:
         self.connection = connection
         self.intermediates = tuple(intermediates)
@@ -57,6 +58,7 @@ class PolicyIntermediates:
             json.dumps([asdict(i) for i in self.intermediates]),
             sorted(self.sources),
             sorted(self.required_sources),
+            _sink_endpoint,
         )
 
     def empty(self) -> PolicyIntermediateState:

@@ -12,6 +12,7 @@ use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 
 use crate::aggregate_registry::AggregateRegistry;
+use crate::policy_applicability::{PolicyApplicability, source_applicability};
 use crate::sql::{SqlDialect, parse_policy_expr_duckdb};
 
 pub type StateResult<T> = Result<T, String>;
@@ -120,6 +121,7 @@ pub struct IntermediatePlan {
     pub sources: BTreeSet<String>,
     pub required_sources: BTreeSet<String>,
     owner: u64,
+    sink_endpoint: bool,
 }
 
 pub fn quote(name: &str) -> String {
@@ -223,7 +225,14 @@ impl IntermediatePlan {
             sources,
             required_sources,
             owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
+            sink_endpoint: true,
         })
+    }
+    /// Manual state plans represent a final endpoint by default. Compiled
+    /// declarations supply their native SOURCE-only versus SINK context here.
+    pub fn with_sink_endpoint(mut self, sink_endpoint: bool) -> Self {
+        self.sink_endpoint = sink_endpoint;
+        self
     }
     pub fn empty(&self) -> IntermediateState {
         IntermediateState {
@@ -521,15 +530,30 @@ impl IntermediatePlan {
         }
         Ok(result)
     }
-    pub fn applicable(&self, state: &IntermediateState) -> StateResult<bool> {
+    fn applicability(&self, state: &IntermediateState) -> StateResult<Option<PolicyApplicability>> {
         self.validate(state)?;
         let present: BTreeSet<_> = state
             .sources
             .iter()
-            .filter(|p| !p.identities.is_empty())
-            .map(|p| p.source.clone())
+            .filter(|part| !part.identities.is_empty())
+            .map(|part| part.source.as_str())
             .collect();
-        Ok(!self.required_sources.is_subset(&present) || self.sources.is_subset(&present))
+        let sources = self.sources.iter().map(String::as_str).collect::<Vec<_>>();
+        let required = self
+            .required_sources
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        Ok(source_applicability(
+            &sources,
+            &required,
+            |source| present.contains(source),
+            self.sink_endpoint,
+            false,
+        ))
+    }
+    pub fn applicable(&self, state: &IntermediateState) -> StateResult<bool> {
+        Ok(self.applicability(state)?.is_some())
     }
     pub fn evaluate<E: SqlExecutor>(
         &self,
@@ -538,17 +562,10 @@ impl IntermediatePlan {
         predicate: &str,
         sink: BTreeMap<String, SqlValue>,
     ) -> StateResult<Option<bool>> {
-        if !self.applicable(state)? {
-            return Ok(None);
-        }
-        let present: BTreeSet<_> = state
-            .sources
-            .iter()
-            .filter(|p| !p.identities.is_empty())
-            .map(|p| p.source.clone())
-            .collect();
-        if !self.required_sources.is_subset(&present) {
-            return Ok(Some(false));
+        match self.applicability(state)? {
+            None => return Ok(None),
+            Some(PolicyApplicability::RequiredSourceMissing) => return Ok(Some(false)),
+            Some(PolicyApplicability::Normal) => (),
         }
         let predicate = scalar_expr(predicate)?;
         let values = self.values(db, state)?;
@@ -826,5 +843,73 @@ mod tests {
         assert_eq!(count.value.as_deref(), Some("3"));
         assert_eq!(raw.sources[0].values[2][1].sql_type, "HUGEINT");
         assert_eq!(raw.sources[0].values[3][0].sql_type, "HUGEINT");
+    }
+    #[test]
+    fn ordinary_source_absence_precedes_required_source_rejection() {
+        let mut db = Db::new();
+        let plan = IntermediatePlan::new(
+            vec![],
+            vec!["cases".into(), "observations".into()],
+            vec!["cases".into()],
+        )
+        .unwrap();
+        let empty = plan.empty();
+        assert!(!plan.applicable(&empty).unwrap());
+        assert_eq!(
+            plan.evaluate(&mut db, &empty, "TRUE", BTreeMap::new())
+                .unwrap(),
+            None
+        );
+        let required_only = capture(&plan, &mut db, "id=1");
+        assert_eq!(
+            plan.evaluate(&mut db, &required_only, "TRUE", BTreeMap::new())
+                .unwrap(),
+            None
+        );
+        let ordinary_only = plan
+            .capture(&mut db, "observations", "SELECT 1 AS id", &["id".into()])
+            .unwrap();
+        assert!(plan.applicable(&ordinary_only).unwrap());
+        assert_eq!(
+            plan.evaluate(&mut db, &ordinary_only, "TRUE", BTreeMap::new())
+                .unwrap(),
+            Some(false)
+        );
+        let both = plan
+            .merge(&mut db, &[&required_only, &ordinary_only])
+            .unwrap();
+        assert_eq!(
+            plan.evaluate(&mut db, &both, "TRUE", BTreeMap::new())
+                .unwrap(),
+            Some(true)
+        );
+    }
+    #[test]
+    fn compiled_source_only_context_does_not_invent_a_required_endpoint() {
+        let mut db = Db::new();
+        let source_only = IntermediatePlan::new(vec![], vec!["cases".into()], vec!["cases".into()])
+            .unwrap()
+            .with_sink_endpoint(false);
+        assert_eq!(
+            source_only
+                .evaluate(&mut db, &source_only.empty(), "TRUE", BTreeMap::new())
+                .unwrap(),
+            None
+        );
+        let present = capture(&source_only, &mut db, "id=1");
+        assert_eq!(
+            source_only
+                .evaluate(&mut db, &present, "TRUE", BTreeMap::new())
+                .unwrap(),
+            Some(true)
+        );
+        let endpoint =
+            IntermediatePlan::new(vec![], vec!["cases".into()], vec!["cases".into()]).unwrap();
+        assert_eq!(
+            endpoint
+                .evaluate(&mut db, &endpoint.empty(), "TRUE", BTreeMap::new())
+                .unwrap(),
+            Some(false)
+        );
     }
 }

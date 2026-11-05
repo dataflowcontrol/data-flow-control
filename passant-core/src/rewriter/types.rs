@@ -234,11 +234,7 @@ impl Default for RewriteContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PolicyApplicability {
-    Normal,
-    RequiredSourceMissing,
-}
+pub(crate) use crate::policy_applicability::PolicyApplicability;
 
 #[cfg(test)]
 mod resolution_metadata_tests {

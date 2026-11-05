@@ -35,6 +35,7 @@ def _from_compilation(connection, compilation, policy):
             [Intermediate(**spec) for spec in compilation["specs"]],
             sources=compilation.get("sources", policy.sources),
             required_sources=compilation.get("required_sources", policy.required_sources or ()),
+            _sink_endpoint=compilation["sink_endpoint"],
         ),
         compilation["predicate"],
         tuple(tuple(pair) for pair in compilation["sink_columns"]),

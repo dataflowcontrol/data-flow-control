@@ -24,6 +24,7 @@ pub struct IntermediateCompilation {
     pub specs: Vec<IntermediateSpec>,
     pub predicate: String,
     pub sink_columns: Vec<(String, String)>,
+    pub sink_endpoint: bool,
     pub sources: Vec<String>,
     pub required_sources: Vec<String>,
 }
@@ -106,6 +107,7 @@ impl CompiledPolicy {
             specs: compiler.specs,
             predicate: guarded(predicate, guards).to_string(),
             sink_columns: compiler.sink_columns,
+            sink_endpoint: self.policy.sink().is_some(),
             sources: self.policy.sources().to_vec(),
             required_sources: self.policy.required_sources().to_vec(),
         })

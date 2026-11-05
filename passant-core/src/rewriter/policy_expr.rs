@@ -682,39 +682,13 @@ fn policy_applicability_from_keys(
         return None;
     }
 
-    if policy.sink().is_some() {
-        let required_sources = required_source_keys.iter().collect::<HashSet<_>>();
-        let non_required_sources_match = source_keys
-            .iter()
-            .all(|source_key| required_sources.contains(source_key) || tables.contains(source_key));
-        if !non_required_sources_match {
-            return None;
-        }
-        if required_source_keys
-            .iter()
-            .any(|source| !tables.contains(source))
-        {
-            return Some(PolicyApplicability::RequiredSourceMissing);
-        }
-        return Some(PolicyApplicability::Normal);
-    }
-
-    source_keys
-        .iter()
-        .all(|source| tables.contains(source))
-        .then_some(PolicyApplicability::Normal)
-        .or_else(|| {
-            if allow_partial_source_visibility
-                && policy.sink().is_none()
-                && required_source_keys.is_empty()
-                && source_keys.len() > 1
-                && source_keys.iter().any(|source| tables.contains(source))
-            {
-                Some(PolicyApplicability::Normal)
-            } else {
-                None
-            }
-        })
+    crate::policy_applicability::source_applicability(
+        source_keys,
+        required_source_keys,
+        |source| tables.contains(source),
+        policy.sink().is_some(),
+        allow_partial_source_visibility,
+    )
 }
 
 fn compiled_sink_matches(policy: &PolicyIr, sink: Option<&TableKey>) -> bool {

@@ -16,6 +16,7 @@ pub mod parser;
 pub mod partial_push;
 pub mod planner;
 pub mod policy;
+pub mod policy_applicability;
 pub mod policy_compile;
 pub mod policy_index;
 mod policy_parser;

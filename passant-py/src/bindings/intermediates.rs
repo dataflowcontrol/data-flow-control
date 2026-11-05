@@ -87,15 +87,19 @@ pub struct PyIntermediatePlan {
 #[pymethods]
 impl PyIntermediatePlan {
     #[new]
+    #[pyo3(signature=(specs_json,sources,required_sources,sink_endpoint=true))]
     fn new(
         specs_json: &str,
         sources: Vec<String>,
         required_sources: Vec<String>,
+        sink_endpoint: bool,
     ) -> PyResult<Self> {
         let specs: Vec<IntermediateSpec> =
             serde_json::from_str(specs_json).map_err(|e| state_error(e.to_string()))?;
         Ok(Self {
-            inner: IntermediatePlan::new(specs, sources, required_sources).map_err(state_error)?,
+            inner: IntermediatePlan::new(specs, sources, required_sources)
+                .map_err(state_error)?
+                .with_sink_endpoint(sink_endpoint),
         })
     }
     fn empty(&self) -> PyIntermediateState {
