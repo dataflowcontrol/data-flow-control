@@ -8,9 +8,8 @@ use std::ops::ControlFlow;
 
 use serde::Serialize;
 use sqlparser::ast::{
-    BinaryOperator, DuplicateTreatment, Expr, Function, FunctionArg, FunctionArgExpr,
-    FunctionArguments, Ident, UnaryOperator, Value, Visit, VisitMut, Visitor, VisitorMut,
-    visit_expressions, visit_expressions_mut,
+    BinaryOperator, DuplicateTreatment, Expr, FunctionArguments, Ident, UnaryOperator, Value,
+    Visit, Visitor, visit_expressions, visit_expressions_mut,
 };
 
 use crate::aggregate_registry::{AggregateRegistry, function_name};
@@ -18,6 +17,10 @@ use crate::diagnostics::RewriteError;
 use crate::intermediate_state::IntermediateSpec;
 use crate::policy_store::CompiledPolicy;
 use crate::rewriter::PassantRewriter;
+use crate::rewriter::policy_lowering::{
+    LoweredPolicyExpr, PolicyExpressionTarget, aggregate_argument, aggregate_call, guarded,
+    is_boundary, lower_policy_expression,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IntermediateCompilation {
@@ -35,17 +38,6 @@ fn error(message: impl Into<String>) -> RewriteError {
 fn column(name: &str) -> Expr {
     Expr::Identifier(Ident::with_quote('"', name))
 }
-fn guarded(mut expression: Expr, guards: Vec<Expr>) -> Expr {
-    for guard in guards {
-        expression = Expr::BinaryOp {
-            left: Box::new(guard),
-            op: BinaryOperator::And,
-            right: Box::new(Expr::Nested(Box::new(expression))),
-        };
-    }
-    expression
-}
-
 /// Compile a trusted standalone state declaration without registering an endpoint
 /// policy. Its source/sink tables need not yet exist. Parsing and normalization
 /// are the same core compiler used by normal validated registration.
@@ -102,7 +94,7 @@ impl CompiledPolicy {
         };
         compiler.validate(&self.constraint.as_ref().unwrap().original_ast)?;
         compiler.validate(ast)?;
-        let (predicate, guards) = compiler.lower(ast)?;
+        let (predicate, guards) = lower_policy_expression(ast, &mut compiler)?;
         Ok(IntermediateCompilation {
             specs: compiler.specs,
             predicate: guarded(predicate, guards).to_string(),
@@ -218,7 +210,7 @@ impl Compiler<'_> {
                     // or a parameter list. Reuse the same state-aggregate shape
                     // check used by lowering rather than accepting a changed call.
                     if self.registry.is_aggregate_call(f)
-                        && let Err(error) = Self::aggregate_argument(f)
+                        && let Err(error) = aggregate_argument(f)
                     {
                         return ControlFlow::Break(error);
                     }
@@ -264,58 +256,29 @@ impl Compiler<'_> {
         });
         Ok(column(&name))
     }
-
-    fn aggregate_argument(function: &Function) -> Result<(Expr, bool), RewriteError> {
-        let FunctionArguments::List(args) = &function.args else {
-            return Err(error("Unsupported policy aggregate arguments"));
-        };
-        if args.args.len() != 1
-            || !args.clauses.is_empty()
-            || !matches!(function.parameters, FunctionArguments::None)
-        {
-            return Err(error("Unsupported policy aggregate arguments"));
-        }
-        let argument = match &args.args[0] {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr.clone(),
-            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => {
-                Expr::Wildcard(sqlparser::ast::helpers::attached_token::AttachedToken::empty())
-            }
-            _ => return Err(error("Unsupported policy aggregate argument")),
-        };
-        Ok((
-            argument,
-            args.duplicate_treatment == Some(DuplicateTreatment::Distinct),
-        ))
-    }
-
-    fn lower(&mut self, node: &Expr) -> Result<(Expr, Vec<Expr>), RewriteError> {
+}
+impl PolicyExpressionTarget for Compiler<'_> {
+    fn lower_atom(&mut self, node: &Expr) -> Result<Option<LoweredPolicyExpr>, RewriteError> {
         // UNIQUE is normalized by the core parser into COUNT(DISTINCT) =/!= 1.
-        if let Expr::BinaryOp {
-            left,
-            op: op @ (BinaryOperator::Eq | BinaryOperator::NotEq),
-            right,
-        } = node
-            && let Expr::Function(function) = left.as_ref()
-            && function_name(function).eq_ignore_ascii_case("count")
-            && let (argument, true) = Self::aggregate_argument(function)?
-            && matches!(right.as_ref(), Expr::Value(Value::Number(n, _)) if n == "1")
+        if !matches!(node, Expr::Nested(_))
+            && let Some((function, op @ (BinaryOperator::Eq | BinaryOperator::NotEq))) =
+                crate::rewriter::policy_lowering::count_distinct_cardinality_one(node)
         {
+            let (argument, _) = aggregate_argument(function)?;
             let metric = self.demand(&argument, "unique")?;
             let Expr::Identifier(name) = metric else {
                 unreachable!()
             };
-            return Ok((
+            return Ok(Some((
                 Expr::BinaryOp {
                     left: Box::new(column(&format!("{}__cardinality", name.value))),
                     op: op.clone(),
-                    right: right.clone(),
+                    right: Box::new(Expr::Value(Value::Number("1".into(), false))),
                 },
                 Vec::new(),
-            ));
+            )));
         }
-        if let Expr::Function(function) = node
-            && self.registry.is_aggregate_call(function)
-        {
+        if let Some(function) = aggregate_call(node, self.registry) {
             let name = function_name(function).to_ascii_lowercase();
             if !matches!(
                 name.as_str(),
@@ -323,14 +286,14 @@ impl Compiler<'_> {
             ) {
                 return Err(error(format!("Unsupported policy aggregate: {name}")));
             }
-            let (argument, distinct) = Self::aggregate_argument(function)?;
+            let (argument, distinct) = aggregate_argument(function)?;
             if distinct {
                 return Err(error("Only COUNT(DISTINCT expression) =/!= 1 is compact"));
             }
             if self.registry.expr_contains_aggregate(&argument) {
                 return Err(error("Nested policy aggregates are unsupported"));
             }
-            return Ok((self.demand(&argument, &name)?, Vec::new()));
+            return Ok(Some((self.demand(&argument, &name)?, Vec::new())));
         }
         if matches!(
             node,
@@ -357,83 +320,26 @@ impl Compiler<'_> {
             let Expr::Identifier(name) = &metric else {
                 unreachable!()
             };
-            return Ok((
+            return Ok(Some((
                 metric.clone(),
                 vec![Expr::BinaryOp {
                     left: Box::new(column(&format!("{}__cardinality", name.value))),
                     op: BinaryOperator::Eq,
                     right: Box::new(Expr::Value(Value::Number("1".into(), false))),
                 }],
-            ));
+            )));
         }
         if let Expr::CompoundIdentifier(parts) = node {
             self.source_of(node)?;
             let name = format!("_sink_{}", self.sink_columns.len());
             self.sink_columns
                 .push((name.clone(), parts.last().unwrap().value.clone()));
-            return Ok((column(&name), Vec::new()));
+            return Ok(Some((column(&name), Vec::new())));
         }
-        let boolean = matches!(
-            node,
-            Expr::BinaryOp {
-                op: BinaryOperator::And | BinaryOperator::Or,
-                ..
-            } | Expr::UnaryOp {
-                op: UnaryOperator::Not,
-                ..
-            }
-        );
-        let mut transformed = node.clone();
-        let mut children = Children {
-            compiler: self,
-            depth: 0,
-            boolean,
-            guards: Vec::new(),
-        };
-        if let ControlFlow::Break(error) = VisitMut::visit(&mut transformed, &mut children) {
-            return Err(error);
-        }
-        let guards = children.guards;
-        if is_comparison(node) {
-            Ok((guarded(transformed, guards), Vec::new()))
-        } else {
-            Ok((transformed, guards))
-        }
+        Ok(None)
     }
 }
 
-// Visit only immediate child expressions. Each child is lowered recursively by
-// the compiler; generated metric identifiers are never visited as user SQL.
-struct Children<'a, 'b> {
-    compiler: &'a mut Compiler<'b>,
-    depth: usize,
-    boolean: bool,
-    guards: Vec<Expr>,
-}
-impl VisitorMut for Children<'_, '_> {
-    type Break = RewriteError;
-    fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
-        if self.depth == 1 {
-            match self.compiler.lower(expr) {
-                Ok((lowered, guards)) => {
-                    *expr = if self.boolean {
-                        guarded(lowered, guards)
-                    } else {
-                        self.guards.extend(guards);
-                        lowered
-                    };
-                }
-                Err(error) => return ControlFlow::Break(error),
-            }
-        }
-        self.depth += 1;
-        ControlFlow::Continue(())
-    }
-    fn post_visit_expr(&mut self, _: &mut Expr) -> ControlFlow<Self::Break> {
-        self.depth -= 1;
-        ControlFlow::Continue(())
-    }
-}
 struct SourceOutsideAggregate<'a, 'b> {
     compiler: &'a Compiler<'b>,
     aggregate: Vec<bool>,
@@ -461,44 +367,6 @@ impl Visitor for SourceOutsideAggregate<'_, '_> {
         self.aggregate.pop();
         ControlFlow::Continue(())
     }
-}
-fn is_comparison(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::BinaryOp {
-            op: BinaryOperator::Eq
-                | BinaryOperator::NotEq
-                | BinaryOperator::Gt
-                | BinaryOperator::GtEq
-                | BinaryOperator::Lt
-                | BinaryOperator::LtEq,
-            ..
-        } | Expr::Like { .. }
-            | Expr::ILike { .. }
-            | Expr::Between { .. }
-            | Expr::InList { .. }
-            | Expr::IsNull(_)
-            | Expr::IsNotNull(_)
-            | Expr::IsTrue(_)
-            | Expr::IsFalse(_)
-            | Expr::IsNotTrue(_)
-            | Expr::IsNotFalse(_)
-    )
-}
-fn is_boundary(expr: &Expr) -> bool {
-    is_comparison(expr)
-        || matches!(
-            expr,
-            Expr::Nested(_)
-                | Expr::BinaryOp {
-                    op: BinaryOperator::And | BinaryOperator::Or,
-                    ..
-                }
-                | Expr::UnaryOp {
-                    op: UnaryOperator::Not,
-                    ..
-                }
-        )
 }
 /// Bind supplied public sink columns to generated predicate columns in Rust.
 pub fn bind_intermediate_sink(
