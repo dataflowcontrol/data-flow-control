@@ -33,7 +33,7 @@ impl PyToolProvenanceModel {
 
     #[getter]
     fn key_columns(&self) -> Vec<String> {
-        self.model.key_columns.clone()
+        self.model.key_columns().to_vec()
     }
 
     fn plan(
@@ -45,7 +45,7 @@ impl PyToolProvenanceModel {
         model_parameter_count: usize,
     ) -> PyResult<PyToolPublicationPlan> {
         let keys = extract_key_rows(actual_keys, None)?;
-        validate_tool_keys(&keys, self.model.key_columns.len(), ToolKeyRole::Actual)
+        validate_tool_keys(&keys, self.model.key_columns().len(), ToolKeyRole::Actual)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let arities = keys.iter().map(Vec::len).collect::<Vec<_>>();
         let inner = planner
@@ -66,10 +66,10 @@ impl PyToolProvenanceModel {
         modeled_rows: &Bound<'_, PyAny>,
         actual_keys: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let positions = (0..self.model.key_columns.len()).collect::<Vec<_>>();
+        let positions = (0..self.model.key_columns().len()).collect::<Vec<_>>();
         let modeled = extract_key_rows(modeled_rows, Some(&positions))?;
         let actual = extract_key_rows(actual_keys, None)?;
-        align_tool_keys(&modeled, &actual, self.model.key_columns.len())
+        align_tool_keys(&modeled, &actual, self.model.key_columns().len())
             .map(|_| ())
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
@@ -85,13 +85,13 @@ impl PyToolProvenanceModel {
         validate_tool_result_alignment(result_rows.len()?, state_count, result_columns.is_some())
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let positions = tool_key_positions(
-            &self.model.key_columns,
+            self.model.key_columns(),
             result_columns.as_deref().unwrap_or_default(),
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let modeled = extract_key_rows(result_rows, Some(&positions))?;
         let actual = extract_key_rows(actual_keys, None)?;
-        align_tool_keys(&modeled, &actual, self.model.key_columns.len())
+        align_tool_keys(&modeled, &actual, self.model.key_columns().len())
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 }
