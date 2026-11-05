@@ -211,6 +211,15 @@ impl Compiler<'_> {
                             "Only COUNT(DISTINCT expression) =/!= 1 is compact",
                         ));
                     }
+                    // Validate the original registered call before AVG/MEAN
+                    // decomposition can erase extra arguments, ORDER BY clauses
+                    // or a parameter list. Reuse the same state-aggregate shape
+                    // check used by lowering rather than accepting a changed call.
+                    if self.registry.is_aggregate_call(f)
+                        && let Err(error) = Self::aggregate_argument(f)
+                    {
+                        return ControlFlow::Break(error);
+                    }
                 }
                 _ => (),
             }

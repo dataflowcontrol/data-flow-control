@@ -252,3 +252,44 @@ fn duckdb_arbitrary_alias_uses_first_aggregate_classification() {
             .is_err()
     );
 }
+
+#[test]
+fn original_avg_call_shape_is_checked_before_decomposition() {
+    let registry = passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb);
+    for constraint in [
+        "AVG(cases.amount,100)>0",
+        "AVG(cases.amount ORDER BY cases.id)>0",
+        "MEAN(cases.amount,100)>0",
+        "MEAN(cases.amount ORDER BY cases.id)>0",
+    ] {
+        // These parse successfully, but legacy AVG lowering discards the extra
+        // argument/clause. Validate the single-parse original AST instead.
+        passant_core::policy_compile::parse_policy_constraint(constraint).unwrap();
+        let text = format!("SOURCE cases CONSTRAINT {constraint} ON FAIL REMOVE");
+        let policy = passant_core::policy::parse_policy_text(&text).unwrap();
+        assert!(
+            passant_core::intermediate_compile::compile_intermediate_spec(policy, &registry)
+                .is_err(),
+            "standalone: {constraint}"
+        );
+        assert!(compile(&text).is_err(), "registered: {constraint}");
+    }
+}
+
+#[test]
+fn parameterized_avg_call_is_rejected_if_supported_by_native_parser() {
+    let constraint = "AVG(1)(cases.amount)>0";
+    // Parameterized aggregate calls are dialect-dependent. If accepted by the
+    // native policy parser, they must not be normalized to unparameterized AVG.
+    if passant_core::policy_compile::parse_policy_constraint(constraint).is_ok() {
+        let text = format!("SOURCE cases CONSTRAINT {constraint} ON FAIL REMOVE");
+        let policy = passant_core::policy::parse_policy_text(&text).unwrap();
+        let registry =
+            passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb);
+        assert!(
+            passant_core::intermediate_compile::compile_intermediate_spec(policy, &registry)
+                .is_err()
+        );
+        assert!(compile(&text).is_err());
+    }
+}
