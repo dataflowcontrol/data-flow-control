@@ -95,7 +95,7 @@ impl SqlValue {
     }
     fn zero() -> Self {
         Self {
-            sql_type: "BIGINT".into(),
+            sql_type: "HUGEINT".into(),
             value: Some("0".into()),
         }
     }
@@ -306,12 +306,19 @@ impl IntermediatePlan {
             .iter()
             .enumerate()
             .map(|(n, s)| {
+                // COUNT returns BIGINT but merging counts uses SUM, whose
+                // result is HUGEINT. Canonicalize at capture so an unchanged
+                // contributor set has the same typed state through every path.
                 let fields = match s.aggregate.as_str() {
                     "unique" => vec![
-                        format!("LEAST(COUNT(DISTINCT v{n}), 2)"),
+                        format!("CAST(LEAST(COUNT(DISTINCT v{n}), 2) AS HUGEINT)"),
                         format!("MIN(v{n})"),
                     ],
-                    "avg" => vec![format!("SUM(v{n})"), format!("COUNT(v{n})")],
+                    "avg" => vec![
+                        format!("SUM(v{n})"),
+                        format!("CAST(COUNT(v{n}) AS HUGEINT)"),
+                    ],
+                    "count" => vec![format!("CAST(COUNT(v{n}) AS HUGEINT)")],
                     aggregate => vec![format!("{aggregate}(v{n})")],
                 };
                 format!(
@@ -444,11 +451,12 @@ impl IntermediatePlan {
             .join(", ");
         let aggregation: Vec<String> = match spec.aggregate.as_str() {
             "unique" => vec![
-                "CASE WHEN MAX(v0)=2 THEN 2 ELSE LEAST(COUNT(DISTINCT v1),2) END".into(),
+                "CAST(CASE WHEN MAX(v0)=2 THEN 2 ELSE LEAST(COUNT(DISTINCT v1),2) END AS HUGEINT)"
+                    .into(),
                 "MIN(v1)".into(),
             ],
-            "avg" => vec!["SUM(v0)".into(), "SUM(v1)".into()],
-            "count" => vec!["SUM(v0)".into()],
+            "avg" => vec!["SUM(v0)".into(), "CAST(SUM(v1) AS HUGEINT)".into()],
+            "count" => vec!["CAST(SUM(v0) AS HUGEINT)".into()],
             f => vec![format!("{f}(v0)")],
         };
         let sql = format!(
@@ -775,5 +783,48 @@ mod tests {
             db.0.query_row(&format!("SELECT {}", value.sql()), [], |row| row.get(0))
                 .unwrap();
         assert_eq!(fetched, "a\0b'雪");
+    }
+    #[test]
+    fn capture_and_merge_have_identical_typed_metric_states() {
+        let mut db = Db::new();
+        let plan = IntermediatePlan::new(
+            vec![
+                spec("count_id", "id", "count"),
+                spec("count_amount", "amount", "count"),
+                spec("average", "amount", "avg"),
+                spec("category", "category", "unique"),
+                spec("decimal_sum", "amount", "sum"),
+                spec("integer_sum", "id", "sum"),
+                spec("float_sum", "CAST(id AS DOUBLE)", "sum"),
+                spec("minimum", "amount", "min"),
+                spec("maximum", "amount", "max"),
+                spec("allowed", "category='public'", "bool_and"),
+            ],
+            vec!["cases".into()],
+            vec![],
+        )
+        .unwrap();
+        for filter in ["id=1", "id=3", "TRUE"] {
+            let raw = capture(&plan, &mut db, filter);
+            let merged = plan.merge(&mut db, &[&raw]).unwrap();
+            assert_eq!(raw.sources[0].values, merged.sources[0].values, "{filter}");
+            let mut nested = merged;
+            for _ in 0..3 {
+                nested = plan.merge(&mut db, &[&raw, &nested]).unwrap();
+                assert_eq!(raw.sources[0].values, nested.sources[0].values, "{filter}");
+            }
+        }
+        let one = capture(&plan, &mut db, "id=1");
+        let other = capture(&plan, &mut db, "id IN (2,3)");
+        let combined = plan.merge(&mut db, &[&one, &other]).unwrap();
+        let raw = capture(&plan, &mut db, "TRUE");
+        assert_eq!(raw.sources[0].values, combined.sources[0].values);
+        let diamond = plan.merge(&mut db, &[&raw, &combined]).unwrap();
+        assert_eq!(raw.sources[0].values, diamond.sources[0].values);
+        let count = &raw.sources[0].values[0][0];
+        assert_eq!(count.sql_type, "HUGEINT");
+        assert_eq!(count.value.as_deref(), Some("3"));
+        assert_eq!(raw.sources[0].values[2][1].sql_type, "HUGEINT");
+        assert_eq!(raw.sources[0].values[3][0].sql_type, "HUGEINT");
     }
 }
