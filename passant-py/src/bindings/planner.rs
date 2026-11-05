@@ -171,27 +171,38 @@ impl PyPlanner {
     }
 
     fn compile_intermediate_policy(&self, policy_index: usize) -> PyResult<String> {
-        let compilation = self.rewriter.compile_intermediate_policy(policy_index)
+        let compilation = self
+            .rewriter
+            .compile_intermediate_policy(policy_index)
             .map_err(map_rewrite_error)?;
         serde_json::to_string(&compilation).map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     fn plan_intermediate_statement(&self, query: String) -> PyResult<String> {
-        let plan = self.rewriter.plan_intermediate_statement(&query).map_err(map_rewrite_error)?;
+        let plan = self
+            .rewriter
+            .plan_intermediate_statement(&query)
+            .map_err(map_rewrite_error)?;
         serde_json::to_string(&plan).map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    #[pyo3(signature = (sink=None))]
     fn intermediate_policy_indices(&self, sink: Option<String>) -> PyResult<Vec<usize>> {
-        self.rewriter.intermediate_policy_indices(sink.as_deref()).map_err(map_rewrite_error)
+        self.rewriter
+            .intermediate_policy_indices(sink.as_deref())
+            .map_err(map_rewrite_error)
     }
 
+    #[pyo3(signature = (sink, policy_indices, verdicts))]
     fn resolve_intermediate_rows(
         &self,
         sink: Option<String>,
         policy_indices: Vec<usize>,
         verdicts: Vec<Vec<Option<bool>>>,
     ) -> PyResult<String> {
-        let outcome = self.rewriter.resolve_intermediate_rows(sink.as_deref(), &policy_indices, &verdicts)
+        let outcome = self
+            .rewriter
+            .resolve_intermediate_rows(sink.as_deref(), &policy_indices, &verdicts)
             .map_err(map_rewrite_error)?;
         serde_json::to_string(&outcome).map_err(|err| PyValueError::new_err(err.to_string()))
     }
