@@ -2,6 +2,7 @@ mod bindings;
 
 use bindings::{
     PassantRewriteError, PyPlanner, PyRewriteStats, PyRewriteStatsTimings,
+    PyToolProvenanceModel, PyToolPublicationPlan,
     PyStatementRewriteSummary, normalize_policy_dimension_aliases_py,
     normalize_policy_dimension_queries_py, normalize_policy_dimensions_py,
     normalize_policy_source_aliases_py, normalize_policy_sources_py, parse_policy_to_json,
@@ -12,6 +13,8 @@ use pyo3::prelude::*;
 #[pymodule]
 fn _passant(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyPlanner>()?;
+    module.add_class::<PyToolProvenanceModel>()?;
+    module.add_class::<PyToolPublicationPlan>()?;
     module.add_class::<PyRewriteStatsTimings>()?;
     module.add_class::<PyRewriteStats>()?;
     module.add_class::<PyStatementRewriteSummary>()?;
