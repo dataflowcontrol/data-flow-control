@@ -329,37 +329,7 @@ fn function_is_distinct(function: &Function) -> bool {
 }
 
 pub(crate) fn is_count_distinct_cardinality_one_check(expr: &Expr) -> bool {
-    if let Expr::Nested(inner) = expr {
-        return is_count_distinct_cardinality_one_check(inner);
-    }
-    let Expr::BinaryOp { left, op, right } = expr else {
-        return false;
-    };
-    if !matches!(
-        op,
-        BinaryOperator::Eq
-            | BinaryOperator::NotEq
-            | BinaryOperator::Gt
-            | BinaryOperator::Lt
-            | BinaryOperator::GtEq
-            | BinaryOperator::LtEq
-    ) {
-        return false;
-    }
-    let Expr::Function(function) = left.as_ref() else {
-        return false;
-    };
-    if !function.name.to_string().eq_ignore_ascii_case("count") {
-        return false;
-    }
-    if !function_is_distinct(function) {
-        return false;
-    }
-    matches!(
-        right.as_ref(),
-        Expr::Value(sqlparser::ast::Value::Number(value, _))
-            if value == "1"
-    )
+    super::policy_lowering::count_distinct_cardinality_one(expr).is_some()
 }
 
 fn count_distinct_cardinality_operator(expr: &Expr) -> Option<BinaryOperator> {
@@ -401,6 +371,60 @@ fn is_count_distinct_threshold_comparison(expr: &Expr) -> bool {
 }
 
 pub(crate) fn scan_policy_expr(
+    expr: Expr,
+    sources: &[String],
+    context: &RewriteContext,
+    alias_by_base: &AliasByBase,
+    scan_ready: bool,
+    is_aggregation: bool,
+) -> Result<Expr, RewriteError> {
+    let mut target = ScanPolicyTarget {
+        sources,
+        context,
+        alias_by_base,
+        scan_ready,
+        is_aggregation,
+    };
+    let (expression, guards) = super::policy_lowering::lower_policy_expression(&expr, &mut target)?;
+    Ok(super::policy_lowering::guarded(expression, guards))
+}
+
+struct ScanPolicyTarget<'a> {
+    sources: &'a [String],
+    context: &'a RewriteContext,
+    alias_by_base: &'a AliasByBase,
+    scan_ready: bool,
+    is_aggregation: bool,
+}
+impl super::policy_lowering::PolicyExpressionTarget for ScanPolicyTarget<'_> {
+    fn lower_atom(
+        &mut self,
+        node: &Expr,
+    ) -> Result<Option<super::policy_lowering::LoweredPolicyExpr>, RewriteError> {
+        if matches!(
+            node,
+            Expr::BinaryOp {
+                op: BinaryOperator::And | BinaryOperator::Or,
+                ..
+            }
+        ) {
+            return Ok(None);
+        }
+        Ok(Some((
+            scan_policy_leaf(
+                node.clone(),
+                self.sources,
+                self.context,
+                self.alias_by_base,
+                self.scan_ready,
+                self.is_aggregation,
+            )?,
+            Vec::new(),
+        )))
+    }
+}
+
+fn scan_policy_leaf(
     mut expr: Expr,
     sources: &[String],
     context: &RewriteContext,
@@ -408,57 +432,6 @@ pub(crate) fn scan_policy_expr(
     scan_ready: bool,
     is_aggregation: bool,
 ) -> Result<Expr, RewriteError> {
-    if let Expr::BinaryOp {
-        left,
-        op: BinaryOperator::And,
-        right,
-    } = &expr
-    {
-        return Ok(and_expr(
-            scan_policy_expr(
-                *left.clone(),
-                sources,
-                context,
-                alias_by_base,
-                scan_ready,
-                is_aggregation,
-            )?,
-            scan_policy_expr(
-                *right.clone(),
-                sources,
-                context,
-                alias_by_base,
-                scan_ready,
-                is_aggregation,
-            )?,
-        ));
-    }
-    if let Expr::BinaryOp {
-        left,
-        op: BinaryOperator::Or,
-        right,
-    } = &expr
-    {
-        return Ok(Expr::BinaryOp {
-            left: Box::new(scan_policy_expr(
-                *left.clone(),
-                sources,
-                context,
-                alias_by_base,
-                scan_ready,
-                is_aggregation,
-            )?),
-            op: BinaryOperator::Or,
-            right: Box::new(scan_policy_expr(
-                *right.clone(),
-                sources,
-                context,
-                alias_by_base,
-                scan_ready,
-                is_aggregation,
-            )?),
-        });
-    }
     let registry = &context.aggregate_registry;
     if !scan_ready && !is_count_distinct_cardinality_one_check(&expr) {
         let transformed = transform_scan_aggregates(expr.clone(), registry)?;
@@ -682,39 +655,13 @@ fn policy_applicability_from_keys(
         return None;
     }
 
-    if policy.sink().is_some() {
-        let required_sources = required_source_keys.iter().collect::<HashSet<_>>();
-        let non_required_sources_match = source_keys
-            .iter()
-            .all(|source_key| required_sources.contains(source_key) || tables.contains(source_key));
-        if !non_required_sources_match {
-            return None;
-        }
-        if required_source_keys
-            .iter()
-            .any(|source| !tables.contains(source))
-        {
-            return Some(PolicyApplicability::RequiredSourceMissing);
-        }
-        return Some(PolicyApplicability::Normal);
-    }
-
-    source_keys
-        .iter()
-        .all(|source| tables.contains(source))
-        .then_some(PolicyApplicability::Normal)
-        .or_else(|| {
-            if allow_partial_source_visibility
-                && policy.sink().is_none()
-                && required_source_keys.is_empty()
-                && source_keys.len() > 1
-                && source_keys.iter().any(|source| tables.contains(source))
-            {
-                Some(PolicyApplicability::Normal)
-            } else {
-                None
-            }
-        })
+    crate::policy_applicability::source_applicability(
+        source_keys,
+        required_source_keys,
+        |source| tables.contains(source),
+        policy.sink().is_some(),
+        allow_partial_source_visibility,
+    )
 }
 
 fn compiled_sink_matches(policy: &PolicyIr, sink: Option<&TableKey>) -> bool {

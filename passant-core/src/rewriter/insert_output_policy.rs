@@ -383,13 +383,12 @@ fn collect_aggregate_projections(
     if let Some(PolicyIr::Pgn { source_aliases, .. }) = store.policy(index) {
         expr = super::columns::replace_source_alias_qualifiers(expr, source_aliases);
     }
-    let mut projections = Vec::new();
-    let mut seen = HashSet::new();
-    let _: ControlFlow<()> = visit_expressions(&expr, |expr| {
-        if let Expr::Function(function) = expr
-            && registry.is_aggregate_call(function)
-            && seen.insert(render_expr(expr, None))
-        {
+    let projections = super::policy_lowering::aggregate_demands(&expr, registry)
+        .into_iter()
+        .map(|expr| {
+            let Expr::Function(function) = &expr else {
+                unreachable!()
+            };
             let name = function.name.to_string().to_ascii_lowercase();
             let suffix = first_function_expr(function)
                 .and_then(|arg| match arg {
@@ -398,13 +397,12 @@ fn collect_aggregate_projections(
                     _ => None,
                 })
                 .unwrap_or_else(|| "value".to_string());
-            projections.push(AggregateProjection {
-                expr: expr.clone(),
+            AggregateProjection {
+                expr,
                 alias: passant_internal_name("__passant", &format!("{name}_{suffix}")),
-            });
-        }
-        ControlFlow::Continue(())
-    });
+            }
+        })
+        .collect();
     Ok(projections)
 }
 

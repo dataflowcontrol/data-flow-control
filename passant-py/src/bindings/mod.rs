@@ -1,5 +1,7 @@
 mod catalog;
 mod errors;
+mod intermediate_session;
+pub(crate) mod intermediates;
 mod planner;
 mod policy;
 mod stats;
@@ -13,3 +15,10 @@ pub use policy::{
     validate_constraint_expression_py,
 };
 pub use stats::{PyRewriteStats, PyRewriteStatsTimings, PyStatementRewriteSummary};
+
+pub use intermediates::{
+    IntermediateError, PyIntermediatePlan, PyIntermediateState, validate_intermediate_spec_json,
+    validate_intermediate_transfer_type,
+};
+
+pub use intermediate_session::PyIntermediateSession;

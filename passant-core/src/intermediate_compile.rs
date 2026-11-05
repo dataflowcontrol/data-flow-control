@@ -1,0 +1,384 @@
+//! Lower registered policy ASTs to exportable whole-input aggregate demands.
+//!
+//! Normal registration remains the sole parser/normalizer (including UNIQUE and
+//! AVG decomposition). This is a state-target lowering of `CompiledPolicy`, not
+//! a second policy language or SQLGlot compiler.
+use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
+
+use serde::Serialize;
+use sqlparser::ast::{
+    BinaryOperator, DuplicateTreatment, Expr, FunctionArguments, Ident, UnaryOperator, Value,
+    Visit, Visitor, visit_expressions, visit_expressions_mut,
+};
+
+use crate::aggregate_registry::{AggregateRegistry, function_name};
+use crate::diagnostics::RewriteError;
+use crate::intermediate_state::IntermediateSpec;
+use crate::policy_store::CompiledPolicy;
+use crate::rewriter::PassantRewriter;
+use crate::rewriter::policy_lowering::{
+    LoweredPolicyExpr, PolicyExpressionTarget, aggregate_argument, aggregate_call, guarded,
+    is_boundary, lower_policy_expression,
+};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IntermediateCompilation {
+    pub specs: Vec<IntermediateSpec>,
+    pub predicate: String,
+    pub sink_columns: Vec<(String, String)>,
+    pub sink_endpoint: bool,
+    pub sources: Vec<String>,
+    pub required_sources: Vec<String>,
+}
+
+fn error(message: impl Into<String>) -> RewriteError {
+    RewriteError::unsupported_statement(message.into())
+}
+fn column(name: &str) -> Expr {
+    Expr::Identifier(Ident::with_quote('"', name))
+}
+/// Compile a trusted standalone state declaration without registering an endpoint
+/// policy. Its source/sink tables need not yet exist. Parsing and normalization
+/// are the same core compiler used by normal validated registration.
+pub fn compile_intermediate_spec(
+    policy: crate::policy::PolicyIr,
+    registry: &AggregateRegistry,
+) -> Result<IntermediateCompilation, RewriteError> {
+    let parsed = crate::policy_compile::parse_policy_constraint_with_registry(
+        policy.constraint(),
+        registry,
+    )?;
+    let mut store = crate::policy_store::PolicyStore::default();
+    store
+        .compile_policy(0, policy, Some(parsed))
+        .intermediate_compilation(registry)
+}
+
+impl CompiledPolicy {
+    pub fn intermediate_compilation(
+        &self,
+        registry: &AggregateRegistry,
+    ) -> Result<IntermediateCompilation, RewriteError> {
+        if !self.policy.dimension_tables().is_empty() || !self.policy.dimension_queries().is_empty()
+        {
+            return Err(error("Intermediate compilation does not support DIMENSION"));
+        }
+        let ast = &self
+            .constraint
+            .as_ref()
+            .ok_or_else(|| error("Missing registered constraint AST"))?
+            .ast;
+        let mut sources = HashMap::new();
+        for source in self.policy.sources() {
+            sources.insert(source.to_ascii_lowercase(), source.clone());
+        }
+        let mut aliases = sources.clone();
+        for (alias, source) in self.policy.source_aliases() {
+            aliases.insert(alias.to_ascii_lowercase(), source.clone());
+        }
+        let mut sink_names = HashSet::from(["_output_".to_string()]);
+        if let Some(name) = self.policy.sink() {
+            sink_names.insert(name.to_ascii_lowercase());
+        }
+        if let Some(name) = self.policy.sink_alias() {
+            sink_names.insert(name.to_ascii_lowercase());
+        }
+        let mut compiler = Compiler {
+            registry,
+            sources,
+            aliases,
+            sink_names,
+            specs: Vec::new(),
+            sink_columns: Vec::new(),
+        };
+        compiler.validate(&self.constraint.as_ref().unwrap().original_ast)?;
+        compiler.validate(ast)?;
+        let (predicate, guards) = lower_policy_expression(ast, &mut compiler)?;
+        Ok(IntermediateCompilation {
+            specs: compiler.specs,
+            predicate: guarded(predicate, guards).to_string(),
+            sink_columns: compiler.sink_columns,
+            sink_endpoint: self.policy.sink().is_some(),
+            sources: self.policy.sources().to_vec(),
+            required_sources: self.policy.required_sources().to_vec(),
+        })
+    }
+}
+
+impl PassantRewriter {
+    /// Standalone trusted declaration; does not register policy/effect authority.
+    pub fn compile_intermediate_definition(
+        &self,
+        policy: crate::policy::PolicyIr,
+    ) -> Result<IntermediateCompilation, RewriteError> {
+        compile_intermediate_spec(policy, &self.aggregate_registry)
+    }
+
+    /// Uses the existing registration-time AST and stable original policy ID.
+    pub fn compile_intermediate_policy(
+        &self,
+        policy_index: usize,
+    ) -> Result<IntermediateCompilation, RewriteError> {
+        let compiled = self
+            .store
+            .policy_indices()
+            .into_iter()
+            .filter_map(|index| self.store.compiled(index))
+            .find(|policy| policy.original_policy_index == policy_index)
+            .ok_or_else(|| error("Unknown active policy registration ID"))?;
+        compiled.intermediate_compilation(&self.aggregate_registry)
+    }
+}
+
+struct Compiler<'a> {
+    registry: &'a AggregateRegistry,
+    sources: HashMap<String, String>,
+    aliases: HashMap<String, String>,
+    sink_names: HashSet<String>,
+    specs: Vec<IntermediateSpec>,
+    sink_columns: Vec<(String, String)>,
+}
+
+impl Compiler<'_> {
+    fn source_of(&self, expr: &Expr) -> Result<Option<String>, RewriteError> {
+        let Expr::CompoundIdentifier(parts) = expr else {
+            return Err(error(format!("Unbound intermediate policy column: {expr}")));
+        };
+        let qualifier = parts[..parts.len() - 1]
+            .iter()
+            .map(|p| p.value.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(".");
+        if let Some(source) = self.aliases.get(&qualifier) {
+            return Ok(Some(source.clone()));
+        }
+        if self.sink_names.contains(&qualifier) {
+            return Ok(None);
+        }
+        Err(error(format!("Unbound intermediate policy column: {expr}")))
+    }
+
+    fn columns(&self, expr: &Expr) -> Result<Vec<Expr>, RewriteError> {
+        let mut columns = Vec::new();
+        let result = visit_expressions(expr, |node| {
+            if matches!(node, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) {
+                if let Err(error) = self.source_of(node) {
+                    return ControlFlow::Break(error);
+                }
+                columns.push(node.clone());
+            }
+            ControlFlow::Continue(())
+        });
+        if let ControlFlow::Break(error) = result {
+            return Err(error);
+        }
+        Ok(columns)
+    }
+
+    fn validate(&self, expr: &Expr) -> Result<(), RewriteError> {
+        let result = visit_expressions(expr, |node| {
+            match node {
+                Expr::Subquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => {
+                    return ControlFlow::Break(error(
+                        "Subqueries are unsupported in intermediate policies",
+                    ));
+                }
+                Expr::Function(f) => {
+                    if f.over.is_some()
+                        || f.filter.is_some()
+                        || !f.within_group.is_empty()
+                        || f.null_treatment.is_some()
+                        || matches!(f.args, FunctionArguments::Subquery(_))
+                        || matches!(f.parameters, FunctionArguments::Subquery(_))
+                    {
+                        return ControlFlow::Break(error(
+                            "Subqueries, windows and filtered aggregates are unsupported",
+                        ));
+                    }
+                    let name = function_name(f).to_ascii_lowercase();
+                    if let FunctionArguments::List(arguments) = &f.args
+                        && arguments.duplicate_treatment == Some(DuplicateTreatment::Distinct)
+                        && name != "count"
+                    {
+                        return ControlFlow::Break(error(
+                            "Only COUNT(DISTINCT expression) =/!= 1 is compact",
+                        ));
+                    }
+                    // Validate the original registered call before AVG/MEAN
+                    // decomposition can erase extra arguments, ORDER BY clauses
+                    // or a parameter list. Reuse the same state-aggregate shape
+                    // check used by lowering rather than accepting a changed call.
+                    if self.registry.is_aggregate_call(f)
+                        && let Err(error) = aggregate_argument(f)
+                    {
+                        return ControlFlow::Break(error);
+                    }
+                }
+                _ => (),
+            }
+            ControlFlow::Continue(())
+        });
+        if let ControlFlow::Break(error) = result {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn demand(&mut self, expr: &Expr, aggregate: &str) -> Result<Expr, RewriteError> {
+        let columns = self.columns(expr)?;
+        let mut involved = columns
+            .iter()
+            .map(|column| self.source_of(column))
+            .collect::<Result<HashSet<_>, _>>()?;
+        if columns.is_empty() && self.sources.len() == 1 {
+            involved.insert(self.sources.values().next().cloned());
+        }
+        if involved.len() != 1 || involved.contains(&None) {
+            return Err(error(
+                "An intermediate expression must belong to exactly one SOURCE",
+            ));
+        }
+        let source = involved.into_iter().next().flatten().unwrap();
+        let mut local = expr.clone();
+        let _ = visit_expressions_mut(&mut local, |node| {
+            if let Expr::CompoundIdentifier(parts) = node {
+                *node = column(&parts.last().unwrap().value);
+            }
+            ControlFlow::<()>::Continue(())
+        });
+        let name = format!("_metric_{}", self.specs.len());
+        self.specs.push(IntermediateSpec {
+            name: name.clone(),
+            source,
+            expression: local.to_string(),
+            aggregate: aggregate.into(),
+        });
+        Ok(column(&name))
+    }
+}
+impl PolicyExpressionTarget for Compiler<'_> {
+    fn lower_atom(&mut self, node: &Expr) -> Result<Option<LoweredPolicyExpr>, RewriteError> {
+        // UNIQUE is normalized by the core parser into COUNT(DISTINCT) =/!= 1.
+        if !matches!(node, Expr::Nested(_))
+            && let Some((function, op @ (BinaryOperator::Eq | BinaryOperator::NotEq))) =
+                crate::rewriter::policy_lowering::count_distinct_cardinality_one(node)
+        {
+            let (argument, _) = aggregate_argument(function)?;
+            let metric = self.demand(&argument, "unique")?;
+            let Expr::Identifier(name) = metric else {
+                unreachable!()
+            };
+            return Ok(Some((
+                Expr::BinaryOp {
+                    left: Box::new(column(&format!("{}__cardinality", name.value))),
+                    op: op.clone(),
+                    right: Box::new(Expr::Value(Value::Number("1".into(), false))),
+                },
+                Vec::new(),
+            )));
+        }
+        if let Some(function) = aggregate_call(node, self.registry) {
+            let name = function_name(function).to_ascii_lowercase();
+            if !matches!(
+                name.as_str(),
+                "min" | "max" | "sum" | "count" | "avg" | "bool_and" | "bool_or"
+            ) {
+                return Err(error(format!("Unsupported policy aggregate: {name}")));
+            }
+            let (argument, distinct) = aggregate_argument(function)?;
+            if distinct {
+                return Err(error("Only COUNT(DISTINCT expression) =/!= 1 is compact"));
+            }
+            if self.registry.expr_contains_aggregate(&argument) {
+                return Err(error("Nested policy aggregates are unsupported"));
+            }
+            return Ok(Some((self.demand(&argument, &name)?, Vec::new())));
+        }
+        if matches!(
+            node,
+            Expr::UnaryOp {
+                op: UnaryOperator::Not,
+                ..
+            }
+        ) {
+            let mut check = SourceOutsideAggregate {
+                compiler: self,
+                aggregate: Vec::new(),
+            };
+            if let ControlFlow::Break(error) = node.visit(&mut check) {
+                return Err(error);
+            }
+        }
+        let columns = self.columns(node)?;
+        let all_source = !columns.is_empty()
+            && columns
+                .iter()
+                .all(|column| self.source_of(column).is_ok_and(|source| source.is_some()));
+        if all_source && !is_boundary(node) && !self.registry.expr_contains_aggregate(node) {
+            let metric = self.demand(node, "unique")?;
+            let Expr::Identifier(name) = &metric else {
+                unreachable!()
+            };
+            return Ok(Some((
+                metric.clone(),
+                vec![Expr::BinaryOp {
+                    left: Box::new(column(&format!("{}__cardinality", name.value))),
+                    op: BinaryOperator::Eq,
+                    right: Box::new(Expr::Value(Value::Number("1".into(), false))),
+                }],
+            )));
+        }
+        if let Expr::CompoundIdentifier(parts) = node {
+            self.source_of(node)?;
+            let name = format!("_sink_{}", self.sink_columns.len());
+            self.sink_columns
+                .push((name.clone(), parts.last().unwrap().value.clone()));
+            return Ok(Some((column(&name), Vec::new())));
+        }
+        Ok(None)
+    }
+}
+
+struct SourceOutsideAggregate<'a, 'b> {
+    compiler: &'a Compiler<'b>,
+    aggregate: Vec<bool>,
+}
+impl Visitor for SourceOutsideAggregate<'_, '_> {
+    type Break = RewriteError;
+    fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
+        let inside = self.aggregate.last().copied().unwrap_or(false)
+            || matches!(expr, Expr::Function(f) if self.compiler.registry.is_aggregate_call(f));
+        if !inside && matches!(expr, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) {
+            match self.compiler.source_of(expr) {
+                Ok(Some(_)) => {
+                    return ControlFlow::Break(error(
+                        "Negated implicit source uniqueness is unsupported; use explicit aggregates",
+                    ));
+                }
+                Err(error) => return ControlFlow::Break(error),
+                _ => (),
+            }
+        }
+        self.aggregate.push(inside);
+        ControlFlow::Continue(())
+    }
+    fn post_visit_expr(&mut self, _: &Expr) -> ControlFlow<Self::Break> {
+        self.aggregate.pop();
+        ControlFlow::Continue(())
+    }
+}
+/// Bind supplied public sink columns to generated predicate columns in Rust.
+pub fn bind_intermediate_sink(
+    sink_columns: &[(String, String)],
+    sink: &std::collections::BTreeMap<String, crate::intermediate_state::SqlValue>,
+) -> Result<std::collections::BTreeMap<String, crate::intermediate_state::SqlValue>, String> {
+    let mut bound = std::collections::BTreeMap::new();
+    for (generated, original) in sink_columns {
+        let value = sink
+            .get(original)
+            .ok_or_else(|| format!("Missing sink columns: {original}"))?;
+        bound.insert(generated.clone(), value.clone());
+    }
+    Ok(bound)
+}

@@ -394,6 +394,7 @@ fn load_global_aliases(registry: &mut AggregateRegistry) {
 fn load_duckdb(registry: &mut AggregateRegistry) {
     for name in [
         "any_value",
+        "arbitrary",
         "arg_max",
         "arg_min",
         "argmax",

@@ -166,6 +166,75 @@ impl PyPlanner {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    fn registered_policy_indices(&self) -> Vec<usize> {
+        self.rewriter.registered_policy_indices()
+    }
+
+    fn compile_intermediate_policy(&self, policy_index: usize) -> PyResult<String> {
+        let compilation = self
+            .rewriter
+            .compile_intermediate_policy(policy_index)
+            .map_err(|err| super::intermediates::state_error(err.to_string()))?;
+        serde_json::to_string(&compilation).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    fn compile_intermediate_definition(&self, policies_json: String) -> PyResult<String> {
+        let mut policies = parse_policy_specs(&policies_json)?;
+        if policies.len() != 1 {
+            return Err(PyValueError::new_err(
+                "one intermediate policy definition is required",
+            ));
+        }
+        let compilation = self
+            .rewriter
+            .compile_intermediate_definition(policies.remove(0))
+            .map_err(|err| super::intermediates::state_error(err.to_string()))?;
+        serde_json::to_string(&compilation).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    fn plan_intermediate_statement(&self, query: String) -> PyResult<String> {
+        let plan = self
+            .rewriter
+            .plan_intermediate_statement(&query)
+            .map_err(map_rewrite_error)?;
+        serde_json::to_string(&plan).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature = (sink=None, output_columns=None))]
+    fn intermediate_policy_indices(
+        &self,
+        sink: Option<String>,
+        output_columns: Option<Vec<String>>,
+    ) -> PyResult<Vec<usize>> {
+        match output_columns {
+            Some(columns) => self
+                .rewriter
+                .intermediate_policy_indices_for_output(sink.as_deref(), &columns),
+            None => self.rewriter.intermediate_policy_indices(sink.as_deref()),
+        }
+        .map_err(map_rewrite_error)
+    }
+
+    #[pyo3(signature = (sink, policy_indices, verdicts))]
+    fn resolve_intermediate_rows(
+        &self,
+        sink: Option<String>,
+        policy_indices: Vec<usize>,
+        verdicts: Vec<Vec<Option<bool>>>,
+    ) -> PyResult<String> {
+        let outcome = self
+            .rewriter
+            .resolve_intermediate_rows(sink.as_deref(), &policy_indices, &verdicts)
+            .map_err(map_rewrite_error)?;
+        serde_json::to_string(&outcome).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    fn transform_intermediate_query(&self, query: String) -> PyResult<String> {
+        self.rewriter
+            .rewrite_intermediate_query(&query)
+            .map_err(map_rewrite_error)
+    }
+
     fn policies_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.rewriter.policies())
             .map_err(|err| PyValueError::new_err(err.to_string()))

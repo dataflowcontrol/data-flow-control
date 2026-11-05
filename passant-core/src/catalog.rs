@@ -26,6 +26,18 @@ pub struct TableCatalog {
     unique_columns: HashSet<(TableKey, String)>,
     table_row_counts: HashMap<TableKey, u64>,
     loaded: bool,
+    intermediate_bindings: HashMap<TableKey, IntermediateBinding>,
+}
+
+/// Trusted physical relation channels for persisted intermediate propagation.
+/// Public columns remain in the ordinary catalog; these channels never join
+/// the logical schema exposed to query stars or policy registration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct IntermediateBinding {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub state_column: Option<String>,
 }
 
 /// JSON catalog snapshot from Python adapter introspection.
@@ -43,6 +55,8 @@ pub struct CatalogSnapshot {
     pub unique_columns: Vec<[String; 2]>,
     #[serde(default)]
     pub aggregate_functions: Vec<crate::aggregate_registry::AggregateFunctionSnapshot>,
+    #[serde(default)]
+    pub intermediate_bindings: HashMap<String, IntermediateBinding>,
 }
 
 impl CatalogSnapshot {
@@ -85,6 +99,11 @@ impl TableCatalog {
                 catalog.register_unique_column(unique[0].clone(), unique[1].clone());
             }
         }
+        for (table, binding) in snapshot.intermediate_bindings {
+            catalog
+                .intermediate_bindings
+                .insert(TableKey::new(&table), binding);
+        }
         catalog.loaded = true;
         catalog
     }
@@ -92,6 +111,10 @@ impl TableCatalog {
     pub fn load_snapshot(&mut self, snapshot: CatalogSnapshot) {
         *self = Self::from_snapshot(snapshot);
         self.loaded = true;
+    }
+
+    pub fn intermediate_binding(&self, table: &str) -> Option<&IntermediateBinding> {
+        self.intermediate_bindings.get(&TableKey::new(table))
     }
 
     pub fn is_loaded(&self) -> bool {
