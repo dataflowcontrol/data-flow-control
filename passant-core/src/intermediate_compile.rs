@@ -45,6 +45,23 @@ fn guarded(mut expression: Expr, guards: Vec<Expr>) -> Expr {
     expression
 }
 
+/// Compile a trusted standalone state declaration without registering an endpoint
+/// policy. Its source/sink tables need not yet exist. Parsing and normalization
+/// are the same core compiler used by normal validated registration.
+pub fn compile_intermediate_spec(
+    policy: crate::policy::PolicyIr,
+    registry: &AggregateRegistry,
+) -> Result<IntermediateCompilation, RewriteError> {
+    let parsed = crate::policy_compile::parse_policy_constraint_with_registry(
+        policy.constraint(),
+        registry,
+    )?;
+    let mut store = crate::policy_store::PolicyStore::default();
+    store
+        .compile_policy(0, policy, Some(parsed))
+        .intermediate_compilation(registry)
+}
+
 impl CompiledPolicy {
     pub fn intermediate_compilation(
         &self,
@@ -82,6 +99,7 @@ impl CompiledPolicy {
             specs: Vec::new(),
             sink_columns: Vec::new(),
         };
+        compiler.validate(&self.constraint.as_ref().unwrap().original_ast)?;
         compiler.validate(ast)?;
         let (predicate, guards) = compiler.lower(ast)?;
         Ok(IntermediateCompilation {
@@ -95,6 +113,14 @@ impl CompiledPolicy {
 }
 
 impl PassantRewriter {
+    /// Standalone trusted declaration; does not register policy/effect authority.
+    pub fn compile_intermediate_definition(
+        &self,
+        policy: crate::policy::PolicyIr,
+    ) -> Result<IntermediateCompilation, RewriteError> {
+        compile_intermediate_spec(policy, &self.aggregate_registry)
+    }
+
     /// Uses the existing registration-time AST and stable original policy ID.
     pub fn compile_intermediate_policy(
         &self,
@@ -168,6 +194,7 @@ impl Compiler<'_> {
                     if f.over.is_some()
                         || f.filter.is_some()
                         || !f.within_group.is_empty()
+                        || f.null_treatment.is_some()
                         || matches!(f.args, FunctionArguments::Subquery(_))
                         || matches!(f.parameters, FunctionArguments::Subquery(_))
                     {
@@ -176,10 +203,13 @@ impl Compiler<'_> {
                         ));
                     }
                     let name = function_name(f).to_ascii_lowercase();
-                    if !self.registry.is_aggregate_call(f) && !known_scalar(&name) {
-                        return ControlFlow::Break(error(format!(
-                            "Unclassified policy function: {name}"
-                        )));
+                    if let FunctionArguments::List(arguments) = &f.args
+                        && arguments.duplicate_treatment == Some(DuplicateTreatment::Distinct)
+                        && name != "count"
+                    {
+                        return ControlFlow::Break(error(
+                            "Only COUNT(DISTINCT expression) =/!= 1 is compact",
+                        ));
                     }
                 }
                 _ => (),
@@ -459,44 +489,6 @@ fn is_boundary(expr: &Expr) -> bool {
                 }
         )
 }
-fn known_scalar(name: &str) -> bool {
-    matches!(
-        name,
-        "abs"
-            | "lower"
-            | "upper"
-            | "coalesce"
-            | "nullif"
-            | "round"
-            | "ceil"
-            | "ceiling"
-            | "floor"
-            | "length"
-            | "len"
-            | "substring"
-            | "substr"
-            | "trim"
-            | "ltrim"
-            | "rtrim"
-            | "concat"
-            | "concat_ws"
-            | "replace"
-            | "greatest"
-            | "least"
-            | "if"
-            | "ifnull"
-            | "power"
-            | "pow"
-            | "sqrt"
-            | "sign"
-            | "starts_with"
-            | "ends_with"
-            | "contains"
-            | "regexp_matches"
-            | "regexp_replace"
-    )
-}
-
 /// Bind supplied public sink columns to generated predicate columns in Rust.
 pub fn bind_intermediate_sink(
     sink_columns: &[(String, String)],

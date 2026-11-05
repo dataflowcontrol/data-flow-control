@@ -72,6 +72,9 @@ fn unsupported_demand_shapes_fail_closed() {
     for constraint in [
         "COUNT(DISTINCT cases.category)>4",
         "ARBITRARY(cases.category)='x'",
+        "AVG(DISTINCT cases.amount)>0",
+        "AVG(cases.amount) FILTER (WHERE cases.id>1)>0",
+        "AVG(cases.amount) OVER ()>0",
         "SUM(cases.amount+other.amount)>0",
         "NOT(cases.amount>1)",
         "SUM(cases.amount) FILTER (WHERE cases.id IS NOT NULL)>0",
@@ -197,4 +200,55 @@ fn uniqueness_guard_stays_in_its_boolean_branch() {
             Some(expected)
         );
     }
+}
+
+#[test]
+fn standalone_compilation_needs_no_existing_sink_or_source_catalog() {
+    let policy = passant_core::policy::parse_policy_text(
+        "SOURCE future SINK later CONSTRAINT future.id=later.id ON FAIL REMOVE",
+    )
+    .unwrap();
+    let registry = passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb);
+    let compiled =
+        passant_core::intermediate_compile::compile_intermediate_spec(policy, &registry).unwrap();
+    assert_eq!(compiled.sources, ["future"]);
+    assert_eq!(compiled.sink_columns[0].1, "id");
+}
+
+#[test]
+fn scalar_function_calls_use_existing_aggregate_registry_classification() {
+    let compiled = compile("SOURCE cases CONSTRAINT CONCAT_WS('-', LOWER(cases.category), COALESCE(cases.priority,'none'))='public-low' ON FAIL REMOVE").unwrap();
+    assert_eq!(compiled.specs.len(), 1);
+    assert_eq!(compiled.specs[0].aggregate, "unique");
+    assert!(compiled.specs[0].expression.contains("CONCAT_WS"));
+}
+
+#[test]
+fn unknown_aggregate_macro_fails_capture_before_publishing_state() {
+    use passant_core::intermediate_state::IntermediatePlan;
+    let compiled =
+        compile("SOURCE cases CONSTRAINT disguised_sum(cases.amount)>0 ON FAIL REMOVE").unwrap();
+    let plan =
+        IntermediatePlan::new(compiled.specs, compiled.sources, compiled.required_sources).unwrap();
+    let mut db = Db(duckdb::Connection::open_in_memory().unwrap());
+    db.0.execute_batch("CREATE TABLE cases(id INTEGER,amount INTEGER); INSERT INTO cases VALUES(1,10),(2,20); CREATE MACRO disguised_sum(x) AS SUM(x);").unwrap();
+    let result = plan.capture(&mut db, "cases", "SELECT * FROM cases", &["id".into()]);
+    assert!(
+        result.is_err(),
+        "macro aggregate cannot be a contributor-local scalar"
+    );
+}
+
+#[test]
+fn duckdb_arbitrary_alias_uses_first_aggregate_classification() {
+    let registry = passant_core::AggregateRegistry::for_dialect(passant_core::SqlDialect::DuckDb);
+    assert!(registry.is_aggregate_name("arbitrary"));
+    assert_eq!(
+        registry.classification("arbitrary"),
+        registry.classification("first")
+    );
+    assert!(
+        compile("SOURCE cases CONSTRAINT ARBITRARY(cases.category)='public' ON FAIL REMOVE")
+            .is_err()
+    );
 }
