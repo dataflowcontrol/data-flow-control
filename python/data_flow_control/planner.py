@@ -52,6 +52,10 @@ class Planner:
             return
         self._planner.register_policy_specs(_policy_specs_json(policies))
 
+    def registration_binding_inputs(self, policies: list[Policy]) -> list[tuple[str, bool]]:
+        """Statically validate without changing registered policies."""
+        return self._planner.registration_binding_inputs(_policy_specs_json(policies))
+
     def delete_policy(
         self,
         *,

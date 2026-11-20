@@ -150,16 +150,39 @@ impl PassantRewriter {
         self.register_policy(policy)
     }
 
+    fn validate_registration(
+        &self,
+        policy: &PolicyIr,
+    ) -> Result<crate::policy_compile::ParsedPolicyConstraint, RewriteError> {
+        let parsed = crate::policy_compile::parse_policy_constraint_with_registry(
+            policy.constraint(),
+            &self.aggregate_registry,
+        )?;
+        self.catalog
+            .validate_pgn_policy_parsed(policy, &parsed, &self.aggregate_registry)?;
+        Ok(parsed)
+    }
+
+    /// Check a batch without adding policies; return constraint SQL and top-level aggregate flags.
+    pub fn registration_binding_inputs(
+        &self,
+        policies: &[PolicyIr],
+    ) -> Result<Vec<(String, bool)>, RewriteError> {
+        policies
+            .iter()
+            .map(|policy| {
+                let parsed = self.validate_registration(policy)?;
+                let aggregate = self.aggregate_registry.expr_contains_aggregate(&parsed.expr);
+                Ok((parsed.sql, aggregate))
+            })
+            .collect()
+    }
+
     /// Validate the entire batch before allocating stable policy identities.
     pub fn register_policies(&mut self, policies: Vec<PolicyIr>) -> Result<(), RewriteError> {
         let mut validated = Vec::with_capacity(policies.len());
         for policy in policies {
-            let parsed = crate::policy_compile::parse_policy_constraint_with_registry(
-                policy.constraint(),
-                &self.aggregate_registry,
-            )?;
-            self.catalog
-                .validate_pgn_policy_parsed(&policy, &parsed, &self.aggregate_registry)?;
+            let parsed = self.validate_registration(&policy)?;
             validated.push((policy, parsed));
         }
         let registry = self.aggregate_registry.clone();
