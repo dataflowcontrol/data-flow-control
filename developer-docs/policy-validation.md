@@ -1,9 +1,31 @@
 # Policy validation
 
-Passant validates policies in two phases:
+Passant validates policies in up to three phases:
 
 1. **Syntax** at parse time (`Policy.from_pgn`, `parse-policy --text`)
-2. **Catalog** at registration (`Connection.register_policy`) against the adapter snapshot
+2. **Catalog** at registration (`Connection.register_policy`) against the adapter snapshot,
+   including physical named relations inside CONSTRAINT subqueries.
+3. **Backend binding** at registration for supported DuckDB expressions. The adapter first
+   validates the complete batch statically, then asks DuckDB for the output schema of
+   each supported DIMENSION query and a typed CONSTRAINT witness. A CONSTRAINT must
+   bind to BOOLEAN (an untyped NULL retains its SQL Boolean-context behavior).
+   Neither the bound queries nor policy results are executed. Other adapters and
+   the native/catalog-only planner currently perform only the catalog phase.
+
+The DuckDB binder uses a separate in-memory connection. It recreates referenced catalog
+schemas and column types, with no real data, no live user functions, and external
+access, extension autoload/installation and Python replacement scans disabled. It does
+not run PREPARE or EXPLAIN on user policy SQL. Alias/aggregate witnesses are for binding
+names, operators and types, not a guarantee that every runtime rewrite can lower or
+enforce the policy. In particular an outer DIMENSION alias is not a physical relation
+available in a nested FROM; use the actual catalog relation or a local CTE there.
+
+`conn.last_policy_registration_validation` reports CONSTRAINT and each DIMENSION
+subquery separately for the most recent successful batch: `duckdb bound` or
+`static only: <reason>`. Binding is deferred for a late-bound no-SINK `_OUTPUT_`,
+live-only functions, unsupported table functions, and catalog types that cannot be
+reproduced. Deferred does not mean valid. Binding errors abort the entire batch before
+allocating policy identities, without replacing the prior successful coverage report.
 
 ## Paper PGN shape
 

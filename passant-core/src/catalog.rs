@@ -16,6 +16,7 @@ use crate::policy::{PolicyIr, Resolution};
 use crate::policy_compile::{
     ParsedPolicyConstraint, parse_policy_constraint, parse_policy_constraint_with_registry,
 };
+mod constraint_subquery;
 mod dimension;
 
 /// Catalog facts supplied at policy registration time (from any adapter snapshot).
@@ -25,6 +26,8 @@ pub struct TableCatalog {
     column_types: HashMap<(TableKey, String), String>,
     unique_columns: HashSet<(TableKey, String)>,
     table_row_counts: HashMap<TableKey, u64>,
+    default_schema: Option<TableKey>,
+    search_path: Vec<String>,
     loaded: bool,
 }
 
@@ -70,7 +73,11 @@ impl TableCatalog {
     }
 
     pub fn from_snapshot(snapshot: CatalogSnapshot) -> Self {
-        let mut catalog = Self::new();
+        let mut catalog = Self {
+            default_schema: snapshot.default_schema.as_deref().map(TableKey::new),
+            search_path: snapshot.search_path,
+            ..Self::default()
+        };
         for (table, info) in snapshot.tables {
             catalog.register_table(table.clone(), info.columns.clone());
             for (column, sql_type) in info.types {
@@ -400,6 +407,8 @@ fn validate_pgn_policy_parsed(
             .collect::<HashSet<_>>();
         dimension_columns.insert(TableKey::new(alias), columns);
     }
+
+    constraint_subquery::validate(catalog, expr, &constraint)?;
 
     let source_names = sources
         .iter()

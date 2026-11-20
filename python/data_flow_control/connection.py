@@ -95,6 +95,8 @@ class Connection:
         self._catalog_synced = False
         self._catalog_has_row_counts = False
         self._catalog_table_names: set[str] | None = None
+        self._catalog_snapshot: dict = {}
+        self._last_policy_registration_validation: list[dict] = []
         self._user_aggregate_functions: list[dict] = []
         if adapter.capabilities.exception_udf:
             adapter.register_kill_function()
@@ -177,6 +179,7 @@ class Connection:
         self._catalog_synced = True
         self._catalog_has_row_counts = include_row_counts
         self._catalog_table_names = set(snapshot.get("tables", {}).keys())
+        self._catalog_snapshot = snapshot
 
     def _policy_referenced_tables(self, policies: list[Policy]) -> set[str]:
         tables: set[str] = set()
@@ -259,16 +262,45 @@ class Connection:
         self.adapter.register_relation_resolution_function(name, func)
         self.planner.register_resolution_splittability(name, splittable=splittable)
 
+    @property
+    def last_policy_registration_validation(self) -> list[dict]:
+        """Binding coverage for the last successfully registered batch; ordered by input."""
+        return [
+            dict(report, dimensions=dict(report["dimensions"]))
+            for report in self._last_policy_registration_validation
+        ]
+
     def register_policy(self, policy: Policy) -> None:
-        self._validate_policy_capabilities(policy)
-        self._ensure_catalog_for_registration([policy])
-        self.planner.register_policy(policy)
+        self.register_policies([policy])
 
     def register_policies(self, policies: list[Policy]) -> None:
         for policy in policies:
             self._validate_policy_capabilities(policy)
+        if not policies:
+            self._last_policy_registration_validation = []
+            return
         self._ensure_catalog_for_registration(policies)
+        if isinstance(self.adapter, DuckDBAdapter):
+            from .adapters.duckdb_policy_binding import validate_policy_bindings
+
+            inputs = self.planner.registration_binding_inputs(policies)
+            reports = validate_policy_bindings(
+                self.adapter.connection,
+                self._merge_aggregate_functions(self._catalog_snapshot),
+                policies,
+                inputs,
+            )
+        else:
+            status = f"static only: no backend binder for {self.adapter.dialect}"
+            reports = [
+                {
+                    "constraint": status,
+                    "dimensions": dict.fromkeys(policy.dimension_queries or {}, status),
+                }
+                for policy in policies
+            ]
         self.planner.register_policies(policies)
+        self._last_policy_registration_validation = reports
 
     def _validate_policy_capabilities(self, policy: Policy) -> None:
         if not isinstance(policy, Policy):

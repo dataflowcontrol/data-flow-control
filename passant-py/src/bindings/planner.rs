@@ -58,6 +58,13 @@ impl PyPlanner {
             .map_err(map_rewrite_error)
     }
 
+    fn registration_binding_inputs(&self, policies_json: String) -> PyResult<Vec<(String, bool)>> {
+        let policies = parse_policy_specs(&policies_json)?;
+        self.rewriter
+            .registration_binding_inputs(&policies)
+            .map_err(map_rewrite_error)
+    }
+
     fn sync_catalog(&mut self, catalog_json: String) -> PyResult<()> {
         let snapshot = super::catalog::deserialize_catalog_snapshot(&catalog_json)?;
         self.rewriter.apply_catalog_snapshot(snapshot);
