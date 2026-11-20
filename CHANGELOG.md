@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4
+
+- Validate physical relations referenced by policy CONSTRAINT subqueries at registration.
+- Bind supported DuckDB DIMENSION and CONSTRAINT expressions against an isolated,
+  empty copy of the typed schema before registering policies. Report unsupported
+  cases as catalog-only; they do not receive backend validation.
+
 ## 0.2.3
 
 - Recognize CAST-wrapped aggregates when placing grouped source policies.
