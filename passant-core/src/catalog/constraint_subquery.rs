@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, ops::ControlFlow, ptr};
 
-use sqlparser::ast::{Expr, Query, TableFactor, Visit, Visitor};
+use sqlparser::ast::{Expr, ObjectName, Query, TableFactor, Visit, Visitor};
 
 use super::TableCatalog;
 use crate::{
@@ -79,7 +79,7 @@ pub(super) fn validate(
                     .iter()
                     .rev()
                     .any(|scope| scope.visible_ctes.contains(&key));
-            if self.queries.is_empty() || is_cte || self.catalog.table_exists(&name_str) {
+            if self.queries.is_empty() || is_cte || table_exists(self.catalog, name, &name_str) {
                 return ControlFlow::Continue(());
             }
             ControlFlow::Break(RewriteError::catalog_with_context(
@@ -105,16 +105,40 @@ pub(super) fn validate(
     }
 }
 
+// The catalog may store default-schema tables without their schema prefix.
+fn table_exists(catalog: &TableCatalog, name: &ObjectName, display: &str) -> bool {
+    if catalog.table_exists(display) {
+        return true;
+    }
+    match name.0.as_slice() {
+        [_] => catalog
+            .search_path
+            .iter()
+            .any(|schema| catalog.table_exists(&format!("{schema}.{display}"))),
+        [schema, table] => {
+            let schema = TableKey::new(&schema.to_string());
+            catalog.default_schema.as_ref() == Some(&schema)
+                && catalog.table_exists(&table.to_string())
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rewriter::PassantRewriter;
+    use crate::{catalog::CatalogSnapshot, rewriter::PassantRewriter};
 
     fn register(constraint: &str) -> Result<(), RewriteError> {
-        let mut catalog = TableCatalog::new();
+        let mut catalog = TableCatalog::from_snapshot(CatalogSnapshot {
+            default_schema: Some("main".into()),
+            search_path: vec!["tenant".into(), "main".into()],
+            ..CatalogSnapshot::default()
+        });
         catalog.register_table("target", vec!["id".into()]);
         catalog.register_table("lookup_correct", vec!["id".into()]);
         catalog.register_table("extra_lookup", vec!["id".into()]);
+        catalog.register_table("tenant.path_lookup", vec!["id".into()]);
         let mut rewriter = PassantRewriter::with_catalog(catalog);
         rewriter.register_policy_text(&format!(
             "SINK target AS t DIMENSION lookup_correct AS d CONSTRAINT {constraint} ON FAIL RETRY('blocked')"
@@ -150,6 +174,10 @@ mod tests {
                 "missing_schema.x",
             ),
             (
+                "EXISTS (SELECT 1 FROM missing_schema.lookup_correct)",
+                "missing_schema.lookup_correct",
+            ),
+            (
                 "EXISTS (SELECT 1 FROM (WITH x AS (SELECT 1) SELECT 1 FROM x) AS q JOIN x ON TRUE)",
                 "x",
             ),
@@ -174,6 +202,8 @@ mod tests {
         let cases = [
             "EXISTS (SELECT 1 FROM lookup_correct AS d WHERE d.id = t.id)",
             "EXISTS (SELECT 1 FROM extra_lookup AS t WHERE t.id = 9)",
+            "EXISTS (SELECT 1 FROM main.lookup_correct AS d WHERE d.id = t.id)",
+            "EXISTS (SELECT 1 FROM path_lookup AS p WHERE p.id = t.id)",
             "EXISTS (SELECT 1 FROM unnest([t.id]) AS t(id) WHERE t.id = 1)",
             "EXISTS (SELECT 1 FROM (SELECT t.id AS id) AS t WHERE t.id = 1)",
             "EXISTS (WITH x AS (SELECT id FROM lookup_correct), y AS (SELECT id FROM x) SELECT 1 FROM y WHERE EXISTS (SELECT 1 FROM x WHERE x.id = t.id))",

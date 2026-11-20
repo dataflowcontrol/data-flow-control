@@ -26,6 +26,8 @@ pub struct TableCatalog {
     column_types: HashMap<(TableKey, String), String>,
     unique_columns: HashSet<(TableKey, String)>,
     table_row_counts: HashMap<TableKey, u64>,
+    default_schema: Option<TableKey>,
+    search_path: Vec<String>,
     loaded: bool,
 }
 
@@ -71,7 +73,11 @@ impl TableCatalog {
     }
 
     pub fn from_snapshot(snapshot: CatalogSnapshot) -> Self {
-        let mut catalog = Self::new();
+        let mut catalog = Self {
+            default_schema: snapshot.default_schema.as_deref().map(TableKey::new),
+            search_path: snapshot.search_path,
+            ..Self::default()
+        };
         for (table, info) in snapshot.tables {
             catalog.register_table(table.clone(), info.columns.clone());
             for (column, sql_type) in info.types {
