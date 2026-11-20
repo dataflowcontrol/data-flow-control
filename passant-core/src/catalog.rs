@@ -16,6 +16,7 @@ use crate::policy::{PolicyIr, Resolution};
 use crate::policy_compile::{
     ParsedPolicyConstraint, parse_policy_constraint, parse_policy_constraint_with_registry,
 };
+mod constraint_subquery;
 mod dimension;
 
 /// Catalog facts supplied at policy registration time (from any adapter snapshot).
@@ -400,6 +401,8 @@ fn validate_pgn_policy_parsed(
             .collect::<HashSet<_>>();
         dimension_columns.insert(TableKey::new(alias), columns);
     }
+
+    constraint_subquery::validate(catalog, expr, &constraint)?;
 
     let source_names = sources
         .iter()
