@@ -15,6 +15,9 @@ roaring.workspace = true
 smallvec = { workspace = true }
 pest.workspace = true
 pest_derive.workspace = true
+num-bigint = "0.4"
+num-rational = "0.4"
+unicode-casefold = "0.2"
 
 [features]
 default = []

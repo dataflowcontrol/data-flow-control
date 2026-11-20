@@ -21,6 +21,8 @@ def test_public_exports():
         "UiViolationEvent",
         "RetryFailure",
         "RetryViolation",
+        "ToolOutput",
+        "ToolProvenance",
     }
     assert set(data_flow_control.__all__) == expected
 

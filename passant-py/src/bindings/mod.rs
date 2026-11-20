@@ -3,6 +3,8 @@ mod errors;
 mod planner;
 mod policy;
 mod stats;
+mod tool_correspondence;
+mod tool_provenance;
 
 pub use errors::PassantRewriteError;
 pub use planner::PyPlanner;
@@ -13,3 +15,5 @@ pub use policy::{
     validate_constraint_expression_py,
 };
 pub use stats::{PyRewriteStats, PyRewriteStatsTimings, PyStatementRewriteSummary};
+
+pub use tool_provenance::{PyToolProvenanceModel, PyToolPublicationPlan};
