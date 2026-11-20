@@ -49,7 +49,9 @@ def _native_error(label, error, sql):
 def _function_names(conn):
     return {
         name.lower()
-        for (name,) in conn.execute("SELECT DISTINCT function_name FROM duckdb_functions()").fetchall()
+        for (name,) in conn.execute(
+            "SELECT DISTINCT function_name FROM system.main.duckdb_functions()"
+        ).fetchall()
     }
 
 

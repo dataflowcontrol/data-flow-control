@@ -285,7 +285,10 @@ class Connection:
 
             inputs = self.planner.registration_binding_inputs(policies)
             reports = validate_policy_bindings(
-                self.adapter.connection, self._catalog_snapshot, policies, inputs
+                self.adapter.connection,
+                self._merge_aggregate_functions(self._catalog_snapshot),
+                policies,
+                inputs,
             )
         else:
             status = f"static only: no backend binder for {self.adapter.dialect}"

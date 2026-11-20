@@ -95,6 +95,14 @@ def test_live_python_udf_never_calls_even_in_binder_evaluated_positions(connecti
     assert connection.raw_connection.execute("SELECT count(*) FROM source").fetchone() == (1,)
 
 
+def test_no_data_is_read_before_binding_cast_of_engine_columns(connection):
+    # The real row contains label='s', which would fail a CAST if evaluated.
+    policy = _policy("CAST(s.label AS INTEGER) > 0")
+    connection.register_policy(policy)
+    assert connection.last_policy_registration_validation[0]["constraint"] == "duckdb bound"
+    assert connection.raw_connection.execute("SELECT label FROM source").fetchone() == ("s",)
+
+
 def test_table_function_is_not_run_at_registration(connection):
     policy = _policy("EXISTS (SELECT 1 FROM read_csv_auto('not-present.csv'))")
     connection.register_policy(policy)
