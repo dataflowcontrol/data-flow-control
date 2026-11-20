@@ -36,6 +36,7 @@ fn catalog_for_dialect(dialect: &str) -> CatalogSnapshot {
         )]),
         unique_columns: vec![],
         aggregate_functions: vec![],
+        intermediate_bindings: HashMap::new(),
     }
 }
 

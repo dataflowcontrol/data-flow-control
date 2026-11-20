@@ -115,24 +115,10 @@ pub(crate) fn scoped_rewriter(
         // Other write forms retain their existing assignment/output semantics.
         _ => return Ok(None),
     };
-    let mut counts = HashMap::new();
-    for name in outputs {
-        *counts.entry(name.to_ascii_lowercase()).or_insert(0usize) += 1;
-    }
-    let outputs: HashSet<_> = counts.keys().cloned().collect();
     let mut missing = Vec::new();
     for (index, required) in policies {
-        if !required.is_subset(&outputs) {
+        if !output_columns_available(&required, &outputs)? {
             missing.push(index);
-            continue;
-        }
-        if let Some(column) = required
-            .iter()
-            .find(|name| counts.get(*name).copied().unwrap_or(0) > 1)
-        {
-            return Err(RewriteError::unsupported_statement(format!(
-                "ambiguous _OUTPUT_ column '{column}': multiple projected expressions share this output name"
-            )));
         }
     }
     if missing.is_empty() {
@@ -143,6 +129,31 @@ pub(crate) fn scoped_rewriter(
         scoped.store.deactivate(index);
     }
     Ok(Some(scoped))
+}
+
+/// Shared statement-output applicability for live SQL and opaque states.
+/// Missing columns deactivate a no-SINK output policy; duplicate required
+/// names are ambiguous only after all required names are available.
+pub(crate) fn output_columns_available(
+    required: &HashSet<String>,
+    outputs: &[String],
+) -> Result<bool, RewriteError> {
+    let mut counts = HashMap::new();
+    for name in outputs {
+        *counts.entry(name.to_ascii_lowercase()).or_insert(0usize) += 1;
+    }
+    if required.iter().any(|name| !counts.contains_key(name)) {
+        return Ok(false);
+    }
+    if let Some(column) = required
+        .iter()
+        .find(|name| counts.get(*name).copied().unwrap_or(0) > 1)
+    {
+        return Err(RewriteError::unsupported_statement(format!(
+            "ambiguous _OUTPUT_ column '{column}': multiple projected expressions share this output name"
+        )));
+    }
+    Ok(true)
 }
 
 fn unsupported(detail: &str) -> RewriteError {

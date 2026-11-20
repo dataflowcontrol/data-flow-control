@@ -2,6 +2,7 @@
 //! Each original query is entered once and synthesized once. CTE references bind
 //! memoized schemas; generated policy wrappers never enter this traversal.
 mod grouped_projection;
+mod opaque;
 mod terminal_distinct;
 mod terminal_except;
 mod terminal_intersect;
@@ -54,6 +55,9 @@ pub(crate) struct TraversalState {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct JointLineageContext {
+    /// The same scope traversal transports either recomputable source columns
+    /// or opaque whole-input dependency channels. Only lowering differs.
+    opaque_payload: bool,
     demands: Rc<HashMap<TableKey, HashSet<String>>>,
     policies: Rc<Vec<usize>>,
     public_labels: bool,
@@ -62,6 +66,29 @@ pub(crate) struct JointLineageContext {
     state: Rc<RefCell<TraversalState>>,
     root: bool,
     synthesized: Synthesized,
+}
+
+impl PassantRewriter {
+    pub(crate) fn rewrite_intermediate_ast(&self, query: &mut Query) -> Result<(), RewriteError> {
+        let frame = JointLineageContext {
+            opaque_payload: true,
+            demands: Rc::new(HashMap::new()),
+            policies: Rc::new(Vec::new()),
+            public_labels: false,
+            output_aliases: Vec::new(),
+            ctes: HashMap::new(),
+            state: Rc::new(RefCell::new(TraversalState::default())),
+            root: true,
+            synthesized: Synthesized::default(),
+        };
+        let mut context = RewriteContext {
+            joint_lineage: Some(frame),
+            aggregate_registry: self.aggregate_registry.clone(),
+            resolution_registry: self.resolution_registry.clone(),
+            ..RewriteContext::default()
+        };
+        self.rewrite_query_with_context(query, &mut context)
+    }
 }
 
 pub(crate) fn rewrite_joint_root(
@@ -214,6 +241,7 @@ pub(crate) fn rewrite_joint_root(
         });
     }
     let session = JointLineageContext {
+        opaque_payload: false,
         demands: Rc::new(demands),
         policies: Rc::new(applicable.clone()),
         public_labels: context.sink.is_none() || context.require_output_labels,
@@ -626,9 +654,17 @@ pub(crate) fn synthesize_query(
 ) -> Result<(), RewriteError> {
     let mut frame = context.joint_lineage.take().expect("joint traversal frame");
     let original_node = query as *const Query as usize;
-    frame.public_labels |= context.require_output_labels;
-    if query.order_by.is_some() {
-        frame.output_aliases.clear();
+    if frame.opaque_payload {
+        // Validate original expressions before any generated channels appear.
+        opaque::validate_query(query)?;
+        let mut state = frame.state.borrow_mut();
+        state.top_down += 1;
+        state.visits.entry(original_node).or_default().0 += 1;
+    } else {
+        frame.public_labels |= context.require_output_labels;
+        if query.order_by.is_some() {
+            frame.output_aliases.clear();
+        }
     }
     if let Some(with) = &mut query.with {
         for cte in &mut with.cte_tables {
@@ -646,13 +682,24 @@ pub(crate) fn synthesize_query(
             child.joint_lineage = Some(inherited);
             rewriter.rewrite_query_with_context(&mut cte.query, &mut child)?;
             let mut outputs = child.joint_lineage.take().unwrap().synthesized.outputs;
-            bind_alias_columns(&mut outputs, &mut cte.alias);
+            bind_child_alias_columns(&mut outputs, &mut cte.alias, frame.opaque_payload)?;
             frame
                 .ctes
                 .insert(TableKey::new(&cte.alias.name.value), outputs);
         }
     }
     frame.synthesized = synthesize_body(rewriter, query.body.as_mut(), context, &frame)?;
+    if frame.opaque_payload {
+        opaque::validate_order(
+            query,
+            frame
+                .synthesized
+                .outputs
+                .iter()
+                .filter(|c| c.public)
+                .count(),
+        )?;
+    }
     let replace = |expr: &mut Expr| remap_bound_column(expr, &frame.synthesized.bindings);
     let _: ControlFlow<()> = visit_expressions_mut(&mut query.order_by, replace);
     let _: ControlFlow<()> = visit_expressions_mut(&mut query.limit, replace);
@@ -767,6 +814,8 @@ fn synthesize_select(
 ) -> Result<Synthesized, RewriteError> {
     let bindings = normalize_schema_scan_bindings(select, frame)?;
     let mut inputs = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut bound_aliases = HashSet::new();
     let mut public_inputs = Vec::new();
     let mut presence = HashMap::new();
     // One scan may expose several aliases for the same source column. Track
@@ -776,7 +825,9 @@ fn synthesize_select(
         for factor in std::iter::once(&mut table.relation)
             .chain(table.joins.iter_mut().map(|j| &mut j.relation))
         {
-            let (qualifier, outputs) = bind_factor(rewriter, factor, context, frame)?;
+            let (qualifier, outputs, dependency) = bind_factor(rewriter, factor, context, frame)?;
+            bound_aliases.insert(qualifier.value.to_ascii_lowercase());
+            dependencies.extend(dependency);
             let factor_sources: HashSet<_> = outputs
                 .iter()
                 .flat_map(|column| {
@@ -820,6 +871,34 @@ fn synthesize_select(
         ));
     }
     expand_wildcards(select, &public_inputs)?;
+    if frame.opaque_payload {
+        let names = opaque::lower_select(
+            select,
+            &rewriter.aggregate_registry,
+            &dependencies,
+            &bound_aliases,
+            !frame.root && frame.output_aliases.is_empty(),
+        )?;
+        let mut outputs = names
+            .into_iter()
+            .map(|name| OutputColumn {
+                name: Ident::with_quote('"', name),
+                public: true,
+                origin: None,
+                presence: None,
+            })
+            .collect::<Vec<_>>();
+        outputs.push(OutputColumn {
+            name: Ident::new(opaque::DEPS),
+            public: false,
+            origin: None,
+            presence: None,
+        });
+        return Ok(Synthesized {
+            outputs,
+            ..Synthesized::default()
+        });
+    }
     for (item, alias) in select.projection.iter_mut().zip(&frame.output_aliases) {
         if let SelectItem::UnnamedExpr(expr) = item {
             *item = SelectItem::ExprWithAlias {
@@ -979,6 +1058,13 @@ fn synthesize_body(
     context: &RewriteContext,
     frame: &JointLineageContext,
 ) -> Result<Synthesized, RewriteError> {
+    // The payload mode cannot turn unsupported set/nullable shapes into a
+    // weaker provenance interpretation. Its capability guard ran at the query.
+    if frame.opaque_payload && !matches!(body, SetExpr::Select(_)) {
+        return Err(opaque::error(
+            "set operations require a joint intermediate merge boundary",
+        ));
+    }
     match body {
         SetExpr::SetOperation {
             op: sqlparser::ast::SetOperator::Except,
@@ -1328,7 +1414,7 @@ fn bind_factor(
     factor: &mut TableFactor,
     context: &RewriteContext,
     frame: &JointLineageContext,
-) -> Result<(Ident, Vec<OutputColumn>), RewriteError> {
+) -> Result<(Ident, Vec<OutputColumn>, Option<Expr>), RewriteError> {
     match factor {
         TableFactor::Table { name, alias, .. } => {
             let key = TableKey::new(&name.to_string());
@@ -1336,6 +1422,21 @@ fn bind_factor(
                 .as_ref()
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| name.0.last().unwrap().clone());
+            if frame.opaque_payload
+                && !frame.ctes.contains_key(&key)
+                && rewriter.catalog.columns(&name.to_string()).is_none()
+            {
+                return Err(opaque::error("missing catalog relation"));
+            }
+            let dependency = if frame.opaque_payload {
+                Some(if frame.ctes.contains_key(&key) {
+                    opaque::imported_dependency(&qualifier)
+                } else {
+                    opaque::physical_dependency(&rewriter.catalog, &name.to_string(), &qualifier)?
+                })
+            } else {
+                None
+            };
             let mut outputs = if let Some(outputs) = frame.ctes.get(&key) {
                 outputs.clone()
             } else {
@@ -1383,7 +1484,7 @@ fn bind_factor(
                     presence: Some(key),
                 });
             }
-            Ok((qualifier, outputs))
+            Ok((qualifier, outputs, dependency))
         }
         TableFactor::Derived {
             subquery,
@@ -1403,14 +1504,45 @@ fn bind_factor(
             child.joint_lineage = Some(inherited);
             rewriter.rewrite_query_with_context(subquery, &mut child)?;
             let mut outputs = child.joint_lineage.take().unwrap().synthesized.outputs;
-            bind_alias_columns(&mut outputs, alias);
-            Ok((alias.name.clone(), outputs))
+            bind_child_alias_columns(&mut outputs, alias, frame.opaque_payload)?;
+            let dependency = frame
+                .opaque_payload
+                .then(|| opaque::imported_dependency(&alias.name));
+            Ok((alias.name.clone(), outputs, dependency))
         }
         _ => Err(unsupported(
             "table functions or lateral/unaliased derived inputs",
         )),
     }
 }
+fn bind_child_alias_columns(
+    outputs: &mut [OutputColumn],
+    alias: &mut TableAlias,
+    opaque_payload: bool,
+) -> Result<(), RewriteError> {
+    if opaque_payload {
+        if !alias.columns.is_empty()
+            && alias.columns.len() != outputs.iter().filter(|c| c.public).count()
+        {
+            return Err(opaque::error(
+                "CTE column aliases must match the logical projection",
+            ));
+        }
+        if alias
+            .columns
+            .iter()
+            .any(|c| c.name.value.eq_ignore_ascii_case(opaque::DEPS))
+            || outputs
+                .iter()
+                .any(|c| c.public && c.name.value.eq_ignore_ascii_case(opaque::DEPS))
+        {
+            return Err(opaque::error("reserved intermediate metadata name"));
+        }
+    }
+    bind_alias_columns(outputs, alias);
+    Ok(())
+}
+
 fn bind_alias_columns(outputs: &mut [OutputColumn], alias: &mut TableAlias) {
     if alias.columns.is_empty() {
         return;
@@ -1724,6 +1856,54 @@ mod traversal_tests {
     }
 
     #[test]
+    fn opaque_payload_uses_same_once_per_scope_traversal_and_hidden_schema_binding() {
+        let mut rewriter = PassantRewriter::new();
+        rewriter.apply_catalog_snapshot(
+            serde_json::from_value(serde_json::json!({
+                "tables": {"source": {"columns": ["id", "amount"]}},
+                "intermediate_bindings": {"source": {"source": "source"}}
+            }))
+            .unwrap(),
+        );
+        let sql = "WITH s AS (SELECT id FROM source), grouped(id,total) AS (SELECT id,SUM(amount) FROM source GROUP BY id) SELECT x.* FROM s x JOIN s y ON x.id=y.id JOIN (SELECT id,SUM(total) OVER(PARTITION BY id) AS total FROM grouped) d ON x.id=d.id";
+        let mut parsed =
+            sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::DuckDbDialect {}, sql)
+                .unwrap();
+        let sqlparser::ast::Statement::Query(query) = &mut parsed[0] else {
+            panic!()
+        };
+        let state = Rc::new(RefCell::new(TraversalState::default()));
+        let mut context = test_context(&rewriter);
+        context.joint_lineage = Some(JointLineageContext {
+            opaque_payload: true,
+            policies: Rc::new(Vec::new()),
+            public_labels: false,
+            output_aliases: Vec::new(),
+            demands: Rc::new(HashMap::new()),
+            ctes: HashMap::new(),
+            state: state.clone(),
+            root: true,
+            synthesized: Synthesized::default(),
+        });
+        rewriter
+            .rewrite_query_with_context(query, &mut context)
+            .unwrap();
+        let visits = state.borrow();
+        assert_eq!((visits.top_down, visits.bottom_up), (4, 4));
+        assert_eq!(visits.visits.len(), 4);
+        assert!(visits.visits.values().all(|count| *count == (1, 1)));
+        let outputs = &context.joint_lineage.as_ref().unwrap().synthesized.outputs;
+        assert_eq!(outputs.len(), 2);
+        assert!(outputs[0].public);
+        assert_eq!(outputs[0].name.value, "id");
+        assert!(!outputs[1].public);
+        assert_eq!(outputs[1].name.value, opaque::DEPS);
+        let aliases = &query.with.as_ref().unwrap().cte_tables[1].alias.columns;
+        assert_eq!(aliases.len(), 3);
+        assert_eq!(aliases[2].name.value, opaque::DEPS);
+    }
+
+    #[test]
     fn original_query_nodes_have_one_visit_each_direction_and_cte_references_are_memoized() {
         let mut rewriter = PassantRewriter::default();
         rewriter
@@ -1743,6 +1923,7 @@ mod traversal_tests {
         }));
         let mut context = test_context(&rewriter);
         context.joint_lineage = Some(JointLineageContext {
+            opaque_payload: false,
             policies: Rc::new(Vec::new()),
             public_labels: true,
             output_aliases: Vec::new(),
@@ -1868,6 +2049,7 @@ mod traversal_tests {
         }));
         let mut context = test_context(&rewriter);
         context.joint_lineage = Some(JointLineageContext {
+            opaque_payload: false,
             policies: Rc::new(Vec::new()),
             public_labels: true,
             output_aliases: Vec::new(),
@@ -1948,6 +2130,7 @@ mod traversal_tests {
         }));
         let mut context = test_context(&rewriter);
         context.joint_lineage = Some(JointLineageContext {
+            opaque_payload: false,
             policies: Rc::new(Vec::new()),
             public_labels: true,
             output_aliases: Vec::new(),

@@ -21,7 +21,7 @@ default = []
 validate-indexed-candidates = []
 
 [dev-dependencies]
-duckdb.workspace = true
+duckdb = { workspace = true, features = ["json"] }
 pretty_assertions.workspace = true
 criterion.workspace = true
 

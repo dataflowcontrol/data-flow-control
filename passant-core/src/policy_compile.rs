@@ -15,6 +15,8 @@ use crate::threshold::ThresholdPredicate;
 pub struct ParsedPolicyConstraint {
     pub sql: String,
     pub expr: Expr,
+    /// Original parsed expression, before aggregate decomposition.
+    pub original_expr: Expr,
     pub qualified_columns: Vec<QualifiedColumn>,
     pub unqualified_columns: Vec<String>,
     pub semiring: SemiringAnalysis,
@@ -36,6 +38,7 @@ pub fn parse_policy_constraint_with_registry(
     let expr = parse_projection_expr(&sql).map_err(|_| {
         RewriteError::unsupported_statement(format!("Invalid constraint SQL expression '{sql}'"))
     })?;
+    let original_expr = expr.clone();
     let expr = decompose_composed_aggregates(expr);
     let qualified_columns = collect_qualified_columns_from_expr(&expr);
     let unqualified_columns = UnqualifiedColumnCollector::collect(&expr, registry);
@@ -44,6 +47,7 @@ pub fn parse_policy_constraint_with_registry(
     Ok(ParsedPolicyConstraint {
         sql,
         expr,
+        original_expr,
         qualified_columns,
         unqualified_columns,
         semiring,

@@ -38,6 +38,7 @@ mod insert_output_policy;
 pub(crate) mod limit;
 mod plan;
 mod policy_expr;
+pub(crate) mod policy_lowering;
 mod projection;
 pub(crate) mod resolution;
 mod select;

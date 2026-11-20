@@ -22,6 +22,8 @@ use crate::threshold::{ThresholdPredicate, threshold_predicate_from_policy};
 pub struct CompiledExpr {
     pub source_sql: Arc<str>,
     pub ast: Expr,
+    /// Single-parse AST before lossy legacy aggregate normalization.
+    pub original_ast: Expr,
 }
 
 /// Registration-time compiled policy used by the rewrite path.
@@ -81,6 +83,7 @@ impl PolicyStore {
         let constraint = parsed.as_ref().map(|draft| CompiledExpr {
             source_sql: constraint_sql.clone(),
             ast: draft.expr.clone(),
+            original_ast: draft.original_expr.clone(),
         });
         let semiring = parsed
             .as_ref()
@@ -181,6 +184,7 @@ pub(crate) fn compile_branch_policy(
     let constraint = CompiledExpr {
         source_sql: constraint_sql,
         ast: constraint_ast.clone(),
+        original_ast: constraint_ast.clone(),
     };
     let semiring = semiring_for_constraint_expr(&constraint_ast);
     let source_keys = policy
