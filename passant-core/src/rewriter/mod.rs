@@ -172,7 +172,9 @@ impl PassantRewriter {
             .iter()
             .map(|policy| {
                 let parsed = self.validate_registration(policy)?;
-                let aggregate = self.aggregate_registry.expr_contains_aggregate(&parsed.expr);
+                let aggregate = self
+                    .aggregate_registry
+                    .expr_contains_aggregate(&parsed.expr);
                 Ok((parsed.sql, aggregate))
             })
             .collect()

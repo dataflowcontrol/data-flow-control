@@ -40,8 +40,8 @@ def _read_only(sql, conn):
     return conn.sql(sql)
 
 
-def _native_error(label, error):
-    exc = PassantRewriteError(f"{label} failed DuckDB registration binding: {error}")
+def _native_error(label, error, sql):
+    exc = PassantRewriteError(f"{label} failed DuckDB registration binding: {error}\nSQL: {sql}")
     exc.kind = "backend_binding"
     return exc
 
@@ -71,9 +71,12 @@ class _Binder:
             raise _Deferred("table function outside the safe binding subset")
         names = {function.name.lower() for function in node.find_all(exp.Anonymous)}
         if names and self.live_only_functions is None:
-            self.live_only_functions = _function_names(self.source_conn) - _function_names(
-                self.sandbox
-            )
+            declared = {
+                entry["name"].lower() for entry in self.catalog.get("aggregate_functions", [])
+            }
+            self.live_only_functions = (
+                _function_names(self.source_conn) | declared
+            ) - _function_names(self.sandbox)
         if names & (self.live_only_functions or set()):
             raise _Deferred("requires functions defined only on the live connection")
 
@@ -142,7 +145,7 @@ class _Binder:
             except _Deferred as error:
                 results[alias] = f"static only: {error}"
             except duckdb.Error as error:
-                raise _native_error(f"DIMENSION {alias!r}", error) from error
+                raise _native_error(f"DIMENSION {alias!r}", error, sql) from error
         return results, columns
 
     def constraint(self, policy, sql, aggregate, dimension_columns):
@@ -167,12 +170,12 @@ class _Binder:
             prefix = ".".join(map(_quote, qualifier))
             group_items.extend(f"{prefix}.{_quote(column)}" for column in columns)
 
-        def add_table(table, alias=None, *, force=False):
+        def add_table(table, alias=None, *, force=False, allow_short=True):
             parts = _parts(table)
             prefix = (_parts(alias)[-1],) if alias else parts
             normalized = tuple(part.lower() for part in prefix)
             if not force and normalized not in qualifiers and (
-                alias or normalized[-1:] not in qualifiers
+                alias or not allow_short or normalized[-1:] not in qualifiers
             ):
                 return
             # The native static layer checked direct relation declarations.
@@ -186,22 +189,27 @@ class _Binder:
             )
 
         for source in policy.sources:
-            add_table(
-                source,
-                force=not any(
-                    base.lower() == source.lower()
-                    for base in (policy.source_aliases or {}).values()
-                ),
+            source_parts = tuple(part.lower() for part in _parts(source))
+            aliased = any(
+                tuple(part.lower() for part in _parts(base)) == source_parts
+                for base in (policy.source_aliases or {}).values()
             )
+            add_table(source, force=not aliased, allow_short=not aliased)
         for alias, source in (policy.source_aliases or {}).items():
             add_table(source, alias)
         if policy.sink:
             add_table(policy.sink, policy.sink_alias)
             if policy.sink_alias:
-                add_table(policy.sink)
+                add_table(policy.sink, allow_short=False)
             add_table(policy.sink, "_OUTPUT_")
         for dimension in policy.dimensions or []:
-            add_table(dimension)
+            dimension_parts = tuple(part.lower() for part in _parts(dimension))
+            aliased = any(
+                tuple(part.lower() for part in _parts(base)) == dimension_parts
+                for alias, base in (policy.dimension_aliases or {}).items()
+                if alias not in (policy.dimension_queries or {})
+            )
+            add_table(dimension, allow_short=not aliased)
         for alias, dimension in (policy.dimension_aliases or {}).items():
             if alias not in (policy.dimension_queries or {}):
                 add_table(dimension, alias)
@@ -226,7 +234,7 @@ class _Binder:
         result = _read_only(query, self.sandbox)
         datatype = str(result.types[0])
         if datatype not in {"BOOLEAN", '"NULL"', "NULL"}:
-            raise _native_error("CONSTRAINT", f"expected boolean, got {datatype}")
+            raise _native_error("CONSTRAINT", f"expected boolean, got {datatype}", sql)
         return "duckdb bound"
 
 
@@ -248,6 +256,6 @@ def validate_policy_bindings(source_conn, catalog, policies, inputs):
             except _Deferred as error:
                 constraint = f"static only: {error}"
             except duckdb.Error as error:
-                raise _native_error("CONSTRAINT", error) from error
+                raise _native_error("CONSTRAINT", error, sql) from error
             reports.append({"constraint": constraint, "dimensions": dimensions})
         return reports
